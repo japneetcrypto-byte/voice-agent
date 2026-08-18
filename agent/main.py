@@ -39,30 +39,41 @@ async def entrypoint(ctx: JobContext):
 
     agent_source = None
     agent_track = None
+    agent_task = None  # Tracks the active response task so we can interrupt it
 
-    async def handle_conversation_turn(user_text: str):
+    async def run_agent_response(user_text: str):
         session.add_user_message(user_text)
-        
         messages = session.get_context()
+        
         print("Agent thinking...")
         text_stream = llm_provider.generate_response_stream(messages)
         
+        spoken_text = []
         async def text_stream_tee():
-            full_text = []
             async for chunk in text_stream:
                 print(chunk, end="", flush=True)
-                full_text.append(chunk)
+                spoken_text.append(chunk)
                 yield chunk
             print()
-            session.add_agent_message("".join(full_text))
             
         audio_stream = tts_provider.synthesize_stream(text_stream_tee())
         
-        print("Agent speaking...")
-        async for audio_chunk in audio_stream:
-            if agent_source is not None:
-                await agent_source.capture_frame(audio_chunk.frame)
-        print("Agent finished speaking.")
+        try:
+            print("Agent speaking...")
+            async for audio_chunk in audio_stream:
+                if agent_source is not None:
+                    await agent_source.capture_frame(audio_chunk.frame)
+            
+            # Finished naturally without interruption
+            session.add_agent_message("".join(spoken_text))
+            print("Agent finished speaking.")
+            
+        except asyncio.CancelledError:
+            print("\n[Agent was interrupted]")
+            truncated_message = "".join(spoken_text).strip()
+            if truncated_message:
+                session.add_agent_message(truncated_message + " [interrupted]")
+            raise
 
     @ctx.room.on("track_subscribed")
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
@@ -70,7 +81,7 @@ async def entrypoint(ctx: JobContext):
             asyncio.create_task(process_user_audio(track))
 
     async def process_user_audio(track: rtc.RemoteAudioTrack):
-        nonlocal agent_source, agent_track
+        nonlocal agent_source, agent_track, agent_task
         
         audio_stream = rtc.AudioStream(track)
         resampler = None
@@ -106,6 +117,10 @@ async def entrypoint(ctx: JobContext):
                         speech_buffer = [audio_np]
                         print("User started speaking...")
                         
+                        # MODULE 9: INTERRUPT AGENT
+                        if agent_task and not agent_task.done():
+                            agent_task.cancel()
+                        
                     elif vad_event == VADEvent.SPEECH_ENDED:
                         is_speaking = False
                         print("User stopped speaking. Transcribing...")
@@ -120,7 +135,7 @@ async def entrypoint(ctx: JobContext):
                             print(f"User: {transcript.text}")
                             
                             if transcript.text.strip():
-                                await handle_conversation_turn(transcript.text)
+                                agent_task = asyncio.create_task(run_agent_response(transcript.text))
                         except Exception as e:
                             print(f"STT Error: {e}")
                             
