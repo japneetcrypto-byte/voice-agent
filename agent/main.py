@@ -1,3 +1,20 @@
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
+# Map the explicit Cloud/Local variables from .env to the standard LiveKit variables 
+# before the CLI runs, depending on which worker we are starting.
+target = os.getenv("WORKER_TARGET", "cloud")
+if target == "cloud":
+    os.environ["LIVEKIT_URL"] = os.environ.get("LIVEKIT_CLOUD_URL", "")
+    os.environ["LIVEKIT_API_KEY"] = os.environ.get("LIVEKIT_CLOUD_API_KEY", "")
+    os.environ["LIVEKIT_API_SECRET"] = os.environ.get("LIVEKIT_CLOUD_API_SECRET", "")
+else:
+    os.environ["LIVEKIT_URL"] = os.environ.get("LIVEKIT_LOCAL_URL", "ws://127.0.0.1:7880")
+    os.environ["LIVEKIT_API_KEY"] = os.environ.get("LIVEKIT_LOCAL_API_KEY", "devkey")
+    os.environ["LIVEKIT_API_SECRET"] = os.environ.get("LIVEKIT_LOCAL_API_SECRET", "secret")
+
 import asyncio
 import numpy as np
 from livekit import rtc

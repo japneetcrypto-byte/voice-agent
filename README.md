@@ -30,22 +30,16 @@ uv run python -m agent.token_server
 ```
 
 **3. Concurrent Agent Workers**
-Since we are using routing, you need to run TWO agent workers side-by-side so an agent is available no matter where the user lands.
+Since we are using routing, you need to run TWO agent workers side-by-side so an agent is available no matter where the user lands. They will read their respective credentials directly from your `.env` file.
 
 *Terminal 3A (Cloud Worker):*
 ```bash
-export LIVEKIT_URL=$LIVEKIT_CLOUD_URL 
-export LIVEKIT_API_KEY=$LIVEKIT_CLOUD_API_KEY 
-export LIVEKIT_API_SECRET=$LIVEKIT_CLOUD_API_SECRET
-uv run python -m agent.main start
+WORKER_TARGET=cloud uv run python -m agent.main start
 ```
 
 *Terminal 3B (Local Standby Worker):*
 ```bash
-export LIVEKIT_URL=ws://127.0.0.1:7880 
-export LIVEKIT_API_KEY=devkey 
-export LIVEKIT_API_SECRET=secret
-uv run python -m agent.main start
+WORKER_TARGET=local uv run python -m agent.main start
 ```
 
 **4. React Frontend**
