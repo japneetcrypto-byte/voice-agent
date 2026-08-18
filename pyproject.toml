@@ -6,6 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "aiohttp-cors>=0.8.1",
+    "faster-whisper>=1.2.1",
+    "google-genai>=2.18.1",
     "livekit-agents>=1.6.10",
     "python-dotenv>=1.2.3",
+    "ten-vad>=1.0.6.8",
 ]
