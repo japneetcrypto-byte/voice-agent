@@ -43,3 +43,11 @@ Still TODO in batch 2: none authored-side; the **harness itself** (replay runner
 ## Change discipline
 
 Fixtures are **pre-registered expectations**. Changing a fixture after evaluation runs requires an owner decision with evidence attached (same discipline as gate thresholds). Version bump → `suite_v2.json`; v1 is immutable once evaluation starts.
+
+## T4.5 bring-up notes (2026-08-26 — harness build)
+
+- **Batch-2 status: 18/18 PASS, determinism k=3 byte-identical** (G-DET satisfied by the reference implementation).
+- Harness: `phase4/harness/reference_updater.py` (evaluation-only execution of `aiva.updater/v1` — not wired into agent/) + `phase4/harness/eval_runner.py` (modes: `--batch2` offline, `--golden`/`--dc` live).
+- **Spec clarification recorded (EMOTION-CARRY rule):** a `neutral_unclear` sensing never overwrites a specific committed estimate — it increments `unverified_turns`; 3 consecutive → `DECAY` drifts the estimate to `neutral_unclear`. Derived from v1.1 §4.2 ("estimate carries forward but decays"). Corrections never carry (A-U7: unknown labels degrade immediately). Reason code: `EMOTION-CARRY`.
+- **Fixture consistency fixes at bring-up (pre-evaluation, documented):** U06 log code `THREAD-DEGRADE:` → `THREAD-CLOSE:T1` (expiry is not a degrade); U07 label `exhaustion_sadness` → `heavy_sadness` (first-match table hits `exhaust` → overwhelm); U07b label → `gussa_nahi_mann_bhaari` (must contain no table tokens); U10 confidence expectation 0.95 → 0.5 (transcript-only cap applies; correction absent) + flagged path `safety.categories.other_flagged.present`; U14 steps given minimal valid heads (ledger replays require a head per C6).
+- D-C v1 (55 items) authored separately at `phase4/datasets/safety_dc_v1.json` — `--dc` mode runs it live.
