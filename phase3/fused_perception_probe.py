@@ -539,6 +539,9 @@ async def main() -> int:
     ap.add_argument("--cases", default="", help="comma-separated case-id substrings to include")
     ap.add_argument("--price-in", type=float, default=None, help="USD per 1M input tokens (optional)")
     ap.add_argument("--price-out", type=float, default=None, help="USD per 1M output tokens (optional)")
+    ap.add_argument("--pace-sec", type=float, default=4.5,
+                    help="sleep between live calls to respect free-tier RPM (~<=13 RPM). "
+                         "Set 0 only if you have paid-tier limits.")
     args = ap.parse_args()
 
     cfg = {"model": args.model, "runs": args.runs, "temperature": args.temperature,
