@@ -28,7 +28,9 @@ class FishAudioTTSProvider(TTSProvider):
             "api_key": api_key,
             "model": "s2.1-pro-free",
             "voice_id": voice_id,
-            "sample_rate": 48000,
+            # s2.1-pro-free supports max 44100 Hz for wav (server-verified 2026-08-26);
+            # synthesize_stream resamples to 48 kHz for AudioSource(48000, 1).
+            "sample_rate": 44100,
         }
         self.engine = FishTTS(**kwargs)
 
