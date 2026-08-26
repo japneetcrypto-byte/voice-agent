@@ -1,4 +1,4 @@
-# Phase 4 — Evaluation Design (PROPOSAL — review then lock)
+# Phase 4 — Evaluation Design (LOCKED) — execution status: T4.1/T4.4/T4.5/T4.6 done, T4.8 report at phase4/reports/eval_2026-08-26.md
 
 **Date:** 2026-08-26 · **Basis:** locked `STATE_MODEL_V1.1`, locked `PHASE3_CONTRACTS.md` (incl. U1–U6 rulings), boundary §13 Phase 4.
 **Goal:** define *how* every state decision will be tested **before** Phase 5 implementation — so the state engine is built against pre-registered gates, not post-hoc justifications.
