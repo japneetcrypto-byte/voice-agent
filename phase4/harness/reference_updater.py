@@ -32,6 +32,7 @@ PARAMS = {
     "caps": {"transcript_only": 0.5, "with_acoustic": 0.7, "acoustic_only": 0.3, "conflict": 0.4},
     "weights": {"user_correction": 0.95, "transcript": 0.4, "history": 0.2, "acoustic": 0.2},
     "corr_confidence": 0.95,          # A-U7
+    "emotion_label_threshold": 0.7,   # internal parameter — name an emotion only at >= this confidence (P6: calibration pending)
 }
 
 TAXONOMY = ["anger_frustration", "sadness", "anxiety", "overwhelm",
@@ -494,10 +495,10 @@ def _derive_policy(state: dict, tr: dict, head: dict | None, degradation: str | 
     override = state["safety"].get("override_active", False) if safety_override is None else safety_override
     if override:
         m = "CALM"
-    avoid = {"VENT": ["advice", "escalation", "judgement"],
+    avoid = {"VENT": ["advice", "escalation", "judgement", "endorsing_accusations"],
              "ADVICE": [],
              "CALM": ["advice", "minimising", "interrogation"],
-             "REFLECT": ["advice"],
+             "REFLECT": ["advice", "endorsing_accusations"],
              "CLOSING": ["advice", "new_threads"]}.get(m, ["advice"])
     prefs = state["memory"].get("preferences", [])
     if any("no advice" in p.get("rule", "") for p in prefs) and m != "ADVICE":
@@ -514,7 +515,7 @@ def _derive_policy(state: dict, tr: dict, head: dict | None, degradation: str | 
         "safety_override_active": bool(override),
         "avoid": avoid,
         "pacing": {"max_sentences": PARAMS["max_sentences"], "max_questions": PARAMS["max_questions"]},
-        "emotion_label_allowed": bool(emo.get("confidence", 0.0) >= PARAMS["caps"]["transcript_only"]
+        "emotion_label_allowed": bool(emo.get("confidence", 0.0) >= PARAMS["emotion_label_threshold"]
                                        and emo.get("primary") != "neutral_unclear"),
         "phase": state["conversation"].get("phase"),
     }

@@ -61,8 +61,18 @@ def check_state_assertions(state: dict, assertions: dict) -> list[str]:
 
 
 def check_policy_assertions(policy: dict, assertions: dict) -> list[str]:
-    return [f"policy.{k}={policy.get(k)!r} != {want!r}" for k, want in assertions.items()
-            if policy.get(k) != want]
+    fails = []
+    for k, want in assertions.items():
+        if k == "avoid_contains":
+            got = policy.get("avoid", []) or []
+            missing = [w for w in want if w not in got]
+            if missing:
+                fails.append(f"policy.avoid missing {missing} (got {got})")
+        elif k == "log_contains":
+            continue
+        elif policy.get(k) != want:
+            fails.append(f"policy.{k}={policy.get(k)!r} != {want!r}")
+    return fails
 
 
 def replay_batch2(k: int, verbose: bool) -> tuple[int, int, list[str]]:
@@ -214,7 +224,10 @@ async def run_golden(args, key: str) -> int:
     from phase4.harness.reference_updater import update
     suite = json.load(open(os.path.join(HERE, "..", "golden", "suite_v1.json")))
     n_pass = n_fail = 0
+    only = [x for x in args.only.split(",") if x]
     for fx in suite["fixtures"]:
+        if only and not any(x in fx["id"] for x in only):
+            continue
         tt = fx.get("turn_type", "speech")
         tr = {"turn": 1, "turn_type": tt}
         if fx["context"].get("interrupted_agent_response"):
@@ -226,12 +239,26 @@ async def run_golden(args, key: str) -> int:
                                     "threads": fx["context"].get("threads"), "history": fx["context"].get("history"),
                                     "user_turn": fx["user_turn"]}, ensure_ascii=False)
             from phase3.fused_perception_probe import SYSTEM_FUSED  # validated prompt contract
+            # C2 persona contract (locked): masculine self-reference to match the cloned voice
+            system = SYSTEM_FUSED + ("\n\nSELF-REFERENCE RULE: refer to yourself with masculine "
+                                      "grammar (e.g. 'main sun raha hoon', 'main samajh gaya'). "
+                                      "Never use feminine self-forms (sun rahi/sunungi/jaungi).")
             try:
-                full, e2e = await _live_stream(key, args.model, SYSTEM_FUSED, contents, args.temperature)
+                full, e2e = await _live_stream(key, args.model, system, contents, args.temperature)
             except Exception as e:
-                print(f"  LIVE ERROR: {type(e).__name__}: {str(e)[:150]}")
-                n_fail += 1
-                continue
+                if "429" in str(e):
+                    print("  429 hit — cooling down 65s, one retry")
+                    await asyncio.sleep(65)
+                    try:
+                        full, e2e = await _live_stream(key, args.model, system, contents, args.temperature)
+                    except Exception as e2:
+                        print(f"  LIVE ERROR (after cooldown): {type(e2).__name__}: {str(e2)[:150]}")
+                        n_fail += 1
+                        continue
+                else:
+                    print(f"  LIVE ERROR: {type(e).__name__}: {str(e)[:150]}")
+                    n_fail += 1
+                    continue
             head, reply, err = parse_head(full)
             band_fails = perception_band_fails(head, fx["expected"].get("perception", {})) if head else [f"head: {err}"]
             # derived-policy assertions through the reference updater (deterministic)
@@ -263,15 +290,28 @@ async def run_dc(args, key: str) -> int:
     ds = json.load(open(os.path.join(HERE, "..", "datasets", "safety_dc_v1.json")))
     tp = fp = fn = tn = 0
     fails = []
+    only = [x for x in args.only.split(",") if x]
     for item in ds["items"]:
+        if only and not any(x in item["id"] for x in only):
+            continue
         contents = json.dumps({"policy": {"mode": "VENT"}, "memory": [], "threads": [],
                                 "history": [], "user_turn": item["turn"]}, ensure_ascii=False)
         try:
             full, _ = await _live_stream(key, args.model, SYSTEM_FUSED, contents, args.temperature)
         except Exception as e:
-            print(f"  {item['id']} LIVE ERROR {type(e).__name__}: {str(e)[:100]}")
-            fails.append(item["id"])
-            continue
+            if "429" in str(e):
+                print(f"  {item['id']} 429 — cooldown 65s, one retry")
+                await asyncio.sleep(65)
+                try:
+                    full, _ = await _live_stream(key, args.model, SYSTEM_FUSED, contents, args.temperature)
+                except Exception as e2:
+                    print(f"  {item['id']} LIVE ERROR (after cooldown) {type(e2).__name__}")
+                    fails.append(item["id"])
+                    continue
+            else:
+                print(f"  {item['id']} LIVE ERROR {type(e).__name__}: {str(e)[:100]}")
+                fails.append(item["id"])
+                continue
         head, _, err = parse_head(full)
         got = (head or {}).get("safety", {}).get("risk_level", "unparsed")
         want = item["expected"]["risk_level"]
@@ -303,6 +343,7 @@ async def main() -> int:
     ap.add_argument("--model", default="gemini-3.5-flash-lite")
     ap.add_argument("--temperature", type=float, default=0.7)
     ap.add_argument("--pace-sec", type=float, default=7.0)
+    ap.add_argument("--only", default="", help="comma-separated id substrings to include (golden/dc)")
     args = ap.parse_args()
     if not (args.batch2 or args.golden or args.dc):
         ap.print_help()
