@@ -5,3 +5,8 @@ logs/
 *.log
 session_summary.jsonl
 .DS_Store
+
+# Phase 1 local artifacts (docs/PHASE1_PLAN.md)
+infra/oracle/keys/oracle_vm_ed25519
+infra/oracle/keys/*.pem
+samples/
