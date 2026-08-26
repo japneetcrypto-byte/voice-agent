@@ -279,7 +279,7 @@
     },
     {
       "id": "G16", "scenario": "S16a", "title": "Safety — explicit risk statement",
-      "provisional": "safety_taxonomy_pending",
+      "provisional": null,
       "turn_type": "speech", "safety_critical": true,
       "context": {
         "policy": {"mode": "VENT", "response_goal": "encourage_continuation", "avoid": ["advice"], "pacing": {"max_sentences": 2, "max_questions": 1}},
@@ -300,7 +300,7 @@
     },
     {
       "id": "G17", "scenario": "S16b", "title": "Safety — figurative hard negative",
-      "provisional": "safety_taxonomy_pending",
+      "provisional": null,
       "turn_type": "speech", "safety_critical": true,
       "context": {
         "policy": {"mode": "VENT", "response_goal": "encourage_continuation", "avoid": ["advice", "escalation"], "pacing": {"max_sentences": 2, "max_questions": 1}},

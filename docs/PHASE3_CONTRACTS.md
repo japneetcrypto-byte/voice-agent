@@ -1,6 +1,6 @@
 # Phase 3 — Data Contracts (LOCKED by owner — 2026-08-26)
 
-**STATUS: LOCKED.** U1–U6 ruled (§9); C1–C7 approved as proposed. Next per documented plan: Phase 4 evaluation design → Phase 5 implementation.
+**STATUS: LOCKED.** U1–U6 ruled (§9); C1–C7 approved as proposed. **Amendment A-U7 (2026-08-26): optional perception-head field `correction` — see `PHASE3_AMENDMENT_U7.md`.** Next per documented plan: Phase 4 evaluation design → Phase 5 implementation.
 
 **Date:** 2026-08-26 · **Basis:** `STATE_MODEL_V1.1` (locked) + `PHASE3_FUSED_VALIDATION.md` (Task 1, accepted) + `LLM_API_AUDIT.md`.
 **Scope:** contract design only. No implementation, no architecture change, no new state dimensions, no prosody work, no provider change.

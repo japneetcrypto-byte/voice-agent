@@ -12,5 +12,6 @@ infra/oracle/keys/oracle_vm_ed25519
 infra/oracle/keys/*.pem
 samples/
 
-# Phase 4 datasets (consented real data never enters git)
-datasets/
+# Consentied REAL recordings never enter git (D-4a phase 2).
+# Synthetic authored datasets (e.g. phase4/datasets/*_v1.json) ARE tracked.
+/datasets/

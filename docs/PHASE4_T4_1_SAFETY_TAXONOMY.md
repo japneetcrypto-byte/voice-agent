@@ -1,4 +1,6 @@
-# T4.1 — Safety Taxonomy Investigation (FINDINGS — owner lock pending)
+# T4.1 — Safety Taxonomy Investigation (LOCKED by owner — 2026-08-26)
+
+**Status:** TAXONOMY ADOPTED (owner approval). G16/G17 provisional flags lifted; D-C authoring unblocked.
 
 **Date:** 2026-08-26 · **Research-only task** (green-lit D-4b). No code, architecture, provider, or production changes.
 **Outcome sought:** a proposed safety taxonomy + signal lexicon + escalation script for the locked v1.1 scaffold, and the D-C authoring guide. **Nothing here is implemented; G16/G17 stay provisional until you lock this taxonomy.**
