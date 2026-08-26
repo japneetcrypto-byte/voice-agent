@@ -1,6 +1,8 @@
-# Phase 3 — Data Contracts (PROPOSAL — review then lock)
+# Phase 3 — Data Contracts (LOCKED by owner — 2026-08-26)
 
-**Date:** 2026-08-26 · **Basis:** `STATE_MODEL_V1.1` (locked direction) + `PHASE3_FUSED_VALIDATION.md` (Task 1, accepted) + `LLM_API_AUDIT.md`.
+**STATUS: LOCKED.** U1–U6 ruled (§9); C1–C7 approved as proposed. Next per documented plan: Phase 4 evaluation design → Phase 5 implementation.
+
+**Date:** 2026-08-26 · **Basis:** `STATE_MODEL_V1.1` (locked) + `PHASE3_FUSED_VALIDATION.md` (Task 1, accepted) + `LLM_API_AUDIT.md`.
 **Scope:** contract design only. No implementation, no architecture change, no new state dimensions, no prosody work, no provider change.
 
 **Unresolved decisions are labeled U1–U6 (§9) — nothing decided silently.**
@@ -134,7 +136,7 @@ Head `thread.action` is **advisory**. The deterministic updater resolves it:
 **`update(prev_state, turn_record, perception_head | None, session_events) → (new_state, policy, update_log)`**
 
 - **Pure, deterministic, offline.** No LLM calls, no network, no clock-dependence beyond turn timestamps. Same inputs → same outputs. Runs exactly once per turn (including rejected, acoustic-only, idle, and interrupted turns), latest-turn-wins.
-- **Frozen parameter table** (all D7 internal parameters, single source of truth, tunable only by version bump): evidence weights (C1.2) · ring 5 · decay 3 turns · trajectory window 5 · mode hysteresis 2 · thread close 10 · safety de-escalation 3 consecutive safe turns · pacing ceilings (2 sentences / 1 question / ≤2 consecutive question turns).
+- **Frozen parameter table** (all D7 internal parameters, single source of truth, tunable only by version bump): evidence weights (C1.2) · ring 5 · decay 3 turns · trajectory window 5 · mode hysteresis 2 · thread close 10 · safety de-escalation 3 consecutive safe turns · pacing ceilings (2 sentences / 1 question / ≤2 consecutive question turns) · **idle threshold 45 s (U4)**.
 
 **Fixed evaluation order (determinism by construction):**
 1. Normalize head (C1.1) — or degradation path (C7) if head absent/invalid.
@@ -160,7 +162,7 @@ Head `thread.action` is **advisory**. The deterministic updater resolves it:
 | D1 | **Malformed head** (JSON invalid/fenced+unparseable) | stream continues; prose used as reply; head dropped | **no perception update this turn**; log `PARSE-FAIL` | response plays normally; next turn unaffected |
 | D2 | **Missing head** (no `<perception>` tags) | identical to D1; prose = full stream | same | same |
 | D3 | **Invalid enum** after normalization (e.g., safety risk_level garbage) | emotion → `neutral_unclear`, conf ≤0.3 (`NORM-UNKNOWN`); **safety → `low` + `other_flagged=true`** (`SAFE-INVALID` — never silently `none`, never auto-escalate) | flagged in handling_log | unaffected |
-| D4 | **LLM failure** (429/timeout/5xx) | **one retry, only if zero prose streamed** (audit rule — no duplicate speech); if still failing → **deterministic filler** from a fixed list (e.g., "Main yahin hoon, thodi technical dikkat aa gayi — main aa gaya phir se, batao.") | turn logged `LLM-FAIL`; no state churn; consecutive-failure counter | brief, honest stumble — not silence ⚠ **U1 (wording/approval)** |
+| D4 | **LLM failure** (429/timeout/5xx) | **one retry, only if zero prose streamed** (audit rule — no duplicate speech); if still failing → **deterministic filler** from a fixed list (e.g., "Main yahin hoon, thodi technical dikkat aa gayi — main aa gaya phir se, batao.") **[U1 APPROVED; wording list owner-approved before Phase 5]** | turn logged `LLM-FAIL`; no state churn; consecutive-failure counter | brief, honest stumble — not silence |
 | D4b | **Partial stream** (prose started, then failure) | never restart; if ≥1 complete sentence arrived → play what arrived and stop cleanly; else → D4 filler | same | truncated-but-clean audio |
 | D5 | **Safety uncertainty** (figurative/conflict) | clarify-first tier (v1.1); D3 for invalid enums | override only on confident levels | gentle check-in, never panic |
 | D6 | **Interrupted response** | existing cancel path; truncated text stored with marker; next policy includes `avoid: repeating_interrupted_content` + brief resume | ledger: move invalidated; not counted as advice | agent stops, listens, resumes briefly |
@@ -187,13 +189,15 @@ Head `thread.action` is **advisory**. The deterministic updater resolves it:
 
 **No new state dimensions. No prosody/pitch/pause work. No provider/model change. v1.1 boundaries intact.**
 
-## Unresolved decisions (flagged — require owner ruling, not silently decided)
+## 9. Owner rulings (2026-08-26) — RESOLVED
 
-| # | Decision | My recommendation |
+| # | Decision | Ruling |
 |---|---|---|
-| **U1** | Adopt D4 deterministic filler for total LLM failure (v1.1 deferred this to Phase 5) | Adopt now as contract default — silence on failure is the worst UX; wording list owner-approved before implementation |
-| **U2** | Retention/purge for orphaned memories (start-fresh leaves them) | 90-day purge, decided in Phase 4 with the memory eval design |
-| **U3** | S17 safety gap: should ≥2 consecutive acoustic-only turns with high RMS raise an `elevated_distress` clarify-first flag (deterministic rule, no LLM)? | Defer to Phase 4 — needs thresholds + eval data; gap is documented |
-| **U4** | Idle-turn threshold (D8) | 45 s, as a D7-class internal parameter |
-| **U5** | `entities` as strings vs objects | Strings `"Name (role)"` — simpler, sufficient for v1 |
-| **U6** | D9 `degraded_perception` mode (response-only prompt after 2 consecutive parse failures) | Adopt — it is P7 degradation within the validated transport, but it is new behavior so it needs your tick |
+| U1 | D4 deterministic filler | **APPROVED** — deterministic fallback adopted; exact filler wording list remains owner-approved before Phase 5 implementation |
+| U2 | Orphaned memory retention | **APPROVED: 90-day purge**; final retention design in Phase 4, implementation Phase 5 |
+| U3 | Acoustic-only distress escalation (≥2 high-RMS rule) | **DEFERRED to Phase 4** — rule must NOT be implemented now; Phase 4 decides via labeled-data separability analysis |
+| U4 | Idle threshold (D8) | **APPROVED: 45 seconds** (now part of the frozen parameter table) |
+| U5 | Entities format | **APPROVED: strings** `"Name (role)"` for v1 |
+| U6 | D9 `degraded_perception` mode | **APPROVED**: enter after 2 consecutive perception parse failures → response-only prompt variant; exit after 1 successful perception response |
+
+All of C1–C7 approved as proposed. Contracts are the binding reference for Phase 4/5.

@@ -1,6 +1,6 @@
-# Aiva — Emotional Conversation State Model v1.1 (AMENDED — READY TO LOCK)
+# Aiva — Emotional Conversation State Model v1.1 (LOCKED — 2026-08-26)
 
-**Status:** v1 amended per stress-test review (`docs/STATE_MODEL_V1_REVIEW.md`, A1–A10) + 3 owner rulings applied. **Ready to lock pending owner sign-off.** Design only — no implementation.
+**Status:** LOCKED. Amended per stress-test review (A1–A10) + owner rulings O1–O3; Task 1 validated the fused transport (`PHASE3_FUSED_VALIDATION.md`); Phase 3 data contracts locked (`PHASE3_CONTRACTS.md`). This document is the stable design reference.
 **Predecessor:** `docs/ARCHITECTURE_SNAPSHOT.md` (Phase 1 audit). **Review:** `docs/STATE_MODEL_V1_REVIEW.md`.
 **Next (after lock):** Phase 3 contracts → Phase 4 evaluation design → Phase 5 implementation.
 
