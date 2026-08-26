@@ -1,0 +1,171 @@
+{
+  "batch": "aiva.golden.updater/v1",
+  "created": "2026-08-26",
+  "purpose": "Pure-function fixtures for aiva.updater/v1 — replayed without any LLM/network. Each fixture = initial sparse state + ordered steps (head and/or turn_record) + sparse assertions on final state, update log, and derived policy. Unknown state fields default per docs/PHASE3_CONTRACTS.md C6 frozen parameter table.",
+  "determinism_meta": "G-DET: the harness must replay every fixture k=3 times and require byte-identical (state, policy, log) outputs.",
+  "contract_refs": "docs/PHASE3_CONTRACTS.md C1/C1.1/C6/C7; docs/STATE_MODEL_V1.md section 4",
+  "pending_amendments": [
+    "U7 (proposed, NOT locked): optional perception-head field correction:{present:bool, about:enum} so the LLM flags user-corrections and the updater applies CORR-OVERRIDE deterministically — required by U07; alternative violates the locked interpretation boundary."
+  ],
+  "fixtures": [
+    {
+      "id": "U01", "purpose": "trajectory derivation: rising",
+      "initial_state": {"emotion": {"primary": "anger_frustration", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.7, "recent_estimates": [{"turn": 9, "primary": "anger_frustration", "ordinal": 3}, {"turn": 10, "primary": "anger_frustration", "ordinal": 3}]}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "anger_frustration", "intensity": {"ordinal": 4}, "confidence": 0.8}}},
+        {"turn": 12, "head": {"emotion": {"primary": "anger_frustration", "intensity": {"ordinal": 5}, "confidence": 0.85}}}
+      ],
+      "expect": {"state": {"emotion.trajectory": "rising", "emotion.intensity.ordinal": 5}, "log_contains": ["TRAJ-RISING"]}
+    },
+    {
+      "id": "U02", "purpose": "trajectory derivation: falling",
+      "initial_state": {"emotion": {"primary": "anger_frustration", "valence": "negative", "intensity": {"ordinal": 5}, "confidence": 0.8, "recent_estimates": [{"turn": 9, "primary": "anger_frustration", "ordinal": 5}, {"turn": 10, "primary": "anger_frustration", "ordinal": 4}]}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "anger_frustration", "intensity": {"ordinal": 3}, "confidence": 0.7}}},
+        {"turn": 12, "head": {"emotion": {"primary": "neutral_unclear", "intensity": {"ordinal": 2}, "confidence": 0.6}}}
+      ],
+      "expect": {"state": {"emotion.trajectory": "falling", "emotion.intensity.ordinal": 2}, "log_contains": ["TRAJ-FALLING"]}
+    },
+    {
+      "id": "U03", "purpose": "trajectory derivation: fluctuating",
+      "initial_state": {"emotion": {"primary": "sadness", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.6, "recent_estimates": [{"turn": 9, "primary": "sadness", "ordinal": 3}]}},
+      "steps": [
+        {"turn": 10, "head": {"emotion": {"primary": "sadness", "intensity": {"ordinal": 5}, "confidence": 0.7}}},
+        {"turn": 11, "head": {"emotion": {"primary": "sadness", "intensity": {"ordinal": 2}, "confidence": 0.7}}},
+        {"turn": 12, "head": {"emotion": {"primary": "sadness", "intensity": {"ordinal": 4}, "confidence": 0.7}}}
+      ],
+      "expect": {"state": {"emotion.trajectory": "fluctuating"}, "log_contains": ["TRAJ-FLUCTUATING"]}
+    },
+    {
+      "id": "U04", "purpose": "decay after 3 uncorroborated turns",
+      "initial_state": {"emotion": {"primary": "anger_frustration", "valence": "negative", "intensity": {"ordinal": 4}, "confidence": 0.7, "updated_at_turn": 10, "recent_estimates": [{"turn": 10, "primary": "anger_frustration", "ordinal": 4}]}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "neutral_unclear", "intensity": {"ordinal": 2}, "confidence": 0.5}}},
+        {"turn": 12, "head": {"emotion": {"primary": "neutral_unclear", "intensity": {"ordinal": 2}, "confidence": 0.5}}},
+        {"turn": 13, "head": {"emotion": {"primary": "neutral_unclear", "intensity": {"ordinal": 1}, "confidence": 0.5}}}
+      ],
+      "expect": {"state": {"emotion.primary": "neutral_unclear"}, "log_contains": ["DECAY"]}
+    },
+    {
+      "id": "U05", "purpose": "mode hysteresis: inferred ADVICE needs 2 consecutive turns; explicit requests bypass",
+      "initial_state": {"mode": {"current": "VENT", "since_turn": 1}, "conversation": {"agent_behavior_ledger": {"advice_given": 0}}},
+      "steps": [
+        {"turn": 11, "head": {"user_need": "advice", "advice_requested": false}},
+        {"turn": 12, "head": {"user_need": "advice", "advice_requested": false}},
+        {"turn": 13, "head": {"user_need": "advice", "advice_requested": true}}
+      ],
+      "expect": {
+        "after_step": {"1": {"log_contains": ["HYST-BLOCK"], "policy": {"mode": "VENT"}},
+                        "2": {"policy": {"mode": "ADVICE"}},
+                        "3": {"log_contains": ["MODE-EXPLICIT"], "policy": {"mode": "ADVICE"}}}
+      }
+    },
+    {
+      "id": "U06", "purpose": "thread closed after 10 inactive turns",
+      "initial_state": {"threads": [{"id": "T1", "gist": "manager workload", "status": "active", "last_active_turn": 2, "entities": ["Rohit (manager)"], "events": [], "open_loops": [], "first_turn": 1}], "active_thread": "T1"},
+      "steps": [
+        {"turn": 13, "head": {"thread": {"action": "new", "gist": "relationship stress", "entities": ["Neha (friend)"]}}}
+      ],
+      "expect": {"state": {"threads.0.status": "closed", "active_thread": "T2", "threads.1.gist": "relationship stress"}, "log_contains": ["THREAD-DEGRADE:"]}
+    },
+    {
+      "id": "U07", "purpose": "correction override beats head estimate (pending U7 head-field amendment)",
+      "pending_amendment": "U7",
+      "initial_state": {"emotion": {"primary": "anger_frustration", "valence": "negative", "intensity": {"ordinal": 4}, "confidence": 0.8}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "sadness", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.85}, "correction": {"present": true, "about": "emotion"}}, "turn_record": {"user_correction_raw": "nahi gussa nahi hai, bas thak gaya hu udaas hu"}}
+      ],
+      "expect": {"state": {"emotion.primary": "sadness", "emotion.confidence": 0.95}, "log_contains": ["CORR-OVERRIDE"]}
+    },
+    {
+      "id": "U08", "purpose": "safety override entry + hysteresis de-escalation",
+      "initial_state": {"safety": {"risk_level": "none", "override_active": false, "categories": {"self_harm": {"present": false}, "harm_to_others": {"present": false}, "other_flagged": {"present": false}}}, "mode": {"current": "VENT"}},
+      "steps": [
+        {"turn": 11, "head": {"safety": {"risk_level": "high_risk", "self_harm": true, "harm_to_others": false, "other_flagged": false, "confidence": 0.9}}},
+        {"turn": 12, "head": {"safety": {"risk_level": "none", "self_harm": false, "harm_to_others": false, "other_flagged": false, "confidence": 0.6}}},
+        {"turn": 13, "head": {"safety": {"risk_level": "none", "self_harm": false, "harm_to_others": false, "other_flagged": false, "confidence": 0.6}}},
+        {"turn": 14, "head": {"safety": {"risk_level": "none", "self_harm": false, "harm_to_others": false, "other_flagged": false, "confidence": 0.6}}}
+      ],
+      "expect": {
+        "after_step": {"1": {"log_contains": ["SAFE-OVERRIDE"], "policy": {"mode": "CALM", "safety_override_active": true}},
+                        "2": {"policy": {"safety_override_active": true}, "log_contains": ["SAFE-HYSTERESIS"]},
+                        "3": {"policy": {"safety_override_active": true}},
+                        "4": {"policy": {"safety_override_active": false}, "state": {"safety.override_active": false}}}
+      }
+    },
+    {
+      "id": "U09", "purpose": "D1 parse-fail no-churn + D9 degraded_perception enter/exit (U6)",
+      "initial_state": {"emotion": {"primary": "sadness", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.6}, "degraded_perception": false, "parse_fail_streak": 0},
+      "steps": [
+        {"turn": 11, "turn_record": {"head_parse": "failed"}, "head": null},
+        {"turn": 12, "turn_record": {"head_parse": "failed"}, "head": null},
+        {"turn": 13, "head": {"emotion": {"primary": "overwhelm", "intensity": {"ordinal": 3}, "confidence": 0.6}}}
+      ],
+      "expect": {
+        "after_step": {"1": {"log_contains": ["PARSE-FAIL"], "state": {"emotion.primary": "sadness", "parse_fail_streak": 1}},
+                        "2": {"state": {"degraded_perception": true}, "log_contains": ["DEGRADED-PERCEPTION-ENTER"]},
+                        "3": {"state": {"degraded_perception": false, "parse_fail_streak": 0}, "log_contains": ["DEGRADED-PERCEPTION-EXIT"]}}
+      }
+    },
+    {
+      "id": "U10", "purpose": "D3 invalid enums + normalization table",
+      "initial_state": {"emotion": {"primary": "neutral_unclear", "valence": "neutral", "intensity": {"ordinal": 2}, "confidence": 0.4}, "safety": {"risk_level": "none", "other_flagged": {"present": false}}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "exhaustion_overwhelm", "valence": "negative", "intensity": {"ordinal": 4}, "confidence": 0.95}, "safety": {"risk_level": "critical", "self_harm": false, "harm_to_others": false, "other_flagged": false, "confidence": 0.5}}}
+      ],
+      "expect": {"state": {"emotion.primary": "overwhelm", "emotion.confidence": 0.85, "safety.risk_level": "low", "safety.other_flagged.present": true}, "log_contains": ["NORM-LABEL:exhaustion_overwhelm→overwhelm", "SAFE-INVALID"]}
+    },
+    {
+      "id": "U11", "purpose": "unknown label -> neutral_unclear capped 0.3 (NORM-UNKNOWN)",
+      "initial_state": {"emotion": {"primary": "neutral_unclear", "valence": "neutral", "intensity": {"ordinal": 2}, "confidence": 0.4}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "meh", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.9}}}
+      ],
+      "expect": {"state": {"emotion.primary": "neutral_unclear", "emotion.confidence_lte": 0.3}, "log_contains": ["NORM-UNKNOWN"]}
+    },
+    {
+      "id": "U12", "purpose": "channel confidence cap: transcript-only <= 0.5",
+      "initial_state": {"emotion": {"primary": "neutral_unclear", "valence": "neutral", "intensity": {"ordinal": 2}, "confidence": 0.4}},
+      "steps": [
+        {"turn": 11, "head": {"emotion": {"primary": "sadness", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.9}}, "turn_record": {"acoustic_available": false}}
+      ],
+      "expect": {"state": {"emotion.confidence_lte": 0.5}, "log_contains": ["CAP-CHANNEL"]}
+    },
+    {
+      "id": "U13", "purpose": "D7 acoustic-only turn: LLM skipped, carry-forward, no risk change",
+      "initial_state": {"emotion": {"primary": "sadness", "valence": "negative", "intensity": {"ordinal": 3}, "confidence": 0.5}, "safety": {"risk_level": "none", "override_active": false}},
+      "steps": [
+        {"turn": 11, "turn_record": {"turn_type": "acoustic_only", "acoustic": {"rms": 2400, "peak": 11000, "duration_ms": 3800}}, "head": null}
+      ],
+      "expect": {"state": {"emotion.primary": "sadness", "emotion.confidence_lte": 0.3, "safety.risk_level": "none"}, "log_contains": ["TURN-ACOUSTIC-ONLY"]}
+    },
+    {
+      "id": "U14", "purpose": "ledger: interrupted responses never count as completed moves",
+      "initial_state": {"conversation": {"agent_behavior_ledger": {"advice_given": 0, "last_move": "encourage_continuation"}}},
+      "steps": [
+        {"turn": 11, "turn_record": {"interrupted": true, "response_completed": false, "llm_response": "Pehle yeh karo..."}},
+        {"turn": 12, "turn_record": {"interrupted": false, "response_completed": true, "llm_response": "Pehle documentation rakho, phir manager se baat karo."}, "policy_derived": {"mode": "ADVICE"}}
+      ],
+      "expect": {"after_step": {"1": {"state": {"conversation.agent_behavior_ledger.advice_given": 0}},
+                                  "2": {"state": {"conversation.agent_behavior_ledger.advice_given": 1}}}}
+    },
+    {
+      "id": "U15", "purpose": "memory candidates: explicit auto-commits, others pend (D3)",
+      "initial_state": {"memory": {"episodic": [], "semantic": [], "relationship": [], "preferences": [], "write_candidates": []}},
+      "steps": [
+        {"turn": 11, "head": {"memory_candidates": [{"type": "preference", "content": "no advice unless asked", "criterion": "explicit"}, {"type": "semantic", "content": "user's manager is named Rohit", "criterion": "salient"}]}}
+      ],
+      "expect": {"state": {"memory.preferences.0.rule": "no advice unless asked", "memory.write_candidates.0.criterion": "salient"}, "log_contains": ["MEM-COMMIT-EXPLICIT", "MEM-PEND"]}
+    },
+    {
+      "id": "U16", "purpose": "D8 idle: one open-door line per idle period (45s, U4)",
+      "initial_state": {"conversation": {"phase": "venting"}, "idle": {"line_used": false}},
+      "steps": [
+        {"turn": 11, "turn_record": {"turn_type": "idle"}},
+        {"turn": 12, "turn_record": {"turn_type": "idle"}}
+      ],
+      "expect": {"after_step": {"1": {"policy": {"degradation": "D8"}, "state": {"idle.line_used": true}},
+                                  "2": {"policy": {"response_suppressed": true}, "log_contains": ["IDLE-SUPPRESSED"]}}}
+    }
+  ]
+}

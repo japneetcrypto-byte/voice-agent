@@ -5,7 +5,8 @@
 
 ## Files
 
-- `suite_v1.json` — the fixtures (single file, self-contained; provenance: synthetic authored corpus per D-4a phase 1)
+- `suite_v1.json` — the 19 scenario fixtures (self-contained; provenance: synthetic authored corpus per D-4a phase 1)
+- `updater_batch2.json` — 16 pure-function updater-replay fixtures (`aiva.golden.updater/v1`)
 - `README.md` — this file
 
 Real/consented voice data (D-4a phase 2) will live under `datasets/` (gitignored) and will be **tagged `source: real-consented`** — never mixed into this suite.
@@ -31,15 +32,13 @@ Real/consented voice data (D-4a phase 2) will live under `datasets/` (gitignored
 2. **Updater layer (deterministic):** given the head + turn record, derived policy must match `expected.policy`; update log must contain `expected.updater_log_contains`. This is a **pure-function test — no LLM, no network** (G-DET).
 3. **Reply layer (human rubric):** the generated response scored against `rubric` items (G-POL).
 
-## Batch 2 — TODO (updater replay sequences, not yet authored)
+## Batch 2 — updater replay fixtures (`updater_batch2.json`, `aiva.golden.updater/v1`) — AUTHORED 2026-08-26
 
-Pure-function fixtures that replay synthetic state sequences through the updater spec (no LLM):
-- trajectory derivation: rising (G04), falling (G05), fluctuating sequences
-- decay after 3 uncorroborated turns · hysteresis blocking a mode flip · thread close after 10 inactive turns
-- corrections: CORR-OVERRIDE precedence over head estimate
-- safety: SAFE-OVERRIDE entry + SAFE-HYSTERESIS de-escalation after 3 safe turns
-- degradation D1–D6, D9: parse-fail → no state churn; invalid safety enum → `low`+`other_flagged`; D4 filler trigger (zero-prose rule); partial-stream stop rule; degraded_perception enter/exit (U6)
-- determinism property test harness (G-DET): replay k times, byte-identical outputs
+16 pure-function fixtures replayed through the updater spec (no LLM, no network):
+U01–U03 trajectories (rising/falling/fluctuating) · U04 decay · U05 mode hysteresis + explicit bypass · U06 thread close · U07 correction override (**pending amendment U7** — optional head field `correction`; needs owner approval, else redesign) · U08 safety override + de-escalation hysteresis · U09 parse-fail + degraded_perception enter/exit (U6) · U10 invalid enums + normalization (−0.10) · U11 unknown label cap · U12 channel caps · U13 acoustic-only · U14 interrupted-ledger rule · U15 memory commit rules · U16 idle line suppression.
+Header `determinism_meta`: harness must replay every fixture k=3 → byte-identical outputs (G-DET).
+
+Still TODO in batch 2: none authored-side; the **harness itself** (replay runner + property test) is the remaining Phase 4 build item (T4.5).
 
 ## Change discipline
 
