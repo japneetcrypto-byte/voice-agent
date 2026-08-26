@@ -12,12 +12,12 @@ class LLMProvider:
         raise NotImplementedError
 
 class GeminiLLM(LLMProvider):
-    def __init__(self, api_key: str = None, model_name: str = "gemini-2.5-flash"):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+    def __init__(self, model: str = "gemini-3.5-flash-lite"):
+        self.api_key = os.getenv("GEMINI_API_KEY")
         if not self.api_key:
             raise ValueError("GEMINI_API_KEY is not set.")
         self.client = genai.Client(api_key=self.api_key)
-        self.model_name = model_name
+        self.model_name = model
 
     async def generate_response_stream(self, messages: list[dict]) -> AsyncGenerator[str, None]:
         system_instruction = None
@@ -30,8 +30,9 @@ class GeminiLLM(LLMProvider):
             
             # Map generic roles to Gemini specific roles
             gemini_role = "user" if msg["role"] == "user" else "model"
+            
             contents.append(
-                types.Content(role=gemini_role, parts=[types.Part.from_text(msg["content"])])
+                types.Content(role=gemini_role, parts=[types.Part.from_text(text=msg["content"])])
             )
             
         config_kwargs = {}

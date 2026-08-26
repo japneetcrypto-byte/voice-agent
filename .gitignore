@@ -1,0 +1,7 @@
+.env
+__pycache__/
+logs/
+*.mp3
+*.log
+session_summary.jsonl
+.DS_Store

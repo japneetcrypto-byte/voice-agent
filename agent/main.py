@@ -15,6 +15,7 @@ else:
     os.environ["LIVEKIT_API_KEY"] = os.environ.get("LIVEKIT_LOCAL_API_KEY", "devkey")
     os.environ["LIVEKIT_API_SECRET"] = os.environ.get("LIVEKIT_LOCAL_API_SECRET", "secret")
 
+import time
 import asyncio
 import numpy as np
 from livekit import rtc
@@ -26,7 +27,68 @@ from providers.stt import get_stt_provider
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
+from agent.config import Config
+
+import re
+
+def is_real_user_turn(transcript, speech_duration_ms: float) -> tuple[bool, str]:
+    text = transcript.text.strip()
+    if not text:
+        return False, "empty_transcript"
+        
+    # Hallucination patterns
+    lower_text = text.lower()
+    hallucinations = ["i am good.", "i am good", "thank you.", "thanks for watching.", "subscribe."]
+    if any(lower_text == h for h in hallucinations):
+        return False, "known_hallucination_pattern"
+        
+    # Reject if it's just punctuation/symbols (common Whisper noise hallucination)
+    if not re.search(r'[a-zA-Z0-9\u0900-\u097F]', text):
+        return False, "punctuation_only"
+        
+    if (transcript.no_speech_prob is not None and 
+            transcript.no_speech_prob > Config.NO_SPEECH_THRESHOLD):
+        return False, "high_no_speech_prob"
+        
+    if (transcript.avg_logprob is not None and 
+            transcript.avg_logprob < -0.85):
+        return False, "catastrophic_low_confidence"
+        
+    if (transcript.avg_logprob is not None and 
+            transcript.avg_logprob < Config.AVG_LOGPROB_THRESHOLD):
+        return False, "low_avg_logprob"
+        
+    return True, "accepted"
+
+
+def is_echo(transcript_text: str, recent_agent_text: str) -> tuple[bool, float]:
+    if not recent_agent_text or not transcript_text:
+        return False, 0.0
+    import re
+    import difflib
+    norm_trans = re.sub(r'[^\w\s]', '', transcript_text.lower()).strip()
+    norm_agent = re.sub(r'[^\w\s]', '', recent_agent_text.lower()).strip()
+    if not norm_trans or not norm_agent:
+        return False, 0.0
+    trans_words = norm_trans.split()
+    agent_words = norm_agent.split()
+    if not trans_words:
+        return False, 0.0
+    window_size = len(trans_words)
+    max_ratio = 0.0
+    if window_size >= len(agent_words):
+        max_ratio = difflib.SequenceMatcher(None, norm_trans, norm_agent).ratio()
+    else:
+        for w_size in [window_size, window_size + 1]:
+            if w_size > len(agent_words): continue
+            for i in range(len(agent_words) - w_size + 1):
+                window_text = " ".join(agent_words[i:i+w_size])
+                ratio = difflib.SequenceMatcher(None, norm_trans, window_text).ratio()
+                max_ratio = max(max_ratio, ratio)
+    return max_ratio > 0.65, max_ratio
+
 async def entrypoint(ctx: JobContext):
+    agent_audio_ended_at: float = None  # monotonic time
     print("Connecting to room...")
     await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
     print(f"Agent connected to room: {ctx.room.name}")
@@ -37,109 +99,378 @@ async def entrypoint(ctx: JobContext):
     tts_provider = get_tts_provider()
     session = ConversationSession()
 
-    agent_source = None
-    agent_track = None
-    agent_task = None  # Tracks the active response task so we can interrupt it
+    agent_source = rtc.AudioSource(48000, 1)
+    async def flush_audio_source(source: rtc.AudioSource):
+        """Clear LiveKit's internal audio buffer."""
+        if hasattr(source, "clear_queue"):
+            source.clear_queue()
+        else:
+            # Fallback if clear_queue is not available
+            silence = np.zeros(4800, dtype=np.int16)
+            frame = rtc.AudioFrame(
+                data=silence.tobytes(),
+                sample_rate=48000,
+                num_channels=1,
+                samples_per_channel=4800,
+            )
+            try:
+                await source.capture_frame(frame)
+            except Exception:
+                pass
 
-    async def run_agent_response(user_text: str):
+    agent_track = rtc.LocalAudioTrack.create_audio_track("agent-mic", agent_source)
+    options = rtc.TrackPublishOptions()
+    options.source = rtc.TrackSource.SOURCE_MICROPHONE
+    await ctx.room.local_participant.publish_track(agent_track, options)
+    
+    agent_task = None  # Tracks the active response task so we can interrupt it
+    agent_speaking_event = asyncio.Event()
+
+    import json
+    from datetime import datetime, timezone
+    
+    session_start = datetime.now(timezone.utc)
+    log_dir = "logs"
+    os.makedirs(log_dir, exist_ok=True)
+    events_log_path = os.path.join(
+        log_dir,
+        f"events_{session_start.strftime('%Y%m%d_%H%M%S')}.log"
+    )
+    session_log_path = os.path.join(
+        log_dir,
+        f"session_{session_start.strftime('%Y%m%d_%H%M%S')}.log"
+    )
+    turn_number = 0
+
+    def log_event(event_name: str, turn_id: int = None, response_id: str = None, details: dict = None):
+        entry = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "event": event_name,
+            "turn_id": turn_id,
+            "response_id": response_id,
+        }
+        if details:
+            entry.update(details)
+        with open(events_log_path, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def log_turn(turn_data: dict):
+        with open(session_log_path, "a") as f:
+            f.write(json.dumps(turn_data) + "\n")
+
+    async def run_agent_response(user_text: str, turn: dict):
+        if agent_task and not agent_task.done() and agent_task != asyncio.current_task():
+            return  # newer task already running, don't double-respond
+        
+        log_event("AGENT_TASK_CREATED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
+        
+        session.recent_agent_text = ""
+        response_id = f"R{turn.get('turn', 0)}"
         session.add_user_message(user_text)
         messages = session.get_context()
+        turn["conversation_turn_count"] = len(messages)
+        try:
+            turn["llm_input"] = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+        except Exception:
+            turn["llm_input"] = [str(msg) for msg in messages]
         
         print("Agent thinking...")
+        llm_start = time.time()
+        log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         text_stream = llm_provider.generate_response_stream(messages)
         
         spoken_text = []
+        ttft_logged = False
         async def text_stream_tee():
+            nonlocal ttft_logged
             async for chunk in text_stream:
+                if not ttft_logged:
+                    ttft_s = time.time() - llm_start
+                    turn["llm_ttft_s"] = round(ttft_s, 3)
+                    print(f"[Metrics] LLM Time to First Token: {ttft_s:.2f}s")
+                    ttft_logged = True
+                    log_event("LLM_FIRST_TOKEN", turn_id=turn.get("turn"), response_id=response_id)
                 print(chunk, end="", flush=True)
                 spoken_text.append(chunk)
+                session.recent_agent_text += chunk
                 yield chunk
-            print()
+            print(f"\n[Metrics] LLM Total Generation Time: {time.time() - llm_start:.2f}s")
+            turn["llm_response"] = "".join(spoken_text)
+            log_event("LLM_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
             
-        audio_stream = tts_provider.synthesize_stream(text_stream_tee())
-        
+        print("Agent speaking...")
+        agent_speaking_event.set()
+        tts_start = time.time()
+        ttfa_logged = False
+        log_event("TTS_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         try:
-            print("Agent speaking...")
+            audio_stream = tts_provider.synthesize_stream(text_stream_tee())
             async for audio_chunk in audio_stream:
+                if not ttfa_logged:
+                    ttfa_s = time.time() - tts_start
+                    turn["tts_first_audio_s"] = round(ttfa_s, 3)
+                    print(f"[Metrics] TTS Time to First Audio: {ttfa_s:.2f}s")
+                    ttfa_logged = True
+                    log_event("TTS_FIRST_AUDIO", turn_id=turn.get("turn"), response_id=response_id)
+                    log_event("PLAYBACK_STARTED", turn_id=turn.get("turn"), response_id=response_id)
+                log_event("TTS_AUDIO_CHUNK", turn_id=turn.get("turn"), response_id=response_id)
                 if agent_source is not None:
                     await agent_source.capture_frame(audio_chunk.frame)
             
+            print(f"[Metrics] TTS Total Synthesis Time: {time.time() - tts_start:.2f}s")
+            log_event("TTS_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+            
+            if hasattr(agent_source, "wait_for_playout"):
+                await agent_source.wait_for_playout()
+
+            print("Agent finished speaking.")
+            turn["response_trigger_reason"] = "completed"
+            log_event("PLAYBACK_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+            log_event("AGENT_TASK_COMPLETED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
+            
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
-            print("Agent finished speaking.")
             
         except asyncio.CancelledError:
             print("\n[Agent was interrupted]")
+            turn["interrupted"] = True
+            turn["interruption_timestamp"] = datetime.now(timezone.utc).isoformat()
+            log_event("AGENT_CANCELLED_EXCEPTION", turn_id=turn.get("turn"), response_id=response_id)
+            log_event("AGENT_TASK_CANCELLED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
+            await flush_audio_source(agent_source)
             truncated_message = "".join(spoken_text).strip()
-            if truncated_message:
-                session.add_agent_message(truncated_message + " [interrupted]")
+            if truncated_message and ttfa_logged:
+                session.add_agent_message(truncated_message, interrupted=True)
             raise
-
-    @ctx.room.on("track_subscribed")
-    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
-        if track.kind == rtc.TrackKind.KIND_AUDIO:
-            asyncio.create_task(process_user_audio(track))
+        finally:
+            agent_speaking_event.clear()
+            nonlocal agent_audio_ended_at
+            agent_audio_ended_at = time.monotonic()
 
     async def process_user_audio(track: rtc.RemoteAudioTrack):
-        nonlocal agent_source, agent_track, agent_task
+        nonlocal agent_task
         
         audio_stream = rtc.AudioStream(track)
         resampler = None
-        
         is_speaking = False
         speech_buffer = []
+        pre_roll_buffer = []
+        speech_start_ts = None
+        current_sample_rate = None
 
         print("Listening for user speech...")
         
+        print(f"AudioStream started, track muted: {track.muted}")
+        frame_count = 0
+        current_sample_rate = None
         async for event in audio_stream:
             frame = event.frame
+            frame_count += 1
             
-            if agent_source is None:
-                agent_source = rtc.AudioSource(48000, 1)
-                agent_track = rtc.LocalAudioTrack.create_audio_track("agent-mic", agent_source)
-                await ctx.room.local_participant.publish_track(agent_track)
-                
-            if resampler is None or getattr(resampler, "input_rate", 0) != frame.sample_rate:
-                resampler = rtc.AudioResampler(input_rate=frame.sample_rate, output_rate=16000)
-                
+            # Resampler always runs — keeps state warm
+            if current_sample_rate != frame.sample_rate:
+                current_sample_rate = frame.sample_rate
+                resampler = rtc.AudioResampler(
+                    input_rate=frame.sample_rate, output_rate=16000
+                )
+                print(f"Resampler created: {frame.sample_rate}Hz -> 16000Hz")
             resampled_frames = resampler.push(frame)
+
             for r_frame in resampled_frames:
                 audio_np = np.frombuffer(r_frame.data, dtype=np.int16)
-                
+                max_amp = np.max(np.abs(audio_np)) if len(audio_np) > 0 else 0
+                if frame_count <= 20:
+                    print(f"Frame {frame_count}: samples={len(audio_np)} max_amp={max_amp}")
+                elif max_amp > 50:
+                    print(f"Audio level spike: {np.max(np.abs(audio_np))}")
+
+                vad_start = time.time()
+                # VAD always runs — needed to detect interruptions
                 vad_events = vad_provider.process_audio(audio_np)
-                
+                vad_time = time.time() - vad_start
+                if frame_count % 50 == 0:
+                    print(f"[Metrics] VAD Processing Time (per frame): {vad_time * 1000:.2f}ms")
+
+                # Maintain 300ms pre-roll buffer (4800 samples at 16kHz)
+                pre_roll_buffer.extend(audio_np.tolist())
+                if len(pre_roll_buffer) > 4800:
+                    pre_roll_buffer = pre_roll_buffer[-4800:]
+
+                # ALWAYS buffer speech if speaking (we evaluate echo later)
                 if is_speaking:
                     speech_buffer.append(audio_np)
-                
+
                 for vad_event in vad_events:
                     if vad_event == VADEvent.SPEECH_STARTED:
                         is_speaking = True
-                        speech_buffer = [audio_np]
-                        print("User started speaking...")
                         
-                        # MODULE 9: INTERRUPT AGENT
-                        if agent_task and not agent_task.done():
-                            agent_task.cancel()
+                        # Prepend the pre-roll buffer to capture the speech onset
+                        audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
+                        speech_buffer = [audio_pre_roll, audio_np] if len(audio_pre_roll) > 0 else [audio_np]
                         
+                        speech_start_ts = datetime.now(timezone.utc).isoformat()
+                        
+                        if agent_speaking_event.is_set():
+                            print("BARGE_IN_CANDIDATE: Agent is speaking. Buffering to evaluate.")
+                            log_event("BARGE_IN_CANDIDATE", turn_id=turn_number + 1, details={"agent_speaking": True})
+                        else:
+                            log_event("USER_SPEECH_STARTED", turn_id=turn_number + 1)
+                            print(f"User started speaking... (pre-roll: {len(audio_pre_roll)} samples)")
                     elif vad_event == VADEvent.SPEECH_ENDED:
                         is_speaking = False
-                        print("User stopped speaking. Transcribing...")
+                        print("User/Echo stopped. Transcribing to evaluate...")
+                        log_event("USER_SPEECH_ENDED", turn_id=turn_number + 1)
                         if not speech_buffer:
                             continue
-                            
                         full_audio = np.concatenate(speech_buffer)
-                        float_audio = full_audio.astype(np.float32) / 32768.0
+                        speech_duration_ms = (len(full_audio) / 16000) * 1000
                         
-                        try:
-                            transcript = stt_provider.transcribe(float_audio)
-                            print(f"User: {transcript.text}")
+                        # TRUE audio metrics calculation
+                        peak_amplitude = int(np.max(np.abs(full_audio)))
+                        rms_amplitude = float(np.sqrt(np.mean(np.square(full_audio.astype(np.float64)))))
+                        mean_absolute_amplitude = float(np.mean(np.abs(full_audio)))
+                        
+                        print(f"Audio Segment Metrics: duration={speech_duration_ms:.1f}ms, "
+                              f"peak={peak_amplitude}, rms={rms_amplitude:.1f}, mean_abs={mean_absolute_amplitude:.1f}")
+                        
+                        MIN_RMS_AMPLITUDE = 2000
+                        MIN_PEAK_AMPLITUDE = 3500
+                        
+                        if rms_amplitude < MIN_RMS_AMPLITUDE and peak_amplitude < MIN_PEAK_AMPLITUDE:
+                            print("AUDIO_GATE_REJECTED: Signal below speech energy threshold.")
+                            log_event("AUDIO_GATE_REJECTED", turn_id=turn_number + 1, details={
+                                "rms": rms_amplitude, "peak": peak_amplitude, "duration": speech_duration_ms
+                            })
+                            speech_buffer = []
+                            continue
                             
-                            if transcript.text.strip():
-                                agent_task = asyncio.create_task(run_agent_response(transcript.text))
-                        except Exception as e:
-                            print(f"STT Error: {e}")
-                            
+                        print("AUDIO_GATE_PASSED: Proceeding to STT.")
+                        
+                        float_audio = full_audio.astype(np.float32) / 32768.0
+                        speech_end_ts = datetime.now(timezone.utc).isoformat()
+                        
+                        async def transcribe_and_respond(audio_data, duration_ms, speech_start_ts, 
+                                                          speech_end_ts, agent_was_speaking_at_detection: bool,
+                                                          ms_since_agent_audio_end: float = None,
+                                                          prev_task = None):
+                            nonlocal turn_number
+                            turn_number += 1
+                            turn = {
+                                "turn": turn_number,
+                                "user_speech_start": speech_start_ts,
+                                "user_speech_end": speech_end_ts,
+                                "agent_was_speaking": agent_was_speaking_at_detection,
+                                "ms_since_agent_audio_end": ms_since_agent_audio_end,
+                                "stt_transcript": None,
+                                "stt_language": None,
+                                "stt_no_speech_prob": None,
+                                "stt_avg_logprob": None,
+                                "stt_compression_ratio": None,
+                                "stt_latency_s": None,
+                                "stt_valid": None,
+                                "stt_rejection_reason": None,
+                                "response_trigger_reason": None,
+                                "llm_input": None,
+                                "llm_response": None,
+                                "llm_ttft_s": None,
+                                "tts_first_audio_s": None,
+                                "interrupted": False,
+                                "interruption_timestamp": None,
+                            }
+                            try:
+                                log_event("STT_STARTED", turn_id=turn.get("turn"))
+                                stt_start = time.time()
+                                transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
+                                turn["stt_latency_s"] = round(time.time() - stt_start, 3)
+                                log_event("STT_COMPLETED", turn_id=turn.get("turn"))
+
+                                if not transcript:
+                                    print("STT returned no text")
+                                    return
+
+                                turn["stt_transcript"] = transcript.text
+                                turn["stt_language"] = transcript.language
+                                turn["stt_no_speech_prob"] = transcript.no_speech_prob
+                                turn["stt_avg_logprob"] = transcript.avg_logprob
+                                turn["stt_compression_ratio"] = transcript.compression_ratio
+
+                                is_echo_detected, similarity = is_echo(transcript.text, session.recent_agent_text)
+                                if is_echo_detected:
+                                    print(f"ECHO_DETECTED: similarity={similarity:.2f}")
+                                    log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
+                                    return
+                                    
+                                is_valid, rejection_reason = is_real_user_turn(transcript, duration_ms)
+                                turn["stt_valid"] = is_valid
+                                turn["stt_rejection_reason"] = rejection_reason
+
+                                print(f"[STT] '{transcript.text}' | valid={is_valid} | "
+                                      f"lang={transcript.language} | "
+                                      f"no_speech={transcript.no_speech_prob} | "
+                                      f"logprob={transcript.avg_logprob}")
+
+                                if agent_was_speaking_at_detection:
+                                    log_event("BARGE_IN_EVALUATED", turn_id=turn.get("turn"), details={
+                                        "transcript": transcript.text,
+                                        "valid": is_valid,
+                                        "reason": rejection_reason,
+                                        "duration_ms": duration_ms,
+                                        "decision": "INTERRUPT_AGENT" if is_valid else "IGNORE_ECHO"
+                                    })
+
+                                if not is_valid:
+                                    print(f"[STT Rejected] reason={rejection_reason}")
+                                    return
+                                    
+                                if prev_task and not prev_task.done():
+                                    print("AGENT_INTERRUPTED_BY_USER")
+                                    log_event("AGENT_TASK_CANCEL_REQUESTED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task())), "previous_task_id": str(id(prev_task))})
+                                    prev_task.cancel()
+
+                                if not (speech_start_ts and speech_end_ts and transcript.text.strip() and turn_number):
+                                    print("[Turn Gate Rejected] Missing valid turn lifecycle state")
+                                    return
+
+                                turn["response_trigger_reason"] = "user_speech_ended"
+                                await run_agent_response(transcript.text, turn)
+
+                            except asyncio.CancelledError:
+                                turn["interrupted"] = True
+                                turn["interruption_timestamp"] = datetime.now(timezone.utc).isoformat()
+                                print("[STT cancelled]")
+                            except Exception as e:
+                                print(f"Pipeline Error: {e}")
+                            finally:
+                                log_turn(turn)
+                                
+                        agent_was_speaking = agent_speaking_event.is_set()
+                        ms_since_end = None
+                        if agent_audio_ended_at is not None:
+                            ms_since_end = round(
+                                (time.monotonic() - agent_audio_ended_at) * 1000, 1
+                            )
+                        previous_task = agent_task
+                        agent_task = asyncio.create_task(
+                            transcribe_and_respond(
+                                float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
+                                agent_was_speaking, ms_since_end, prev_task=previous_task
+                            )
+                        )
                         speech_buffer = []
+
+    # Handle tracks from participants that join AFTER the agent
+    @ctx.room.on("track_subscribed")
+    def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
+        if track.kind == rtc.TrackKind.KIND_AUDIO:
+            print(f"New audio track subscribed from {participant.identity}")
+            asyncio.create_task(process_user_audio(track))
+
+    # Handle tracks from participants ALREADY in the room when agent connects
+    for participant in ctx.room.remote_participants.values():
+        for publication in participant.track_publications.values():
+            if publication.track and publication.track.kind == rtc.TrackKind.KIND_AUDIO:
+                print(f"Found existing audio track from {participant.identity}")
+                asyncio.create_task(process_user_audio(publication.track))
 
 if __name__ == "__main__":
     cli.run_app(

@@ -17,3 +17,6 @@ class Config:
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
     FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY")
     FISH_AUDIO_REFERENCE_ID = os.getenv("FISH_AUDIO_REFERENCE_ID")
+    
+    NO_SPEECH_THRESHOLD = float(os.getenv("NO_SPEECH_THRESHOLD", "0.6"))
+    AVG_LOGPROB_THRESHOLD = float(os.getenv("AVG_LOGPROB_THRESHOLD", "-1.0"))

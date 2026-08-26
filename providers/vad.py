@@ -14,7 +14,7 @@ class VADProvider:
         raise NotImplementedError
 
 class TenVADProvider(VADProvider):
-    def __init__(self, hop_size=256, threshold=0.5, silence_duration_ms=500, sample_rate=16000):
+    def __init__(self, hop_size=256, threshold=0.5, silence_duration_ms=300, sample_rate=16000, min_speech_ms=200):
         self.vad = ten_vad.TenVad(hop_size=hop_size, threshold=threshold)
         self.hop_size = hop_size
         self.threshold = threshold
@@ -22,13 +22,24 @@ class TenVADProvider(VADProvider):
         
         self.is_speaking = False
         self.silence_frames_threshold = int((silence_duration_ms / 1000) * sample_rate / hop_size)
-        self.speech_frames_threshold = 2
+        self.speech_frames_threshold = int((min_speech_ms / 1000) * sample_rate / hop_size)
         
         self.silence_frames = 0
         self.speech_frames = 0
 
     def process_audio(self, audio_chunk: np.ndarray) -> list[VADEvent]:
-        self.buffer = np.concatenate((self.buffer, audio_chunk.astype(np.int16)))
+        # Temporary diagnostic logging
+        print(f"VAD Input -> dtype: {audio_chunk.dtype}, min: {audio_chunk.min()}, max: {audio_chunk.max()}, mean: {audio_chunk.mean()}")
+        
+        # We need to ensure we don't multiply by 32767 if it's already int16 scale
+        if audio_chunk.dtype == np.float32 or audio_chunk.dtype == np.float64:
+            int16_chunk = np.clip(audio_chunk * 32767.0, -32768, 32767).astype(np.int16)
+        else:
+            int16_chunk = audio_chunk.astype(np.int16)
+            
+        print(f"converted int16 min: {int16_chunk.min()}, max: {int16_chunk.max()}")
+        
+        self.buffer = np.concatenate((self.buffer, int16_chunk))
         events = []
         
         while len(self.buffer) >= self.hop_size:
