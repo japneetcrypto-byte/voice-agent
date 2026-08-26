@@ -37,6 +37,14 @@ async def main() -> int:
 
     from providers.tts import FishAudioTTSProvider
 
+    # Outside the agent worker, plugins require an explicit http session context.
+    try:
+        from livekit.agents.utils import http_context
+        ctx = http_context.open()
+    except ImportError:
+        import contextlib
+        ctx = contextlib.nullcontext()
+
     try:
         provider = FishAudioTTSProvider()
     except ValueError as e:
@@ -53,11 +61,16 @@ async def main() -> int:
     frames, first_at = [], None
     t0 = time.perf_counter()
     try:
-        async with asyncio.timeout(120):
+        async with ctx, asyncio.timeout(30):
             async for a in provider.synthesize_stream(text_stream()):
                 if first_at is None:
                     first_at = time.perf_counter() - t0
                 frames.append(a.frame)
+    except TimeoutError:
+        if not frames:
+            print("RESULT: server connected but sent NO audio in 30s (silent stall).")
+            print("Next: uv run python infra/fish_raw_probe.py — it prints the server's raw response.")
+            return 1
     except Exception as e:
         print(f"RESULT: Fish Audio FAILED -> {type(e).__name__}: {str(e)[:300]}")
         print("Worker will log [TTS Fallback] and EdgeTTS would speak instead.")
