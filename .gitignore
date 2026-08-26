@@ -2,6 +2,7 @@
 __pycache__/
 logs/
 *.mp3
+*.wav
 *.log
 session_summary.jsonl
 .DS_Store
@@ -10,3 +11,6 @@ session_summary.jsonl
 infra/oracle/keys/oracle_vm_ed25519
 infra/oracle/keys/*.pem
 samples/
+
+# Phase 4 datasets (consented real data never enters git)
+datasets/

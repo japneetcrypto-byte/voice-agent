@@ -79,11 +79,13 @@ No architecture change · no production implementation · no new state dimension
 | T4.7 U3 separability analysis | Adopt/defer decision with data | T4.3 |
 | T4.8 Evaluation report + **Phase 5 scope lock proposal** | Owner-ready summary | all |
 
-## 9. Decisions needed to start Phase 4 execution
+## 9. Owner decisions (2026-08-26) — RESOLVED
 
-| # | Decision | Options |
+| # | Decision | Ruling |
 |---|---|---|
-| **D-4a** | Dataset sourcing for D-A | (a) your recordings + consented friends/family (recommended — real Hinglish, fastest) · (b) synthetic-only start (weaker, no acoustic channel) · (c) mixed phased |
-| **D-4b** | Green-light T4.1 safety taxonomy investigation (research/reading task — no code) | yes/no |
-| **D-4c** | Golden-suite authoring can start now in parallel | yes/no |
-| **D-4d** | Confirm interpretation: "implementation phase" in your last message = **proceeding per the documented plan** (Phase 4 evaluation design now; Phase 5 production implementation only after these gates exist and pass) | confirm / override |
+| D-4a | Dataset sourcing | **Phased mix** — existing synthetic corpus first (golden-suite authoring), then owner's own + consented friends/family recordings; **synthetic vs real data clearly tagged** |
+| D-4b | T4.1 safety taxonomy investigation | **GREEN-LIT** — research only, no code/architecture changes |
+| D-4c | Golden-suite authoring in parallel | **YES — start immediately**; safety-taxonomy-dependent items marked provisional |
+| D-4d | Interpretation boundary (confirmed) | **LLM interprets** the user's turn into the perception head; the deterministic updater **validates/normalizes LLM output and applies defined rules — it never interprets the conversation**; invalid/ambiguous LLM output → predefined degradation/fallbacks (C7). **No hidden interpretation logic in the deterministic layer.** |
+
+**Sequence confirmed:** Phase 4 (evaluation) first → Phase 5 (implementation) only after contracts/evaluation are locked.

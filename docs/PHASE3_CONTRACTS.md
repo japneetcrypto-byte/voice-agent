@@ -154,6 +154,7 @@ Head `thread.action` is **advisory**. The deterministic updater resolves it:
 13. Ledger update — only fully-spoken responses count toward `advice_given`/`last_move`.
 
 - **Update log:** every run appends reason-coded entries (`NORM-LABEL`, `NORM-VALENCE`, `CORR-OVERRIDE`, `CAP-CHANNEL`, `TRAJ-*`, `DECAY`, `THREAD-DEGRADE`, `HYST-BLOCK`, `SAFE-OVERRIDE`, `SAFE-HYSTERESIS`, `POLICY-*`) — the regression-testable audit trail required by v1.1 §4.8 failure modes.
+- **Interpretation boundary (owner clarification, locked 2026-08-26):** the LLM is the *only* component that interprets the user's natural language (into the perception head). The updater validates/normalizes that output and applies the defined rules — **it never interprets the conversation, and no hidden interpretation logic may be added to the deterministic layer.** Invalid/ambiguous LLM output → C7 degradation contracts.
 
 ## C7. Failure & degradation contracts
 
