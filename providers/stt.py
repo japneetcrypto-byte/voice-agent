@@ -60,9 +60,14 @@ class GroqSTT(STTProvider):
         # Language: forced via AIVA_STT_LANGUAGE; otherwise session auto-detect.
         stt_temperature = float(os.getenv("AIVA_STT_TEMPERATURE", "0.0"))
         stt_prompt = os.getenv("AIVA_STT_PROMPT", "")  # default: no prompt (leak evidence)
+        # Model: whisper-large-v3 (OWNER-APPROVED upgrade 2026-08-27, evidence:
+        # turbo produced garbled-but-'valid' Hindi that the LLM could not follow).
+        # Same provider (Groq), same free-tier limits, ~1s latency difference.
+        # Revert: AIVA_STT_MODEL=whisper-large-v3-turbo
+        stt_model = os.getenv("AIVA_STT_MODEL", "whisper-large-v3")
         kwargs = dict(
             file=("audio.wav", wav_io.read()),
-            model="whisper-large-v3-turbo",
+            model=stt_model,
             response_format="verbose_json",
             temperature=stt_temperature,
         )
