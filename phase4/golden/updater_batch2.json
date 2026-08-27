@@ -1025,6 +1025,85 @@
      }
     }
    }
+  },
+  {
+   "id": "U17",
+   "purpose": "emotion_reflection reaches policy at confidence >= 0.7 (locked 4.8)",
+   "initial_state": {
+    "emotion": {
+     "primary": "neutral_unclear",
+     "valence": "neutral",
+     "intensity": {
+      "ordinal": 2
+     },
+     "confidence": 0.3
+    }
+   },
+   "steps": [
+    {
+     "turn": 11,
+     "head": {
+      "emotion": {
+       "primary": "sadness",
+       "valence": "negative",
+       "intensity": {
+        "ordinal": 4
+       },
+       "confidence": 0.85
+      }
+     },
+     "turn_record": {
+      "acoustic_available": true
+     }
+    }
+   ],
+   "expect": {
+    "policy": {
+     "emotion_reflection": {
+      "label_to_use": "sadness",
+      "ok_to_name": true,
+      "user_interpretation_neutral": true
+     }
+    }
+   }
+  },
+  {
+   "id": "U18",
+   "purpose": "emotion_reflection withholds label below threshold",
+   "initial_state": {
+    "emotion": {
+     "primary": "neutral_unclear",
+     "valence": "neutral",
+     "intensity": {
+      "ordinal": 2
+     },
+     "confidence": 0.3
+    }
+   },
+   "steps": [
+    {
+     "turn": 11,
+     "head": {
+      "emotion": {
+       "primary": "anger_frustration",
+       "valence": "negative",
+       "intensity": {
+        "ordinal": 3
+       },
+       "confidence": 0.55
+      }
+     }
+    }
+   ],
+   "expect": {
+    "policy": {
+     "emotion_reflection": {
+      "label_to_use": null,
+      "ok_to_name": false,
+      "user_interpretation_neutral": true
+     }
+    }
+   }
   }
  ]
 }

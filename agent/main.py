@@ -180,7 +180,8 @@ async def entrypoint(ctx: JobContext):
         
         session.recent_agent_text = ""
         response_id = f"R{turn.get('turn', 0)}"
-        session.add_user_message(user_text)
+        if turn.get("turn_type", "speech") == "speech":
+            session.add_user_message(user_text)
         messages = session.get_context()
         turn["conversation_turn_count"] = len(messages)
         try:
@@ -262,8 +263,10 @@ async def entrypoint(ctx: JobContext):
             if engine and engine.get("sess"):
                 try:
                     tr = {"turn": turn.get("turn"),
-                           "response_completed": True,
-                           "interrupted": False,
+                            "turn_type": turn.get("turn_type", "speech"),
+                            "acoustic": turn.get("acoustic"),
+                            "response_completed": True,
+                            "interrupted": False,
                            "policy_derived": {"mode": (turn.get("policy") or {}).get("mode")},
                            "last_move": "response_completed"}
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
@@ -300,6 +303,8 @@ async def entrypoint(ctx: JobContext):
             agent_speaking_event.clear()
             nonlocal agent_audio_ended_at
             agent_audio_ended_at = time.monotonic()
+            if engine:
+                idle_state["last_activity"] = time.monotonic()
 
     async def process_user_audio(track: rtc.RemoteAudioTrack, participant=None):
         nonlocal agent_task
@@ -367,6 +372,9 @@ async def entrypoint(ctx: JobContext):
                 for vad_event in vad_events:
                     if vad_event == VADEvent.SPEECH_STARTED:
                         is_speaking = True
+                        if engine:
+                            idle_state["last_activity"] = time.monotonic()
+                            idle_state["line_sent"] = False
                         
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
@@ -421,6 +429,9 @@ async def entrypoint(ctx: JobContext):
                             turn_number += 1
                             turn = {
                                 "turn": turn_number,
+                                "acoustic": {"duration_ms": round(speech_duration_ms, 1),
+                                              "rms": round(rms_amplitude, 1),
+                                              "peak": int(peak_amplitude)},
                                 "user_speech_start": speech_start_ts,
                                 "user_speech_end": speech_end_ts,
                                 "agent_was_speaking": agent_was_speaking_at_detection,
@@ -485,6 +496,15 @@ async def entrypoint(ctx: JobContext):
 
                                 if not is_valid:
                                     print(f"[STT Rejected] reason={rejection_reason}")
+                                    # C7/D7: real speech detected (energy gate passed) but no
+                                    # valid transcript -> acoustic-only presence turn. Never on
+                                    # echo (agent's own voice) or while the agent is speaking.
+                                    if (engine and engine.get("sess")
+                                            and not agent_was_speaking_at_detection
+                                            and not transcript.text.strip()):
+                                        turn["turn_type"] = "acoustic_only"
+                                        turn["response_trigger_reason"] = "acoustic_only_presence"
+                                        await run_agent_response(transcript.text, turn)
                                     return
                                     
                                 if prev_task and not prev_task.done():
@@ -522,6 +542,32 @@ async def entrypoint(ctx: JobContext):
                             )
                         )
                         speech_buffer = []
+
+    # ---- C7/D8 idle watcher: 45s without speech or agent audio -> one open-door line ----
+    idle_state = {"last_activity": time.monotonic(), "line_sent": False, "seq": 1000}
+
+    async def idle_watcher():
+        while True:
+            await asyncio.sleep(5)
+            try:
+                if not (engine and engine.get("sess")):
+                    continue
+                if agent_speaking_event.is_set():
+                    idle_state["last_activity"] = time.monotonic()
+                    continue
+                idle_for = time.monotonic() - idle_state["last_activity"]
+                if idle_for >= 45 and not idle_state["line_sent"]:
+                    idle_state["line_sent"] = True
+                    idle_state["seq"] += 1
+                    idle_turn = {"turn": idle_state["seq"], "turn_type": "idle",
+                                  "response_trigger_reason": "idle_45s"}
+                    print("[StateEngine] idle 45s - open-door turn")
+                    await run_agent_response("", idle_turn)
+            except Exception as e:
+                print(f"[StateEngine] idle watcher error: {type(e).__name__}: {e}")
+
+    if engine:
+        asyncio.create_task(idle_watcher())
 
     # Phase 5: session-end memory commit (best effort; SDK hook may vary)
     async def _commit_session_memory():
