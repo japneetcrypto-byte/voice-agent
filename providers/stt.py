@@ -74,12 +74,42 @@ class GroqSTT(STTProvider):
             kwargs["prompt"] = stt_prompt
         transcription = self.client.audio.transcriptions.create(**kwargs)
 
-        # learn the session language from the first decent detection
-        if self.auto_mode and getattr(transcription, "language", None):
-            detected = normalize_lang(transcription.language)
-            if detected and not self.session_language:
-                self.session_language = detected
-                print(f"[STT] session language detected: {detected}")
+        # ---- session language learning (auto mode only) ----
+        # Learn ONLY from a qualifying utterance: >=1.2s audio, >=3 words, and
+        # not catastrophic confidence. Junk greetings ("Mm-hmm") must never
+        # teach the session language (evidence: 2026-08-27 run locked English
+        # from a 0.5s grunt, force-decoding all subsequent Hindi as English).
+        if self.auto_mode:
+            duration_ms = len(audio_data) / 16
+            n_words = len((transcription.text or "").split())
+            seg_conf = None
+            if getattr(transcription, "segments", None):
+                seg = transcription.segments[0]
+                seg_conf = seg.get("avg_logprob") if isinstance(seg, dict) else getattr(seg, "avg_logprob", None)
+            qualifies = (duration_ms >= 1200 and n_words >= 3
+                          and (seg_conf is None or seg_conf >= -1.0))
+            detected = normalize_lang(getattr(transcription, "language", "") or "")
+            if detected:
+                if not self.session_language:
+                    if qualifies:
+                        self.session_language = detected
+                        self.mismatch_streak = 0
+                        print(f"[STT] session language learned: {detected} "
+                              f"({duration_ms:.0f}ms, {n_words} words, conf={seg_conf})")
+                    else:
+                        print(f"[STT] detection '{detected}' not qualifying yet "
+                              f"({duration_ms:.0f}ms, {n_words} words) — staying unpinned")
+                else:
+                    # pinned mode: catastrophic confidence means the pin may be
+                    # wrong -> re-open detection after 2 consecutive failures
+                    if seg_conf is not None and seg_conf < -1.0:
+                        self.mismatch_streak = getattr(self, "mismatch_streak", 0) + 1
+                        if self.mismatch_streak >= 2:
+                            self.session_language = None
+                            self.mismatch_streak = 0
+                            print("[STT] confidence poor twice — re-opening language detection")
+                    else:
+                        self.mismatch_streak = 0
         
         # Owner decision 2026-08-27: feed Devanagari to the LLM directly.
         # (Roman-Hinglish remains the REPLY style; echo comparison romanizes separately.)
