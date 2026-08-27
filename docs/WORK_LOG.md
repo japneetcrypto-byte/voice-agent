@@ -1,0 +1,91 @@
+# Aiva — Work Log & Struggle Chronicle
+**From first commit of this effort (2026-08-26) to now · branch `arena/01a03e6f-voice-agent` · everything that was attempted, broken, learned, and fixed.**
+
+---
+
+## The one-paragraph story
+
+We started with a voice agent that technically worked (mic → speech-to-text → LLM → voice reply over LiveKit) but conversed like a bad IVR: it interrupted mid-story, answered garbled audio with confident nonsense, had no memory, no emotional awareness, and replied in templates. We turned it into a stateful conversational system through ~30 commits: a locked design phase (state model, contracts), a measured validation of the core mechanism (fused perception), a full evaluation pass with pre-registered gates, and then implementation — discovering along the way that the hardest problems were not the LLM but **timing** (when to speak), **input quality** (what was actually said), and **context discipline** (what to know vs. what to say). The current system detects emotion per turn, remembers across sessions, waits through thinking-pauses, asks you to repeat when audio is garbled, handles self-harm statements with a locked safety protocol, and replies in your language with your cloned voice's persona. It is one live validation away from production-ready.
+
+---
+
+## Timeline of everything we fought
+
+### 1. Phase 1 — Ground truth & planning (before touching behavior)
+- **"What is all live?"** — audited the repo. Found the MVP was 4 local terminals, no deployments, and a README that lied: Fish Audio was "configured" but the TTS actually in use was **EdgeTTS with a robotic default Hindi voice**. This pattern (docs ≠ code) repeated all project long.
+- **Oracle free-VM plan** (self-hosting Fish Speech) — fully planned, then parked when you revealed the real goal was realtime conversational quality; Oracle's A1 capacity issues + CPU-only inference made it the wrong first battle.
+- **Deliverables:** `PHASE1_PLAN.md` (scope lock, decision log), `infra/oracle/bootstrap.sh` + SSH keys (still unused, still ready).
+
+### 2. Phase 2 — The state model (design before code)
+- **Emotional Conversation State Model v1**: 7 state dimensions + Response Policy, built from 16–18 scenario walkthroughs (venting, sarcasm, Hinglish, barge-in, reconnection, safety…).
+- **Self-inflicted wound we caught in review:** my own design had `user_energy_trend` in Conversation State — a boundary violation (feelings belong to Emotion State). Stress-test review fixed it plus 5 other over-engineered fields.
+- **The memory contradiction:** the model assumed cross-session memory, but the code had random room names, everyone named "user", and two non-communicating workers. Resolved by owner decision: **anonymous device-scoped UUID** (O2).
+- **Locked** after amendments A1–A10 + owner rulings O1–O3 (voice-only safety resources, device ID, fused perception).
+
+### 3. Phase 3 — Validation before contracts
+- **Task 1 (fused perception):** hypothesis — ONE Gemini call can output both a structured perception head (emotion/safety/thread) and the spoken reply. First live run: **every fused call crashed** (my `nonlocal` closure bug) **and** the pacing code was silently absent → 429 storm. Fixed both; rerun gave a clean **VIABLE**: 30/30 parseable, safety 6/6, +0.29s latency cost.
+- **The lesson:** validate infrastructure claims with measurement, not prose.
+
+### 4. Phase 3 — Data contracts (the constitution)
+- Locked `aiva.*` contracts: perception-head schema with an exact emotion taxonomy, persona contract (masculine self-reference to match the cloned voice — the model kept saying "main sun rahi hoon" in *your* voice), thread semantics, transport byte-shape, device identity, a **deterministic updater** (LLM interprets, code applies rules — the deepest principle of the project), and 9 degradation paths (D1–D9).
+- **Amendment U7** (after your boundary question): the optional `correction {present, about}` head field — the LLM flags corrections, code applies them; never the reverse. Also killed a subtle trap: a correction can never "rescue" an invalid label.
+- Struggles documented honestly: 6 flagged decisions (U1–U6) rather than silent choices.
+
+### 5. Phase 4 — Evaluation with pre-registered gates
+- **Golden suite**: 19 fixtures covering all 18 scenarios with tolerance-band assertions.
+- **Batch-2**: 20 deterministic updater fixtures (trajectories, decay, hysteresis, safety de-escalation, correction, degradation). Built a reference updater to run them — which later became the production module.
+- **The harness ate its own dog food**: when live failures came in, the fixtures and reference implementation caught every regression before users did.
+- **T4.1 safety taxonomy** (research-locked): C-SSRS-graded escalation, Tele-MANAS 14416 as the spoken helpline, figurative-vs-explicit two-tier response, India-specific resources. Your "validate emotion, not accusation" principle became `user_interpretation_neutral`.
+- **D-C safety dataset** (55 items) authored with the locked taxonomy.
+
+### 6. The STT saga (the longest-running enemy)
+This was the deepest pit, with four distinct sub-bosses:
+1. **Language drift**: short Hinglish clips transcribed as Spanish, Romanian, Icelandic ("Júka bara að öllu hvað"), even `¿Me hiciste tu pregunta...?` — because no language pin existed. Fixed by pinning (`AIVA_STT_LANGUAGE=hi`).
+2. **Prompt leakage**: my "fix" (a Hinglish-bias `initial_prompt`) leaked into transcripts — the model literally transcribed *"Raman Hindi, Hindi and English words"* as user speech. Removed by default.
+3. **Repetition loops**: "अजयार के अजयार के अजयार" — Whisper's degeneration mode. Fixed with `temperature=0` + a deterministic detector that routes loops to the clarify path instead of the LLM.
+4. **Turbo-tier Hindi accuracy**: garbled-but-"valid" transcripts ("वो शो मले ने पहता है") that the LLM couldn't follow → "samajh nahi pa raha". Fixed by upgrading to **whisper-large-v3** (same Groq provider, owner-approved, env-revertible).
+5. **The language-learning bug**: session language was learned from the FIRST utterance — which was often a junk "Mm-hmm" grunt → session locked to the wrong language → every subsequent Hindi utterance force-decoded as English. Fixed with qualification rules (≥1.2s, ≥3 words, non-catastrophic confidence) and wrong-pin recovery.
+
+### 7. Phase 5 implementation — where "done" kept not meaning done
+Implemented 5.1–5.7 (transport, production updater, session state, degradation, identity, memory, worker wiring), but the live runs exposed a **recurring theme: commit ≠ working**:
+- **The silence bug**: a rename refactor updated the import but not the usage → `NameError` inside the failure handler → agent went silent exactly when LLM calls failed. Plus whitespace-only "speech" blocking the fallback.
+- **The uninitialized attribute**: `SessionState.policy` was never created in `__init__` — first live turn raised `AttributeError`, swallowed by the generic handler → "Pipeline Error" and silence. Caught by building an offline pipeline check.
+- **The missing wiring (twice)**: the Turn Controller and the emotion_reflection policy field were *committed* but the `main.py` wiring silently failed to land in workspace resets — your logs ("decision: respond" everywhere, no WAITs) exposed it. This workspace resets between sessions and has eaten edits repeatedly; recovery scripts and per-anchor verification became standard practice.
+- **First-turn memory "bug"**: Aiva referenced old sessions on a fresh hello. Root cause: **by design** — device-scoped memory seeding. The actual gap was that the persona never said *when* memory may be mentioned. Fixed with the MEMORY IS BACKGROUND rule + explicit BAD/GOOD examples.
+
+### 8. Endpointing — the final boss
+- Diagnosed from your logs: **25%+ premature endpoints** on continuous Hindi speech; one monologue fragmented into 32 STT chunks; the cascade (premature reply → barge-in → corrupted STT → worse replies) traced end-to-end.
+- **Fix 1**: adaptive endpointing (premature-resume penalty, long-speech floor, genuine-gap reset) — deterministic state machine, unit-tested with a fake clock.
+- **Fix 2 (after an independent gold-vs-log evaluation you ran)**: recalibrated for Hindi planning pauses (resume window 3s, penalty 400ms, floor 700ms after 5s, reset 4s). The evaluator's "speech endpoint ≠ conversational endpoint" became the project's core timing principle.
+- **Fix 3**: the Turn Controller — respond-vs-WAIT gate (trail-off connectors, fragments, questions-as-handoffs), so "मामला ये है कि..." pauses produce silence, and the eventual response sees the whole thought.
+- **Honest scorecard**: the endpointing recalibration and controller have *not yet* been validated together in a live continuous-speaker run — that's the open gate.
+
+### 9. What we deliberately did NOT do (scope discipline)
+No provider swaps (STT stayed Groq; LLM stayed Gemini flash-lite after an evidence-based audit showed no better free tier), no architecture rewrites, no new state dimensions beyond locked ones, no prosody work (Phase 4 optional), no streaming STT, no UI redesign (Phase 7), no fake VAD load tricks on Oracle (ban risk), no silent model changes — every layer change came to you with evidence and got your ruling first.
+
+---
+
+## Current state (2026-08-27)
+
+**Working & verified:**
+- Fused perception + response (one call): VIABLE, 30/30 parseable
+- Deterministic updater: 20/20 fixtures + byte-identical determinism
+- Safety: explicit self-harm 100% detected, figurative FP=0, Tele-MANAS protocol
+- Memory: cross-session via device UUID, with the new "MEMORY IS BACKGROUND" scoping rule
+- Turn-taking: adaptive endpointing + respond-vs-WAIT controller + backchannel/listen logic (deterministic, LLM-skipped where appropriate)
+- STT: session language auto-learning with qualification + wrong-pin recovery, repetition-loop defense
+- Full lifecycle telemetry + baseline/diagnostic tooling
+
+**Open:**
+- **Live validation** of endpointing + controller + memory-scoping together (the 30–60s continuous-speaker test) — Phase 5 stays OPEN until this passes
+- Continuing gates: G-EMO/G-CAL (needs your real-voice recordings), G-THREAD/G-MEM formal scoring, U3 acoustic-distress decision
+- Known residuals: model-tier ceiling (flash-lite), `clear_queue` SDK assumption unverified, D4 filler wording was approved but whisper v3 latency +0.5–1s is the current trade
+
+---
+
+## The principles that actually saved us
+1. **"LLM interprets; deterministic code decides."** Every hallucination/invention bug traced back to a violation of this; every fix enforced it.
+2. **Evidence before fixes.** Raw-capture tooling before patching; pre-registered gates before datasets; the gold evaluation before recalibration.
+3. **Commit ≠ working.** Verify wiring on disk, in the real flow, before claiming it.
+4. **Scope discipline.** ~10 owner-rulled decisions (O1–O3, U1–U7, D1–D7, D-4a–d) kept an emotionally-loaded, safety-critical product from becoming a moving-target rewrite.
+5. **The user's ear is the final gate.** Metrics caught regressions, but every "it doesn't *feel* like a conversation" report was real signal — and the biggest fixes (endpointing, register, memory discipline) came from listening to you.
