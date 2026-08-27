@@ -48,11 +48,19 @@ class GroqSTT(STTProvider):
         # Pin to Hindi (handles Hinglish + English code-switching); env-overridable.
         # NOT a provider/model change — API parameter only.
         stt_language = os.getenv("AIVA_STT_LANGUAGE", "hi")
+        # Evidence 2026-08-27: repetition loops ("ake ake ake") are a known Whisper
+        # failure mode on noisy/overlapping audio; temperature=0 (greedy) plus a
+        # Hinglish-bias prompt suppress them. API parameters only - same provider.
+        stt_temperature = float(os.getenv("AIVA_STT_TEMPERATURE", "0.0"))
+        stt_prompt = os.getenv("AIVA_STT_PROMPT",
+                                "Hinglish phone conversation. Roman Hindi, Hindi and English words.")
         transcription = self.client.audio.transcriptions.create(
             file=("audio.wav", wav_io.read()),
             model="whisper-large-v3-turbo",
             response_format="verbose_json",
             language=stt_language,
+            temperature=stt_temperature,
+            prompt=stt_prompt,
         )
         
         # Owner decision 2026-08-27: feed Devanagari to the LLM directly.

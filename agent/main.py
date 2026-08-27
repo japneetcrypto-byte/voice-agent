@@ -71,6 +71,26 @@ LISTEN_REQUEST_TOKENS = {"chup", "chupchup", "suno", "suno_bas", "bassuno", "peh
                           "beechmeinmatbolo", "chupraho", "meribaatsun", "pehlesunomera"}
 
 
+def is_repetition_loop(transcript_text: str) -> bool:
+    """Deterministic detector for Whisper degeneration (evidence 2026-08-27):
+    'ake ake ake ake', 'bake bake bake': same token repeated >=4x consecutively,
+    or one token dominating the transcript."""
+    words = re.findall(r"[\w\u0900-\u097F]+", (transcript_text or ""), re.UNICODE)
+    if len(words) >= 4:
+        run, prev = 1, None
+        for w in words:
+            lw = w.lower()
+            run = run + 1 if lw == prev else 1
+            prev = lw
+            if run >= 4 and len(prev) >= 2:
+                return True
+        from collections import Counter
+        top, n = Counter(w.lower() for w in words).most_common(1)[0]
+        if n >= 3 and len(top) >= 2 and n / len(words) >= 0.5:
+            return True
+    return False
+
+
 def classify_turn_relation(transcript_text: str) -> str:
     """Exact-token match on the normalized transcript (no interpretation)."""
     norm = re.sub(r"[^\w\s]", "", (transcript_text or "").lower()).strip()
@@ -293,6 +313,7 @@ async def entrypoint(ctx: JobContext):
                 "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
+                "synthesis_wall_s": round(time.time() - tts_start, 2),
             }
             print(f"[TurnEval] turn={turn.get('turn')} lang={turn.get('stt_language')} "
                   f"rel={turn.get('turn_relation')} spoke_because={turn.get('response_trigger_reason')} "
@@ -345,6 +366,15 @@ async def entrypoint(ctx: JobContext):
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
                 "interrupted_at_ms": round((time.time() - tts_audio_start) * 1000) if tts_audio_start else None,
             }
+            print("[TurnTrace] " + json.dumps({
+                "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
+                "stt": {"text": turn.get("stt_transcript"), "logprob": turn.get("stt_avg_logprob")},
+                "perception": bool(engine["fused"].head) if engine else None,
+                "prompt_version": turn.get("prompt_version"),
+                "response": (turn.get("llm_response") or "")[:120],
+                "tts": turn.get("tts"), "tts_text": (turn.get("tts_text") or "")[:100],
+                "interrupted": True,
+            }, ensure_ascii=False, default=str)[:1200])
             print("[TurnTrace] " + json.dumps({
                 "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
                 "stt": {"text": turn.get("stt_transcript"), "logprob": turn.get("stt_avg_logprob")},
@@ -603,11 +633,23 @@ async def entrypoint(ctx: JobContext):
                                     # valid transcript -> acoustic-only presence turn. Never on
                                     # echo (agent's own voice) or while the agent is speaking.
                                     if (engine and engine.get("sess")
-                                            and not agent_was_speaking_at_detection
-                                            and not transcript.text.strip()):
-                                        turn["turn_type"] = "acoustic_only"
-                                        turn["response_trigger_reason"] = "acoustic_only_presence"
-                                        await run_agent_response(transcript.text, turn)
+                                            and not agent_was_speaking_at_detection):
+                                        if not transcript.text.strip():
+                                            turn["turn_type"] = "acoustic_only"
+                                            turn["response_trigger_reason"] = "acoustic_only_presence"
+                                            await run_agent_response(transcript.text, turn)
+                                            return
+                                        # P0: garbled-but-present text (poor confidence or
+                                        # Whisper repetition loop) -> deterministic
+                                        # clarification, never invention
+                                        if rejection_reason in ("high_no_speech_prob",
+                                                                 "low_avg_logprob",
+                                                                 "catastrophic_low_confidence") \
+                                                or is_repetition_loop(transcript.text):
+                                            turn["turn_type"] = "unclear_speech"
+                                            turn["response_trigger_reason"] = "unclear_stt_clarify"
+                                            await run_agent_response(transcript.text, turn)
+                                            return
                                     return
                                     
                                 if prev_task and not prev_task.done():
