@@ -57,6 +57,8 @@ class SessionState:
         turn_record.setdefault("owner_id", self.owner_id)
         self.state, policy, log = update(self.state, turn_record, head)
         entry = {"turn": turn_record.get("turn"), "head": head,
+                  "head_raw_snippet": turn_record.get("head_raw_snippet"),
+                  "head_fail_class": turn_record.get("head_fail_class"),
                   "policy": policy, "log": log,
                   "state_digest": {"emotion_primary": self.state["emotion"]["primary"],
                                     "intensity": self.state["emotion"]["intensity"]["ordinal"],

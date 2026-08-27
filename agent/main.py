@@ -269,6 +269,10 @@ async def entrypoint(ctx: JobContext):
                             "interrupted": False,
                            "policy_derived": {"mode": (turn.get("policy") or {}).get("mode")},
                            "last_move": "response_completed"}
+                    if engine["fused"].head is None:
+                        turn["head_raw_snippet"] = engine["fused"].meta.get("head_raw_snippet", "")
+                        turn["head_fail_class"] = engine["fused"].meta.get("head_fail_class", "unknown")
+                        print(f"[StateEngine] PARSE-FAIL turn {turn.get('turn')} class={turn['head_fail_class']} raw={turn['head_raw_snippet'][:240]!r}")
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
                     turn["policy_next"] = policy

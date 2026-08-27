@@ -130,13 +130,20 @@ class FusedLLM:
                             yield piece
                         emitted = len(buf)
                 if not prose_started and buf.strip():
-                    # D2 missing head: the full stream is prose (C7 D2); degraded passthrough
+                    # D2 missing head: full stream is prose; keep the raw for diagnosis
+                    self.meta["head_raw_snippet"] = buf.strip()[:400]
+                    if "<perception>" in buf and "</perception>" not in buf:
+                        self.meta["head_fail_class"] = "unclosed_tags"
+                    elif "<perception>" not in buf:
+                        self.meta["head_fail_class"] = "missing_tags"
                     piece = buf[emitted:].strip()
                     if piece:
                         spoken_any = True
                         yield piece
                     emitted = len(buf)
                 if not spoken_any:
+                    self.meta.setdefault("head_raw_snippet", buf.strip()[:400])
+                    self.meta.setdefault("head_fail_class", "head_only_no_prose" if self.head else "empty_stream")
                     # nothing spoken: head-only response, or truly empty stream.
                     # Silence is a contract violation — deterministic fallback speaks.
                     self.meta["empty_prose_fallback"] = True
@@ -167,11 +174,15 @@ class FusedLLM:
                 full = buf
                 m = TAG_RE.search(full)
                 if m and self.head is None:
+                    self.meta["head_raw_snippet"] = m.group(1).strip()[:400]
                     try:
                         self.head = json.loads(m.group(1).strip())
                     except json.JSONDecodeError:
                         try:
                             obj, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
                             self.head = obj if isinstance(obj, dict) else None
-                        except json.JSONDecodeError:
+                            if self.head is not None:
+                                self.meta["head_fail_class"] = "trailing_data_rawdecode_recovered"
+                        except json.JSONDecodeError as e2:
                             self.head = None
+                            self.meta["head_fail_class"] = f"invalid_json: {e2}"
