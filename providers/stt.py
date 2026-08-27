@@ -49,16 +49,9 @@ class GroqSTT(STTProvider):
             response_format="verbose_json"
         )
         
-        from indic_transliteration import sanscript
-        from indic_transliteration.sanscript import transliterate
-
-        def devanagari_to_roman(text: str) -> str:
-            # Check if text contains Devanagari characters
-            if any('\u0900' <= c <= '\u097F' for c in text):
-                return transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS)
-            return text  # already Roman, return as-is
-            
-        cleaned = devanagari_to_roman(transcription.text.strip())
+        # Owner decision 2026-08-27: feed Devanagari to the LLM directly.
+        # (Roman-Hinglish remains the REPLY style; echo comparison romanizes separately.)
+        cleaned = transcription.text.strip()
         
         no_speech_prob = None
         avg_logprob = None
@@ -83,6 +76,17 @@ class GroqSTT(STTProvider):
             avg_logprob=avg_logprob,
             compression_ratio=compression_ratio
         )
+
+def devanagari_to_roman(text: str) -> str:
+    """Module-level so the echo filter can compare in a common script.
+    The STT transcript itself is NO LONGER romanized (owner decision 2026-08-27):
+    the LLM reads Devanagari natively; only comparisons vs Roman text use this."""
+    from indic_transliteration import sanscript
+    from indic_transliteration.sanscript import transliterate
+    if any('\u0900' <= c <= '\u097F' for c in text):
+        return transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS)
+    return text
+
 
 # Default export to be swapped if needed
 def get_stt_provider() -> STTProvider:

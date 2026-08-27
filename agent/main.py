@@ -23,7 +23,7 @@ from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 
 from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
-from providers.stt import get_stt_provider
+from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
@@ -458,7 +458,8 @@ async def entrypoint(ctx: JobContext):
                                 turn["stt_avg_logprob"] = transcript.avg_logprob
                                 turn["stt_compression_ratio"] = transcript.compression_ratio
 
-                                is_echo_detected, similarity = is_echo(transcript.text, session.recent_agent_text)
+                                echo_text = devanagari_to_roman(transcript.text)
+                                is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
                                 if is_echo_detected:
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")
                                     log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
