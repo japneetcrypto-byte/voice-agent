@@ -27,6 +27,21 @@ from agent.prompt_fragments import (
 TAG_RE = re.compile(r"<perception>(.*?)</perception>", re.DOTALL)
 
 
+MODEL_POOL = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
+
+def _all_keys():
+    """All available Gemini API keys."""
+    keys = []
+    primary = os.getenv("GEMINI_API_KEY", "")
+    if primary and not primary.startswith(("your_", "<<<")):
+        keys.append(primary)
+    for i in (2, 3, 4):
+        k = os.getenv(f"GEMINI_API_KEY_{i}", "")
+        if k and not k.startswith(("your_", "<<<")):
+            keys.append(k)
+    return keys if keys else [""]
+
+
 class FusedLLM:
     def __init__(self, model: str | None = None):
         self.model = model or os.getenv("AIVA_LLM_MODEL", "gemini-3.5-flash-lite")
@@ -106,15 +121,21 @@ class FusedLLM:
         contents = self.build_contents(user_text, policy, memory_view, threads, history)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
-        client = self._client_for(key)
 
+        # Rotation: (key × model) pairs — 3 keys × 2 models = 6 attempts on 429
+        keys = _all_keys()
+        rotations = [(k, m) for k in keys for m in MODEL_POOL]
+        rot_idx = 0
         attempt, prose_started, spoken_any = 0, False, False
+
         while True:
             buf, emitted = "", 0
             t0 = time.perf_counter()
+            active_key, active_model = rotations[rot_idx % len(rotations)] if rotations else (key, self.model)
+            client = self._client_for(active_key)
             try:
                 stream = await client.aio.models.generate_content_stream(
-                    model=self.model,
+                    model=active_model,
                     contents=contents,
                     config=config,
                 )
@@ -184,10 +205,18 @@ class FusedLLM:
                         yield pick_line(FILLER_LINES, turn_no)
                 break  # success — D4b: never restart after the stream finished
             except Exception as e:
-                if "429" in str(e) and attempt == 0 and not prose_started:
+                if "429" in str(e) and not prose_started:
                     attempt += 1
-                    await asyncio.sleep(65)   # audit rule: retry once, zero-prose only
-                    continue
+                    if attempt < len(rotations):
+                        rot_idx = attempt
+                        ak, am = rotations[rot_idx]
+                        print(f"[LLM] 429 — rotating to key/model #{rot_idx+1}: {am}")
+                        continue
+                    else:
+                        print(f"[LLM] all {len(rotations)} combos exhausted — cooling 65s")
+                        await asyncio.sleep(65)
+                        rot_idx, attempt = 0, 0
+                        continue
                 self.meta["llm_failed"] = True
                 self.meta["llm_error"] = f"{type(e).__name__}: {str(e)[:150]}"
                 if not prose_started:
