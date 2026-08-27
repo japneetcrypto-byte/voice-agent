@@ -36,11 +36,16 @@ class TenVADProvider(VADProvider):
     self.last_resume_gap_ms for instrumentation. Deterministic throughout.
     """
 
-    RESUME_WINDOW_MS = 1500
-    GENUINE_GAP_MS = 2500
-    LONG_SPEECH_FLOOR_MS = 700
-    LONG_SPEECH_AFTER_MS = 8000
-    PENALTY_STEP_MS = 250
+    # Calibrated against the independent gold-vs-log evaluation (2026-08-27,
+    # continuous-speaker run: >=8/32 premature endpoints, ~24 gold turns
+    # fragmented into 32 STT events). Root mismatch: Hindi planning pauses run
+    # 1.5-3s — the old 1.5s resume window missed them, so every thinking pause
+    # re-endpointed at base speed.
+    RESUME_WINDOW_MS = 3000      # pauses up to 3s still count as continuation
+    GENUINE_GAP_MS = 4000        # >4s silence = real turn change (reset speed)
+    LONG_SPEECH_FLOOR_MS = 700   # unchanged
+    LONG_SPEECH_AFTER_MS = 5000  # treat as continuous speaker earlier (was 8s)
+    PENALTY_STEP_MS = 400        # reach max wait after 2 premature cycles
 
     def __init__(self, hop_size=256, threshold=0.5, silence_duration_ms=None,
                  sample_rate=16000, min_speech_ms=200, max_silence_ms=None):
