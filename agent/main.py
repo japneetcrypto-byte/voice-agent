@@ -745,6 +745,19 @@ async def entrypoint(ctx: JobContext):
                                     log_event("AGENT_TASK_CANCEL_REQUESTED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task())), "previous_task_id": str(id(prev_task))})
                                     prev_task.cancel()
 
+                                # P1: valid-conf but garbled content — ultra-short
+                                # fragments with <1.2s audio are unreliable; ask to
+                                # repeat instead of hallucinating a response.
+                                if (engine and engine.get("sess")
+                                        and transcript.text.strip()
+                                        and len(transcript.text.strip().split()) <= 2
+                                        and duration_ms < 1200
+                                        and not agent_was_speaking_at_detection):
+                                    turn["turn_type"] = "unclear_speech"
+                                    turn["response_trigger_reason"] = "unclear_stt_clarify"
+                                    await run_agent_response(transcript.text, turn)
+                                    return
+
                                 if not (speech_start_ts and speech_end_ts and transcript.text.strip() and turn_number):
                                     print("[Turn Gate Rejected] Missing valid turn lifecycle state")
                                     return
