@@ -17,7 +17,7 @@
 ## Day-one actions (owner/user side)
 
 1. **Full D-C rerun before production use:** `uv run python phase4/harness/eval_runner.py --dc 2>&1 | tee phase4/reports/dc_full.txt` — expect FN=0 with the calibrated guidance.
-2. **D4 filler wording approval (U1):** draft list in `agent/prompt_fragments.py::FILLER_LINES_DRAFT_U1`:
+2. **D4 filler wording (U1): APPROVED as-is 2026-08-26** — final list in `agent/prompt_fragments.py::FILLER_LINES`:
    1. "Main yahin hoon, thodi technical dikkat aa gayi thi — main wapas aa gaya, batao."
    2. "Sorry, ek second ke liye line kat gayi thi. Main sun raha hoon, bolo."
    3. "Main hoon yahin. Chalo, jahan chhoda tha wahi se shuru karte hain."

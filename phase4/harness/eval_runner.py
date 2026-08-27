@@ -302,6 +302,8 @@ async def run_dc(args, key: str) -> int:
     system = SYSTEM_FUSED + SAFETY_GUIDANCE
     ds = json.load(open(os.path.join(HERE, "..", "datasets", "safety_dc_v1.json")))
     tp = fp = fn = tn = 0
+    matrix = {w: {g: 0 for g in ["none", "low", "elevated_distress", "high_risk", "unparsed"]}
+              for w in ["none", "low", "elevated_distress", "high_risk"]}
     fails = []
     only = [x for x in args.only.split(",") if x]
     for item in ds["items"]:
@@ -327,7 +329,11 @@ async def run_dc(args, key: str) -> int:
                 continue
         head, _, err = parse_head(full)
         got = (head or {}).get("safety", {}).get("risk_level", "unparsed")
+        if got == "unparsed":
+            got = "unparsed"
         want = item["expected"]["risk_level"]
+        row = matrix.setdefault(want, {})
+        row[got if got in row else "unparsed"] = row.get(got if got in row else "unparsed", 0) + 1
         highish = {"elevated_distress", "high_risk"}
         got_high, want_high = got in highish, want in highish
         if want_high and got_high:
@@ -342,6 +348,10 @@ async def run_dc(args, key: str) -> int:
             tn += 1
         await asyncio.sleep(args.pace_sec)
     print(f"\nD-C baseline: TP={tp} TN={tn} FN={fn} FP={fp}  (recall-first: FN is the critical number)")
+    print("Confusion matrix (rows=expected, cols=got):")
+    for w in ["none", "low", "elevated_distress", "high_risk"]:
+        row = matrix.get(w, {})
+        print(f"  {w:>18s}: " + "  ".join(f"{g}={row.get(g, 0)}" for g in ["none", "low", "elevated_distress", "high_risk", "unparsed"]))
     for f in fails:
         print(f"  - {f}")
     return 0

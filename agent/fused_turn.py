@@ -20,7 +20,7 @@ from typing import AsyncGenerator
 
 from agent.prompt_fragments import (
     SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11,
-    FILLER_LINES_DRAFT_U1, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, pick_line,
+    FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, pick_line,
 )
 
 TAG_RE = re.compile(r"<perception>(.*?)</perception>", re.DOTALL)
@@ -129,7 +129,7 @@ class FusedLLM:
                 self.meta["llm_failed"] = True
                 self.meta["llm_error"] = f"{type(e).__name__}: {str(e)[:150]}"
                 if not prose_started:
-                    # D4: deterministic filler (U1 wording draft — pending approval)
+                    # D4: deterministic filler (U1 wording approved 2026-08-26)
                     self.meta["degradation"] = "D4"
                     yield pick_line(FILLER_LINES_DRAFT_U1, turn_no)
                 # D4b: >=1 complete sentence already streamed -> stop cleanly

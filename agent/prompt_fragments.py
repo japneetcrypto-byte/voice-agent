@@ -81,9 +81,9 @@ SYSTEM_PLAIN_V11 = PERSONA + (
 )
 
 # ---------------------------------------------------------------------------
-# C7 deterministic phrase lists (D4 draft pending U1 wording approval; D7/D8 locked)
+# C7 deterministic phrase lists — D4 wording APPROVED by owner (U1, 2026-08-26)
 # ---------------------------------------------------------------------------
-FILLER_LINES_DRAFT_U1 = [
+FILLER_LINES = [
     "Main yahin hoon, thodi technical dikkat aa gayi thi — main wapas aa gaya, batao.",
     "Sorry, ek second ke liye line kat gayi thi. Main sun raha hoon, bolo.",
     "Main hoon yahin. Chalo, jahan chhoda tha wahi se shuru karte hain.",
