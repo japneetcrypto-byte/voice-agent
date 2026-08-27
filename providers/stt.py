@@ -43,26 +43,29 @@ class GroqSTT(STTProvider):
         wav_io.seek(0)
         wav_io.name = "audio.wav"
 
-        # Evidence 2026-08-27: without a language pin, Whisper auto-detect misfires on
-        # short Hinglish utterances (observed Spanish/Romanian/English outputs).
-        # Product scope: Hindi + English + Hinglish. The 'hi' pin covers Hindi/Hinglish
-        # including English words; pure-English rooms may set AIVA_STT_LANGUAGE=en.
-        # NOT a provider/model change — API parameter only.
+        # STT config history (owner-visible):
+        # - no pin: Whisper auto-detect drifts on short Hinglish (es/ro/en outputs)
+        # - 'en' pin on Hindi speech: English news-anchor hallucinations + <|hi|>
+        #   token leaks (2026-08-27 run) — mismatch between pin and actual speech
+        # - initial_prompt "Roman Hindi, Hindi and English words": LEAKED into
+        #   transcripts on unclear audio ("Raman Hindi, Hindi and English words.")
+        #   -> prompt removed by default (evidence-based), env-overridable.
+        # Language config: 'hi' pin handles Hindi + Hinglish + English words
+        # (default); pure-English rooms set AIVA_STT_LANGUAGE=en. temperature=0
+        # suppresses repetition loops.
         stt_language = os.getenv("AIVA_STT_LANGUAGE", "hi")
-        # Evidence 2026-08-27: repetition loops ("ake ake ake") are a known Whisper
-        # failure mode on noisy/overlapping audio; temperature=0 (greedy) plus a
-        # Hinglish-bias prompt suppress them. API parameters only - same provider.
         stt_temperature = float(os.getenv("AIVA_STT_TEMPERATURE", "0.0"))
-        stt_prompt = os.getenv("AIVA_STT_PROMPT",
-                                "Hinglish phone conversation. Roman Hindi, Hindi and English words.")
-        transcription = self.client.audio.transcriptions.create(
+        stt_prompt = os.getenv("AIVA_STT_PROMPT", "")  # default: no prompt (leak evidence)
+        kwargs = dict(
             file=("audio.wav", wav_io.read()),
             model="whisper-large-v3-turbo",
             response_format="verbose_json",
             language=stt_language,
             temperature=stt_temperature,
-            prompt=stt_prompt,
         )
+        if stt_prompt:
+            kwargs["prompt"] = stt_prompt
+        transcription = self.client.audio.transcriptions.create(**kwargs)
         
         # Owner decision 2026-08-27: feed Devanagari to the LLM directly.
         # (Roman-Hinglish remains the REPLY style; echo comparison romanizes separately.)
