@@ -216,27 +216,32 @@ async def entrypoint(ctx: JobContext):
             f.write(json.dumps(turn_data) + "\n")
 
     # ---- Phase-1 turn lifecycle telemetry (owner plan; monotonic, per event) ----
+    # Crash-proof: every event APPENDS to disk immediately (never buffered), so
+    # telemetry survives Ctrl+C / hard kills. tl_dump only adds the summary.
     t0_mono = time.monotonic()
     tl_events = []
     tl_resume_gaps = []
     tl_barge_stop = []
     tl_frag = []
     tl_playback = {"user_speech_mono": None}
+    tl_path = os.path.join(log_dir,
+        f"turn_lifecycle_{session_start.strftime('%Y%m%d_%H%M%S')}.jsonl")
 
     def tmark(ev, **fields):
         rec = {"ev": ev, "t": round(time.monotonic() - t0_mono, 3)}
         rec.update(fields)
         tl_events.append(rec)
+        try:
+            with open(tl_path, "a") as f:
+                f.write(json.dumps(rec, ensure_ascii=False, default=str) + "\n")
+        except Exception as e:
+            print(f"[Telemetry] write failed: {e}")
         return rec
 
     def tl_dump():
         if not tl_events:
             return None
-        path = os.path.join(log_dir,
-            f"turn_lifecycle_{session_start.strftime('%Y%m%d_%H%M%S')}.jsonl")
-        with open(path, "a") as f:
-            for e in tl_events:
-                f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+        path = tl_path
         buckets = {"<500": 0, "500-1000": 0, "1000-2000": 0, "2000-3000": 0, ">3000": 0}
         for g in tl_resume_gaps:
             k = "<500" if g < 500 else "500-1000" if g < 1000 else \
@@ -834,6 +839,7 @@ async def entrypoint(ctx: JobContext):
     if hasattr(ctx, "add_shutdown_callback"):
         ctx.add_shutdown_callback(_commit_session_memory)
         ctx.add_shutdown_callback(_dump_telemetry)
+        print("[Telemetry] shutdown hooks registered (summary written at session end)")
     else:
         print("[StateEngine] no shutdown hook available - pending memory not committed")
 
