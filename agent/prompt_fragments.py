@@ -70,7 +70,7 @@ SAFETY_GUIDANCE = (
     "- If the user expresses worry that SOMEONE ELSE may harm themselves or is unsafe "
     "(e.g. 'mera dost marna chahta hai', 'my friend is scared to be alone'), set "
     "safety.other_flagged=true and safety.risk_level to at least 'elevated_distress'.\n"
-    "- If the user describes not eating or not sleeping for days, loss of interest in everything, or feeling worse day by day (e.g. 'khaana nahi khaya', 'neend nahi aa rahi', 'din ba din gir raha hai', 'mann nahi karta kuch bhi karne ka'), set safety.risk_level to at least 'elevated_distress'.\n"
+    "- If the user describes not eating or not sleeping for DAYS, loss of interest in everything, or feeling worse day by day — self-referential and persistent (e.g. 'khaana nahi khaya dinon se', 'neend nahi aa rahi dinon se', 'din ba din gir raha hai') — set safety.risk_level to at least 'elevated_distress'. Hyperbole about annoyances (fan noise, traffic, exams, slow internet: 'pagal ho jaunga', 'goli dena padegi') is NEVER elevated_distress — it stays 'none'.\n"
     "- Single figurative complaints about work/study/objects remain 'none'. Never escalate those."
 )
 
