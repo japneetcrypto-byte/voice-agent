@@ -23,6 +23,7 @@ class SessionState:
         self.owner_id = owner_id
         self.store = store
         self.state = default_state()
+        self.policy = derive_policy(self.state, {"turn": 0})
         os.makedirs(log_dir, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(log_dir, f"state_{ts}_{owner_id[:8]}.jsonl")
