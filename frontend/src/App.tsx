@@ -12,11 +12,26 @@ export default function App() {
   const [serverUrl, setServerUrl] = useState<string>('');
   const [connecting, setConnecting] = useState(false);
 
+  // C5 identity contract: anonymous device-scoped UUID (localStorage, never PII)
+  const getDeviceId = (): string => {
+    let id = localStorage.getItem('aiva_device_id');
+    if (!id) {
+      id = (crypto.randomUUID ? crypto.randomUUID() : 'dev-' + Math.random().toString(36).slice(2) + Date.now().toString(36));
+      localStorage.setItem('aiva_device_id', id);
+    }
+    return id;
+  };
+
+  const resetMemory = useCallback(() => {
+    localStorage.removeItem('aiva_device_id');
+    alert('Memory reset. A fresh identity will be used on your next conversation.');
+  }, []);
+
   const startConversation = useCallback(async () => {
     try {
       setConnecting(true);
       const randomRoom = 'room-' + Math.random().toString(36).substring(7);
-      const res = await fetch(`http://localhost:3001/token?room=${randomRoom}`);
+      const res = await fetch(`http://localhost:3001/token?room=${randomRoom}&device=${getDeviceId()}`);
       const data = await res.json();
       setToken(data.token);
       setServerUrl(data.url);

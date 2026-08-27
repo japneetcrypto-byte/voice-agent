@@ -31,6 +31,16 @@ async def handle_token(request):
     room_name = request.query.get('room', 'voice-agent-room')
     participant_name = request.query.get('participant', 'user')
 
+    # C5 identity contract: device-scoped UUID binds memory ownership.
+    from agent.memory_store import valid_device_id, ephemeral_id
+    device = request.query.get('device', '')
+    if valid_device_id(device):
+        identity = device
+    else:
+        identity = ephemeral_id()
+        logging.warning("[Routing] missing/invalid device param - ephemeral identity %s", identity)
+    participant_name = identity
+
     use_cloud = await try_cloud_room(room_name)
 
     if use_cloud:

@@ -99,6 +99,20 @@ async def entrypoint(ctx: JobContext):
     tts_provider = get_tts_provider()
     session = ConversationSession()
 
+    # ---- Phase 5 state engine (5.1/5.2/5.3/5.4/5.6) — flag-gated, falls back ----
+    state_engine_on = os.getenv("AIVA_STATE_ENGINE", "1") == "1"
+    engine = None
+    if state_engine_on:
+        try:
+            from agent.session_state import SessionState
+            from agent.fused_turn import FusedLLM
+            from agent.memory_store import MemoryStore
+            engine = {"fused": FusedLLM(), "store": MemoryStore(), "sess": None}
+            print("[StateEngine] on (TRANSPORT_V1.1)")
+        except Exception as e:
+            print(f"[StateEngine] init failed, plain path: {type(e).__name__}: {e}")
+            engine = None
+
     agent_source = rtc.AudioSource(48000, 1)
     async def flush_audio_source(source: rtc.AudioSource):
         """Clear LiveKit's internal audio buffer."""
@@ -177,7 +191,22 @@ async def entrypoint(ctx: JobContext):
         print("Agent thinking...")
         llm_start = time.time()
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
-        text_stream = llm_provider.generate_response_stream(messages)
+        if engine and engine.get("sess"):
+            sess = engine["sess"]
+            turn["policy"] = sess.policy_for_turn()
+            text_stream = engine["fused"].stream_prose(
+                user_text=user_text,
+                turn_type=turn.get("turn_type", "speech"),
+                policy=sess.policy_for_turn(),
+                memory_view=sess.memory_view(),
+                threads=sess.thread_summaries(),
+                history=[m for m in messages if m.get("role") != "system"][-6:],
+                turn_no=int(turn.get("turn", 0)),
+                degraded=bool(sess.state.get("degraded_perception")),
+                key=os.getenv("GEMINI_API_KEY", ""),
+            )
+        else:
+            text_stream = llm_provider.generate_response_stream(messages)
         
         spoken_text = []
         ttft_logged = False
@@ -230,6 +259,18 @@ async def entrypoint(ctx: JobContext):
             
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
+            if engine and engine.get("sess"):
+                try:
+                    tr = {"turn": turn.get("turn"),
+                           "response_completed": True,
+                           "interrupted": False,
+                           "policy_derived": {"mode": (turn.get("policy") or {}).get("mode")},
+                           "last_move": "response_completed"}
+                    policy = engine["sess"].apply_turn(tr, engine["fused"].head)
+                    engine["policy"] = policy
+                    turn["policy_next"] = policy
+                except Exception as e:
+                    print(f"[StateEngine] apply failed: {type(e).__name__}: {e}")
             
         except asyncio.CancelledError:
             print("\n[Agent was interrupted]")
@@ -241,13 +282,24 @@ async def entrypoint(ctx: JobContext):
             truncated_message = "".join(spoken_text).strip()
             if truncated_message and ttfa_logged:
                 session.add_agent_message(truncated_message, interrupted=True)
+            if engine and engine.get("sess"):
+                try:
+                    tr = {"turn": turn.get("turn"),
+                           "response_completed": False,
+                           "interrupted": True,
+                           "interrupted_agent_response": {"response_id": response_id,
+                                                           "spoken_text": truncated_message,
+                                                           "completed": False}}
+                    engine["sess"].apply_turn(tr, engine["fused"].head)
+                except Exception as e:
+                    print(f"[StateEngine] apply(interrupted) failed: {type(e).__name__}: {e}")
             raise
         finally:
             agent_speaking_event.clear()
             nonlocal agent_audio_ended_at
             agent_audio_ended_at = time.monotonic()
 
-    async def process_user_audio(track: rtc.RemoteAudioTrack):
+    async def process_user_audio(track: rtc.RemoteAudioTrack, participant=None):
         nonlocal agent_task
         
         audio_stream = rtc.AudioStream(track)
@@ -259,7 +311,17 @@ async def entrypoint(ctx: JobContext):
         current_sample_rate = None
 
         print("Listening for user speech...")
-        
+
+        # C5: bind memory ownership to the participant identity (device-scoped UUID)
+        if engine and engine.get("sess") is None:
+            try:
+                from agent.session_state import SessionState
+                owner = (getattr(participant, "identity", None) or "ephemeral-unknown")
+                engine["sess"] = SessionState(owner, engine["store"])
+                print(f"[StateEngine] session bound to owner={owner}")
+            except Exception as e:
+                print(f"[StateEngine] session init failed: {type(e).__name__}: {e}")
+
         print(f"AudioStream started, track muted: {track.muted}")
         frame_count = 0
         current_sample_rate = None
@@ -458,19 +520,32 @@ async def entrypoint(ctx: JobContext):
                         )
                         speech_buffer = []
 
+    # Phase 5: session-end memory commit (best effort; SDK hook may vary)
+    async def _commit_session_memory():
+        if engine and engine.get("sess"):
+            try:
+                engine["sess"].end_session(keep_pending=True)
+                print("[StateEngine] memory committed at session end")
+            except Exception as e:
+                print(f"[StateEngine] memory commit failed: {type(e).__name__}: {e}")
+    if hasattr(ctx, "add_shutdown_callback"):
+        ctx.add_shutdown_callback(_commit_session_memory)
+    else:
+        print("[StateEngine] no shutdown hook available - pending memory not committed")
+
     # Handle tracks from participants that join AFTER the agent
     @ctx.room.on("track_subscribed")
     def on_track_subscribed(track: rtc.Track, publication: rtc.RemoteTrackPublication, participant: rtc.RemoteParticipant):
         if track.kind == rtc.TrackKind.KIND_AUDIO:
             print(f"New audio track subscribed from {participant.identity}")
-            asyncio.create_task(process_user_audio(track))
+            asyncio.create_task(process_user_audio(track, participant))
 
     # Handle tracks from participants ALREADY in the room when agent connects
     for participant in ctx.room.remote_participants.values():
         for publication in participant.track_publications.values():
             if publication.track and publication.track.kind == rtc.TrackKind.KIND_AUDIO:
                 print(f"Found existing audio track from {participant.identity}")
-                asyncio.create_task(process_user_audio(publication.track))
+                asyncio.create_task(process_user_audio(publication.track, participant))
 
 if __name__ == "__main__":
     cli.run_app(
