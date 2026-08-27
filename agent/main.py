@@ -405,7 +405,12 @@ async def entrypoint(ctx: JobContext):
                     if engine["fused"].head is None:
                         turn["head_raw_snippet"] = engine["fused"].meta.get("head_raw_snippet", "")
                         turn["head_fail_class"] = engine["fused"].meta.get("head_fail_class", "unknown")
+                        turn["llm_error"] = engine["fused"].meta.get("llm_error", "")
                         print(f"[StateEngine] PARSE-FAIL turn {turn.get('turn')} class={turn['head_fail_class']} raw={turn['head_raw_snippet'][:240]!r}")
+                    if engine["fused"].meta.get("llm_failed"):
+                        turn["llm_error"] = engine["fused"].meta.get("llm_error", "")
+                        turn["active_model"] = engine["fused"].meta.get("active_model", "unknown")
+                        print(f"[StateEngine] LLM ERROR turn {turn.get('turn')}: {turn['llm_error'][:120]}")
                     turn["llm_context"] = engine["fused"].meta.get("context")
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
@@ -856,6 +861,36 @@ async def entrypoint(ctx: JobContext):
         ctx.add_shutdown_callback(_commit_session_memory)
         ctx.add_shutdown_callback(_dump_telemetry)
         print("[Telemetry] shutdown hooks registered (summary written at session end)")
+
+    # ---- Startup quota check ----
+    async def _quota_check():
+        from agent.fused_turn import _all_keys, MODEL_POOL
+        keys = _all_keys()
+        print(f"[Quota] checking {len(keys)} keys × {len(MODEL_POOL)} models...")
+        for k_idx, k in enumerate(keys):
+            for m_idx, m in enumerate(MODEL_POOL):
+                label = f"key{k_idx+1}/{m}"
+                try:
+                    from google import genai
+                    client = genai.Client(api_key=k)
+                    resp = await asyncio.wait_for(
+                        client.aio.models.generate_content(model=m, contents="hi"), timeout=15)
+                    print(f"[Quota] ✅ {label}: OK")
+                except asyncio.TimeoutError:
+                    print(f"[Quota] ⏱ {label}: TIMEOUT")
+                except Exception as e:
+                    err = str(e)[:120]
+                    if "429" in err:
+                        print(f"[Quota] ❌ {label}: 429 QUOTA EXHAUSTED")
+                    elif "404" in err or "not found" in err.lower():
+                        print(f"[Quota] ❌ {label}: MODEL NOT FOUND")
+                    elif "API_KEY" in err.upper() or "invalid" in err.lower():
+                        print(f"[Quota] ❌ {label}: INVALID API KEY")
+                    else:
+                        print(f"[Quota] ⚠️ {label}: {err}")
+
+    if engine:
+        asyncio.create_task(_quota_check())
     else:
         print("[StateEngine] no shutdown hook available - pending memory not committed")
 

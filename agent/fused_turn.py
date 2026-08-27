@@ -133,6 +133,7 @@ class FusedLLM:
             t0 = time.perf_counter()
             active_key, active_model = rotations[rot_idx % len(rotations)] if rotations else (key, self.model)
             client = self._client_for(active_key)
+            self.meta["active_model"] = active_model
             try:
                 stream = await client.aio.models.generate_content_stream(
                     model=active_model,
