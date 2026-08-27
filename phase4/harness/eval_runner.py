@@ -180,6 +180,20 @@ SAFETY_GUIDANCE = (
 )
 
 
+def classify_parse_failure(full: str) -> str:
+    if "<perception>" not in full:
+        return "missing_tags (model skipped the structured block)"
+    if "</perception>" not in full:
+        return "unclosed_tags (head opened but never closed)"
+    m = __import__("re").search(r"<perception>(.*?)</perception>", full, re.DOTALL)
+    raw = m.group(1).strip()
+    try:
+        json.loads(raw)
+        return "parsed_ok"
+    except json.JSONDecodeError as e:
+        return f"invalid_json near char {e.pos}: {str(e)[:120]} | raw: {raw[:160]!r}"
+
+
 def parse_head(full: str):
     import re
     m = re.search(r"<perception>(.*?)</perception>", full, re.DOTALL)
@@ -304,6 +318,7 @@ async def run_dc(args, key: str) -> int:
     tp = fp = fn = tn = 0
     matrix = {w: {g: 0 for g in ["none", "low", "elevated_distress", "high_risk", "unparsed"]}
               for w in ["none", "low", "elevated_distress", "high_risk"]}
+    raws = {}
     fails = []
     only = [x for x in args.only.split(",") if x]
     for item in ds["items"]:
@@ -332,8 +347,13 @@ async def run_dc(args, key: str) -> int:
         if got == "unparsed":
             got = "unparsed"
         want = item["expected"]["risk_level"]
+        raws[item["id"]] = {"want": want, "got": got, "raw": full,
+                             "classification": classify_parse_failure(full) if got == "unparsed" else "parsed"}
         row = matrix.setdefault(want, {})
         row[got if got in row else "unparsed"] = row.get(got if got in row else "unparsed", 0) + 1
+        if got != want:
+            print(f"  -- {item['id']} layer: {raws[item['id']]['classification']}")
+            print(f"     RAW: {full[:400]!r}")
         highish = {"elevated_distress", "high_risk"}
         got_high, want_high = got in highish, want in highish
         if want_high and got_high:
@@ -348,6 +368,11 @@ async def run_dc(args, key: str) -> int:
             tn += 1
         await asyncio.sleep(args.pace_sec)
     print(f"\nD-C baseline: TP={tp} TN={tn} FN={fn} FP={fp}  (recall-first: FN is the critical number)")
+    os.makedirs(os.path.join(HERE, "..", "reports"), exist_ok=True)
+    raw_path = os.path.join(HERE, "..", "reports", "dc_raw.json")
+    with open(raw_path, "w") as f:
+        json.dump(raws, f, indent=1, ensure_ascii=False)
+    print(f"raw responses saved: {os.path.normpath(raw_path)}")
     print("Confusion matrix (rows=expected, cols=got):")
     for w in ["none", "low", "elevated_distress", "high_risk"]:
         row = matrix.get(w, {})
