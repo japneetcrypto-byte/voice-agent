@@ -215,6 +215,56 @@ async def entrypoint(ctx: JobContext):
         with open(session_log_path, "a") as f:
             f.write(json.dumps(turn_data) + "\n")
 
+    # ---- Phase-1 turn lifecycle telemetry (owner plan; monotonic, per event) ----
+    t0_mono = time.monotonic()
+    tl_events = []
+    tl_resume_gaps = []
+    tl_barge_stop = []
+    tl_frag = []
+    tl_playback = {"user_speech_mono": None}
+
+    def tmark(ev, **fields):
+        rec = {"ev": ev, "t": round(time.monotonic() - t0_mono, 3)}
+        rec.update(fields)
+        tl_events.append(rec)
+        return rec
+
+    def tl_dump():
+        if not tl_events:
+            return None
+        path = os.path.join(log_dir,
+            f"turn_lifecycle_{session_start.strftime('%Y%m%d_%H%M%S')}.jsonl")
+        with open(path, "a") as f:
+            for e in tl_events:
+                f.write(json.dumps(e, ensure_ascii=False, default=str) + "\n")
+        buckets = {"<500": 0, "500-1000": 0, "1000-2000": 0, "2000-3000": 0, ">3000": 0}
+        for g in tl_resume_gaps:
+            k = "<500" if g < 500 else "500-1000" if g < 1000 else \
+                "1000-2000" if g < 2000 else "2000-3000" if g < 3000 else ">3000"
+            buckets[k] += 1
+        frag_d = [f["duration_ms"] for f in tl_frag if f.get("duration_ms")]
+        frag_w = [f["words"] for f in tl_frag if f.get("words") is not None]
+        summary = {
+            "total_events": len(tl_events),
+            "resume_gap_buckets": buckets,
+            "barge_stop_latency_ms": {
+                "n": len(tl_barge_stop),
+                "avg": round(sum(tl_barge_stop) / len(tl_barge_stop), 1) if tl_barge_stop else None,
+                "max": round(max(tl_barge_stop), 1) if tl_barge_stop else None,
+            },
+            "stt_fragmentation": {
+                "n": len(tl_frag),
+                "avg_duration_ms": round(sum(frag_d) / len(frag_d), 1) if frag_d else None,
+                "avg_words": round(sum(frag_w) / len(frag_w), 2) if frag_w else None,
+                "under_1500ms": sum(1 for d in frag_d if d < 1500),
+            },
+        }
+        with open(path, "a") as f:
+            f.write(json.dumps({"ev": "SESSION_SUMMARY", **summary}, ensure_ascii=False) + "\n")
+        print(f"[Telemetry] dumped {len(tl_events)} events -> {path}")
+        print("[Telemetry] summary: " + json.dumps(summary))
+        return path
+
     async def run_agent_response(user_text: str, turn: dict):
         if agent_task and not agent_task.done() and agent_task != asyncio.current_task():
             return  # newer task already running, don't double-respond
@@ -235,6 +285,7 @@ async def entrypoint(ctx: JobContext):
         print("Agent thinking...")
         llm_start = time.time()
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
+        tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
             sess = engine["sess"]
             turn["policy"] = sess.policy_for_turn()
@@ -263,6 +314,7 @@ async def entrypoint(ctx: JobContext):
                     print(f"[Metrics] LLM Time to First Token: {ttft_s:.2f}s")
                     ttft_logged = True
                     log_event("LLM_FIRST_TOKEN", turn_id=turn.get("turn"), response_id=response_id)
+                    tmark("LLM_FIRST_TOKEN", turn=turn.get("turn"))
                 print(chunk, end="", flush=True)
                 spoken_text.append(chunk)
                 session.recent_agent_text += chunk
@@ -279,6 +331,7 @@ async def entrypoint(ctx: JobContext):
         tts_total_samples = 0
         turn["tts_text"] = ""  # final text spoken to TTS (spoken_text snapshot at end)
         log_event("TTS_STARTED", turn_id=turn.get("turn"), response_id=response_id)
+        tmark("TTS_STARTED", turn=turn.get("turn"))
         try:
             audio_stream = tts_provider.synthesize_stream(text_stream_tee())
             async for audio_chunk in audio_stream:
@@ -297,6 +350,8 @@ async def entrypoint(ctx: JobContext):
                     ttfa_logged = True
                     log_event("TTS_FIRST_AUDIO", turn_id=turn.get("turn"), response_id=response_id)
                     log_event("PLAYBACK_STARTED", turn_id=turn.get("turn"), response_id=response_id)
+                    tmark("TTS_FIRST_AUDIO", turn=turn.get("turn"))
+                    tmark("PLAYBACK_STARTED", turn=turn.get("turn"))
                 log_event("TTS_AUDIO_CHUNK", turn_id=turn.get("turn"), response_id=response_id)
                 if agent_source is not None:
                     await agent_source.capture_frame(audio_chunk.frame)
@@ -325,6 +380,7 @@ async def entrypoint(ctx: JobContext):
             print("Agent finished speaking.")
             turn["response_trigger_reason"] = "completed"
             log_event("PLAYBACK_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+            tmark("TURN_COMPLETED", turn=turn.get("turn"))
             log_event("AGENT_TASK_COMPLETED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
             
             # Finished naturally without interruption
@@ -387,9 +443,16 @@ async def entrypoint(ctx: JobContext):
             print(f"[TurnEval] turn={turn.get('turn')} INTERRUPTED provider={turn['tts']['provider']} "
                   f"audio={turn['tts']['audio_duration_s']}s "
                   f"at_ms={turn['tts'].get('interrupted_at_ms')}")
+            tmark("TTS_CANCEL_REQUESTED", turn=turn.get("turn"))
             log_event("AGENT_CANCELLED_EXCEPTION", turn_id=turn.get("turn"), response_id=response_id)
             log_event("AGENT_TASK_CANCELLED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
             await flush_audio_source(agent_source)
+            tmark("PLAYBACK_STOPPED", turn=turn.get("turn"))
+            if tl_playback["user_speech_mono"] is not None:
+                lat = round((time.monotonic() - tl_playback["user_speech_mono"]) * 1000, 1)
+                tl_barge_stop.append(lat)
+                tmark("BARGE_IN_STOP_LATENCY_MS", turn=turn.get("turn"), latency_ms=lat)
+                tl_playback["user_speech_mono"] = None
             truncated_message = "".join(spoken_text).strip()
             if truncated_message and ttfa_logged:
                 session.add_agent_message(truncated_message, interrupted=True)
@@ -501,6 +564,10 @@ async def entrypoint(ctx: JobContext):
                         if wait_duration_ms is not None:
                             print(f"[TurnController] continuation arrived after {wait_duration_ms}ms "
                                   f"of waiting — previous pause was NOT a turn end")
+                        tmark("VAD_SPEECH_STARTED", turn=turn_number + 1,
+                              resume_gap_ms=resume_gap, waited_ms=wait_duration_ms)
+                        if resume_gap is not None:
+                            tl_resume_gaps.append(resume_gap)
                         
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
@@ -509,6 +576,8 @@ async def entrypoint(ctx: JobContext):
                         speech_start_ts = datetime.now(timezone.utc).isoformat()
                         
                         if agent_speaking_event.is_set():
+                            tl_playback["user_speech_mono"] = time.monotonic()
+                            tmark("USER_SPEECH_DURING_PLAYBACK", turn=turn_number + 1)
                             print("BARGE_IN_CANDIDATE: Agent is speaking. Buffering to evaluate.")
                             log_event("BARGE_IN_CANDIDATE", turn_id=turn_number + 1, details={"agent_speaking": True})
                         else:
@@ -517,6 +586,7 @@ async def entrypoint(ctx: JobContext):
                     elif vad_event == VADEvent.SPEECH_ENDED:
                         is_speaking = False
                         endpoint_info = dict(getattr(vad_provider, "last_endpoint", {}) or {})
+                        tmark("VAD_SPEECH_ENDED", turn=turn_number + 1, **endpoint_info)
                         print(f"[Endpoint] turn-complete decision: {endpoint_info}")
                         print("User/Echo stopped. Transcribing to evaluate...")
                         log_event("USER_SPEECH_ENDED", turn_id=turn_number + 1)
@@ -586,10 +656,16 @@ async def entrypoint(ctx: JobContext):
                             }
                             try:
                                 log_event("STT_STARTED", turn_id=turn.get("turn"))
+                                tmark("STT_STARTED", turn=turn.get("turn"))
                                 stt_start = time.time()
                                 transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
                                 log_event("STT_COMPLETED", turn_id=turn.get("turn"))
+                                tmark("STT_COMPLETED", turn=turn.get("turn"),
+                                      latency_ms=round(turn["stt_latency_s"] * 1000, 1))
+                                tl_frag.append({"turn": turn.get("turn"),
+                                                 "duration_ms": round(duration_ms, 1),
+                                                 "words": len((transcript.text or "").split())})
 
                                 if not transcript:
                                     print("STT returned no text")
@@ -606,12 +682,15 @@ async def entrypoint(ctx: JobContext):
                                 is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
                                 if is_echo_detected:
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")
+                                    tmark("TURN_DROPPED", turn=turn.get("turn"), reason="echo", similarity=round(similarity, 2))
                                     log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
                                     return
                                     
                                 is_valid, rejection_reason = is_real_user_turn(transcript, duration_ms)
                                 turn["stt_valid"] = is_valid
                                 turn["stt_rejection_reason"] = rejection_reason
+                                tmark("VALIDATION_COMPLETED", turn=turn.get("turn"),
+                                      valid=is_valid, reason=rejection_reason)
 
                                 print(f"[STT] '{transcript.text}' | valid={is_valid} | "
                                       f"lang={transcript.language} | "
@@ -653,6 +732,7 @@ async def entrypoint(ctx: JobContext):
                                     return
                                     
                                 if prev_task and not prev_task.done():
+                                    tmark("BARGE_IN_DETECTED", turn=turn.get("turn"))
                                     print("AGENT_INTERRUPTED_BY_USER")
                                     log_event("AGENT_TASK_CANCEL_REQUESTED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task())), "previous_task_id": str(id(prev_task))})
                                     prev_task.cancel()
@@ -667,6 +747,8 @@ async def entrypoint(ctx: JobContext):
                                 action, ctrl_reason = turn_controller_decide(transcript.text, prev_wait)
                                 turn["continuation_detected"] = action == "suppress"
                                 turn["turn_end_decision"] = action
+                                tmark("TURN_DECISION", turn=turn.get("turn"),
+                                      decision=action, reason=ctrl_reason)
                                 if action == "suppress":
                                     turn["suppression_reason"] = ctrl_reason
                                     turn["response_suppressed"] = True
@@ -679,6 +761,8 @@ async def entrypoint(ctx: JobContext):
                                     return
                                 if engine:
                                     engine["last_turn_wait"] = False
+                                tmark("TURN_DECISION", turn=turn.get("turn"),
+                                      decision="respond", reason=ctrl_reason)
                                 turn["response_trigger_reason"] = "user_speech_ended"
                                 await run_agent_response(transcript.text, turn)
 
@@ -689,6 +773,9 @@ async def entrypoint(ctx: JobContext):
                             except Exception as e:
                                 print(f"Pipeline Error: {e}")
                             finally:
+                                if turn.get("dropped_reason") or turn.get("stt_valid") is False:
+                                    tmark("TURN_DROPPED", turn=turn.get("turn"),
+                                          reason=turn.get("dropped_reason") or turn.get("stt_rejection_reason"))
                                 log_turn(turn)
                                 
                         agent_was_speaking = agent_speaking_event.is_set()
@@ -734,6 +821,9 @@ async def entrypoint(ctx: JobContext):
         asyncio.create_task(idle_watcher())
 
     # Phase 5: session-end memory commit (best effort; SDK hook may vary)
+    async def _dump_telemetry():
+        tl_dump()
+
     async def _commit_session_memory():
         if engine and engine.get("sess"):
             try:
@@ -743,6 +833,7 @@ async def entrypoint(ctx: JobContext):
                 print(f"[StateEngine] memory commit failed: {type(e).__name__}: {e}")
     if hasattr(ctx, "add_shutdown_callback"):
         ctx.add_shutdown_callback(_commit_session_memory)
+        ctx.add_shutdown_callback(_dump_telemetry)
     else:
         print("[StateEngine] no shutdown hook available - pending memory not committed")
 
