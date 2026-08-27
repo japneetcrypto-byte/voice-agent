@@ -1,3 +1,9 @@
+"""STT providers: Gemini Live (primary) + Groq Whisper (fallback).
+
+Switch via AIVA_STT_PROVIDER env:
+  gemini_live  (default) — Gemini 3.5 Transcribe Live streaming, Groq fallback
+  groq         — Groq whisper-large-v3 batch only
+"""
 import numpy as np
 from faster_whisper import WhisperModel
 
@@ -14,10 +20,6 @@ class Transcript:
 
 class STTProvider:
     def transcribe(self, audio_data: np.ndarray) -> Transcript:
-        """
-        Transcribe a single audio segment.
-        audio_data: float32 numpy array of audio samples at 16kHz
-        """
         raise NotImplementedError
 
 import os
@@ -25,45 +27,36 @@ import io
 import scipy.io.wavfile as wavfile
 from groq import Groq
 
+def devanagari_to_roman(text: str) -> str:
+    """Module-level so the echo filter can compare in a common script.
+    The STT transcript itself is NO LONGER romanized (owner decision 2026-08-27):
+    the LLM reads Devanagari natively; only comparisons vs Roman text use this."""
+    from indic_transliteration import sanscript
+    from indic_transliteration.sanscript import transliterate
+    if any('\u0900' <= c <= '\u097F' for c in text):
+        return transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS)
+    return text
+
+
 class GroqSTT(STTProvider):
     def __init__(self):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        # Natural language detection (owner request 2026-08-27):
-        # - forced pin via AIVA_STT_LANGUAGE (hi/en/...) if set
-        # - otherwise: auto-detect on the FIRST real utterance (detection is
-        #   reliable on longer audio), then pin the session to that language.
-        #   Short utterances reuse the session language -> no per-clip drift.
         forced = os.getenv("AIVA_STT_LANGUAGE", "").strip().lower()
-        self.session_language = forced or None  # None = not yet detected
+        self.session_language = forced or None
         self.auto_mode = not forced
 
     def transcribe(self, audio_data: np.ndarray) -> Transcript:
-        if len(audio_data) < 4000:  # 0.25s minimum, not 0.5s
+        if len(audio_data) < 4000:
             return Transcript(text="", language="auto")
         
-        # audio_data is float32 [-1.0, 1.0], 16kHz
-        # convert to int16 for WAV
         int_audio = (audio_data * 32767).astype(np.int16)
-        
-        # write to in-memory WAV file
         wav_io = io.BytesIO()
         wavfile.write(wav_io, 16000, int_audio)
         wav_io.seek(0)
         wav_io.name = "audio.wav"
 
-        # STT config history (owner-visible):
-        # - no pin: Whisper auto-detect drifts on SHORT clips (es/ro/en outputs)
-        #   -> solution: detect on the first utterance, then pin the session
-        # - 'en' pin on Hindi speech: English news-anchor hallucinations + <|hi|>
-        #   token leaks (2026-08-27 run)
-        # - initial_prompt leaked into transcripts on unclear audio -> default OFF
-        # Language: forced via AIVA_STT_LANGUAGE; otherwise session auto-detect.
         stt_temperature = float(os.getenv("AIVA_STT_TEMPERATURE", "0.0"))
-        stt_prompt = os.getenv("AIVA_STT_PROMPT", "")  # default: no prompt (leak evidence)
-        # Model: whisper-large-v3 (OWNER-APPROVED upgrade 2026-08-27, evidence:
-        # turbo produced garbled-but-'valid' Hindi that the LLM could not follow).
-        # Same provider (Groq), same free-tier limits, ~1s latency difference.
-        # Revert: AIVA_STT_MODEL=whisper-large-v3-turbo
+        stt_prompt = os.getenv("AIVA_STT_PROMPT", "")
         stt_model = os.getenv("AIVA_STT_MODEL", "whisper-large-v3")
         kwargs = dict(
             file=("audio.wav", wav_io.read()),
@@ -72,18 +65,12 @@ class GroqSTT(STTProvider):
             temperature=stt_temperature,
         )
         if self.session_language:
-            # session language established (forced or learned) -> pin it
             kwargs["language"] = self.session_language
-        # else: no language param -> true auto-detect for the first utterance
         if stt_prompt:
             kwargs["prompt"] = stt_prompt
         transcription = self.client.audio.transcriptions.create(**kwargs)
 
-        # ---- session language learning (auto mode only) ----
-        # Learn ONLY from a qualifying utterance: >=1.2s audio, >=3 words, and
-        # not catastrophic confidence. Junk greetings ("Mm-hmm") must never
-        # teach the session language (evidence: 2026-08-27 run locked English
-        # from a 0.5s grunt, force-decoding all subsequent Hindi as English).
+        # session language learning
         if self.auto_mode:
             duration_ms = len(audio_data) / 16
             n_words = len((transcription.text or "").split())
@@ -94,26 +81,17 @@ class GroqSTT(STTProvider):
             qualifies = (duration_ms >= 1200 and n_words >= 3
                           and (seg_conf is None or seg_conf >= -1.0))
             detected = normalize_lang(getattr(transcription, "language", "") or "")
-            # SCOPE CONSTRAINT (owner scope: hindi/english/hinglish): never pin
-            # a language outside {hi, en} — evidence 2026-08-27: garbled audio
-            # made Whisper 'detect' Filipino/Arabic on turn 1, locking the
-            # session to a wrong language and corrupting every later turn.
             if detected and detected not in ("hi", "en"):
-                print(f"[STT] detection '{detected}' out of product scope — not pinning")
                 detected = None
             if detected:
                 if not self.session_language:
                     if qualifies:
                         self.session_language = detected
                         self.mismatch_streak = 0
-                        print(f"[STT] session language learned: {detected} "
-                              f"({duration_ms:.0f}ms, {n_words} words, conf={seg_conf})")
+                        print(f"[STT] session language learned: {detected}")
                     else:
-                        print(f"[STT] detection '{detected}' not qualifying yet "
-                              f"({duration_ms:.0f}ms, {n_words} words) — staying unpinned")
+                        print(f"[STT] detection '{detected}' not qualifying yet — staying unpinned")
                 else:
-                    # pinned mode: catastrophic confidence means the pin may be
-                    # wrong -> re-open detection after 2 consecutive failures
                     if seg_conf is not None and seg_conf < -1.0:
                         self.mismatch_streak = getattr(self, "mismatch_streak", 0) + 1
                         if self.mismatch_streak >= 2:
@@ -123,8 +101,6 @@ class GroqSTT(STTProvider):
                     else:
                         self.mismatch_streak = 0
         
-        # Owner decision 2026-08-27: feed Devanagari to the LLM directly.
-        # (Roman-Hinglish remains the REPLY style; echo comparison romanizes separately.)
         cleaned = transcription.text.strip()
         
         no_speech_prob = None
@@ -152,9 +128,6 @@ class GroqSTT(STTProvider):
         )
 
 def devanagari_to_roman(text: str) -> str:
-    """Module-level so the echo filter can compare in a common script.
-    The STT transcript itself is NO LONGER romanized (owner decision 2026-08-27):
-    the LLM reads Devanagari natively; only comparisons vs Roman text use this."""
     from indic_transliteration import sanscript
     from indic_transliteration.sanscript import transliterate
     if any('\u0900' <= c <= '\u097F' for c in text):
@@ -162,14 +135,7 @@ def devanagari_to_roman(text: str) -> str:
     return text
 
 
-# Default export to be swapped if needed
-def get_stt_provider() -> STTProvider:
-    return GroqSTT()
-
-
-# Language map: normalizes Whisper's verbose language names to API codes
 _LANG_MAP = {"hindi": "hi", "english": "en", "urdu": "hi"}
-
 
 def normalize_lang(name: str) -> str | None:
     if not name:
@@ -178,3 +144,16 @@ def normalize_lang(name: str) -> str | None:
     if low in _LANG_MAP:
         return _LANG_MAP[low]
     return low if len(low) == 2 else None
+
+
+# Default export: Gemini Live primary + Groq fallback, or Groq only
+def get_stt_provider() -> STTProvider:
+    provider = os.getenv("AIVA_STT_PROVIDER", "gemini_live")
+    if provider == "gemini_live":
+        try:
+            from providers.stt_gemini_live import GeminiLiveSTT
+            return GeminiLiveSTT()
+        except (ValueError, ImportError) as e:
+            print(f"[STT] Gemini Live unavailable ({e}), falling back to Groq")
+            return GroqSTT()
+    return GroqSTT()
