@@ -110,6 +110,7 @@ class FusedLLM:
                                 self.head = obj if isinstance(obj, dict) else None
                             except json.JSONDecodeError:
                                 self.head = None  # D1: prose passthrough, no state update
+                                self.meta["head_raw_snippet"] = m.group(1).strip()[:200]
                     if prose_started:
                         start = max(m.end(), emitted) if m else emitted
                         if len(buf) > start:

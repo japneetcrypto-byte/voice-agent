@@ -209,7 +209,10 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
 
     # ---- Correction (A-U7): after normalize/validate, pins confidence ----
     corr = head.get("correction") or {}
-    if not isinstance(corr, dict) or not isinstance(corr.get("present", False), bool) \
+    if isinstance(corr, dict) and corr.get("present") is False:
+        # A-U7: semantically absent — no log noise
+        corr = {"present": False, "about": "emotion"}
+    elif not isinstance(corr, dict) or not isinstance(corr.get("present"), bool) \
             or corr.get("about") not in ("emotion", "thread", "fact", "preference"):
         if corr:
             _log(log, "CORR-INVALID")
@@ -525,6 +528,15 @@ def _derive_policy(state: dict, tr: dict, head: dict | None, degradation: str | 
         "pacing": {"max_sentences": PARAMS["max_sentences"], "max_questions": PARAMS["max_questions"]},
         "emotion_label_allowed": bool(emo.get("confidence", 0.0) >= PARAMS["emotion_label_threshold"]
                                        and emo.get("primary") != "neutral_unclear"),
+        "emotion_reflection": {
+            "label_to_use": (emo.get("primary")
+                              if (emo.get("confidence", 0.0) >= PARAMS["emotion_label_threshold"]
+                                  and emo.get("primary") != "neutral_unclear")
+                              else None),
+            "ok_to_name": bool(emo.get("confidence", 0.0) >= PARAMS["emotion_label_threshold"]
+                                and emo.get("primary") != "neutral_unclear"),
+            "user_interpretation_neutral": True,
+        },
         "phase": state["conversation"].get("phase"),
     }
     if degradation == "D7":

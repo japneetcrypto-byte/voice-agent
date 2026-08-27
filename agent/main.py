@@ -269,6 +269,8 @@ async def entrypoint(ctx: JobContext):
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
                     turn["policy_next"] = policy
+                    if engine["fused"].meta.get("head_raw_snippet"):
+                        print(f"[StateEngine] PARSE-FAIL raw head: {engine['fused'].meta['head_raw_snippet']}")
                 except Exception as e:
                     print(f"[StateEngine] apply failed: {type(e).__name__}: {e}")
             

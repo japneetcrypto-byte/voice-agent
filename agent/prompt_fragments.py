@@ -57,7 +57,10 @@ PERCEPTION_SPEC = (
     ' "correction": {"present": <bool>, "about": "emotion|thread|fact|preference"}}\n'
     "Rules for the JSON: no commentary inside it; no code fences; use false/empty for absent "
     "fields; omit the correction key entirely unless the user is explicitly correcting something "
-    "you previously said or interpreted; if unsure, lower the confidence instead of guessing.\n"
+    "you previously said or interpreted; when present, about MUST be one of emotion|thread|fact|preference; "
+    "if unsure, lower the confidence instead of guessing.\n"
+    "The <perception> block is REQUIRED on EVERY turn. Never skip it, never leave it unclosed, "
+    "especially when the user is distressed or the message is short.\n"
     "emotion.primary MUST be copied exactly from the list above — never invent or modify a label.\n"
     "THEN, on a new line after </perception>, write your spoken reply. The JSON is never spoken."
 ) % ("|".join(TAXONOMY), "|".join(THREAD_ACTIONS), "|".join(RISK_LEVELS))
