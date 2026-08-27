@@ -94,6 +94,13 @@ class GroqSTT(STTProvider):
             qualifies = (duration_ms >= 1200 and n_words >= 3
                           and (seg_conf is None or seg_conf >= -1.0))
             detected = normalize_lang(getattr(transcription, "language", "") or "")
+            # SCOPE CONSTRAINT (owner scope: hindi/english/hinglish): never pin
+            # a language outside {hi, en} — evidence 2026-08-27: garbled audio
+            # made Whisper 'detect' Filipino/Arabic on turn 1, locking the
+            # session to a wrong language and corrupting every later turn.
+            if detected and detected not in ("hi", "en"):
+                print(f"[STT] detection '{detected}' out of product scope — not pinning")
+                detected = None
             if detected:
                 if not self.session_language:
                     if qualifies:
