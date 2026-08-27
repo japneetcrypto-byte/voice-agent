@@ -440,6 +440,19 @@ async def entrypoint(ctx: JobContext):
                         if engine:
                             idle_state["last_activity"] = time.monotonic()
                             idle_state["line_sent"] = False
+                        # Endpointing evidence: did speech resume right after an endpoint?
+                        premature_resume = None
+                        resume_gap = getattr(vad_provider, "last_resume_gap_ms", None)
+                        vad_provider.last_resume_gap_ms = None
+                        if resume_gap_ms_ := resume_gap:
+                            premature_resume = {
+                                "resumed_after_endpoint_ms": resume_gap_ms_,
+                                "agent_tts_active_at_resume": agent_speaking_event.is_set(),
+                                "previous_endpoint": dict(getattr(vad_provider, "last_endpoint", {}) or {}),
+                            }
+                            print(f"[Endpoint] PREMATURE resume +{resume_gap_ms_}ms "
+                                  f"(tts_active={premature_resume['agent_tts_active_at_resume']}, "
+                                  f"next penalty={vad_provider.endpoint_penalty_ms}ms)")
                         
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
@@ -455,6 +468,8 @@ async def entrypoint(ctx: JobContext):
                             print(f"User started speaking... (pre-roll: {len(audio_pre_roll)} samples)")
                     elif vad_event == VADEvent.SPEECH_ENDED:
                         is_speaking = False
+                        endpoint_info = dict(getattr(vad_provider, "last_endpoint", {}) or {})
+                        print(f"[Endpoint] turn-complete decision: {endpoint_info}")
                         print("User/Echo stopped. Transcribing to evaluate...")
                         log_event("USER_SPEECH_ENDED", turn_id=turn_number + 1)
                         if not speech_buffer:
@@ -489,11 +504,15 @@ async def entrypoint(ctx: JobContext):
                         async def transcribe_and_respond(audio_data, duration_ms, speech_start_ts, 
                                                           speech_end_ts, agent_was_speaking_at_detection: bool,
                                                           ms_since_agent_audio_end: float = None,
-                                                          prev_task = None):
+                                                          prev_task = None,
+                                                          endpoint_info = None,
+                                                          premature_resume = None):
                             nonlocal turn_number
                             turn_number += 1
                             turn = {
                                 "turn": turn_number,
+                                "endpoint": endpoint_info,
+                                "premature_resume": premature_resume,
                                 "acoustic": {"duration_ms": round(speech_duration_ms, 1),
                                               "rms": round(rms_amplitude, 1),
                                               "peak": int(peak_amplitude)},
@@ -604,7 +623,8 @@ async def entrypoint(ctx: JobContext):
                         agent_task = asyncio.create_task(
                             transcribe_and_respond(
                                 float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
-                                agent_was_speaking, ms_since_end, prev_task=previous_task
+                                agent_was_speaking, ms_since_end, prev_task=previous_task,
+                                endpoint_info=endpoint_info, premature_resume=premature_resume
                             )
                         )
                         speech_buffer = []
