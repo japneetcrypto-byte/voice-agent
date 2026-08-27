@@ -81,7 +81,7 @@ class FusedLLM:
         config = {"temperature": 0.7, "system_instruction": system}
         client = self._client_for(key)
 
-        attempt, prose_started = 0, False
+        attempt, prose_started, spoken_any = 0, False, False
         while True:
             buf, emitted = "", 0
             t0 = time.perf_counter()
@@ -113,17 +113,40 @@ class FusedLLM:
                     if prose_started:
                         start = max(m.end(), emitted) if m else emitted
                         if len(buf) > start:
-                            yield buf[start:]
+                            piece = buf[start:]
                             emitted = len(buf)
+                            if not spoken_any:
+                                piece = piece.lstrip()   # drop newlines right after </perception>
+                            if piece:
+                                spoken_any = True
+                                yield piece
                     elif degraded and not prose_started:
                         # degraded mode: no head expected — everything is prose
                         prose_started = True
-                        yield buf[emitted:]
+                        piece = buf[emitted:].lstrip()
+                        if piece:
+                            spoken_any = True
+                            yield piece
                         emitted = len(buf)
                 if not prose_started and buf.strip():
                     # D2 missing head: the full stream is prose (C7 D2); degraded passthrough
-                    yield buf[emitted:]
+                    piece = buf[emitted:].strip()
+                    if piece:
+                        spoken_any = True
+                        yield piece
                     emitted = len(buf)
+                if not spoken_any:
+                    # nothing spoken: head-only response, or truly empty stream.
+                    # Silence is a contract violation — deterministic fallback speaks.
+                    self.meta["empty_prose_fallback"] = True
+                    tail = ""
+                    m2 = TAG_RE.search(buf)
+                    if m2:
+                        tail = buf[m2.end():].strip()
+                    if tail:
+                        yield tail
+                    else:
+                        yield pick_line(FILLER_LINES, turn_no)
                 break  # success — D4b: never restart after the stream finished
             except Exception as e:
                 if "429" in str(e) and attempt == 0 and not prose_started:
@@ -135,7 +158,7 @@ class FusedLLM:
                 if not prose_started:
                     # D4: deterministic filler (U1 wording approved 2026-08-26)
                     self.meta["degradation"] = "D4"
-                    yield pick_line(FILLER_LINES_DRAFT_U1, turn_no)
+                    yield pick_line(FILLER_LINES, turn_no)
                 # D4b: >=1 complete sentence already streamed -> stop cleanly
                 return
             finally:
