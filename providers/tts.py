@@ -33,6 +33,7 @@ class FishAudioTTSProvider(TTSProvider):
             "sample_rate": 44100,
         }
         self.engine = FishTTS(**kwargs)
+        self.last_provider = "fish"
 
     async def synthesize_stream(
         self, text_stream: AsyncGenerator[str, None]
@@ -83,6 +84,7 @@ class EdgeTTSProvider(TTSProvider):
         import av as pyav
         import io
 
+        self.last_provider = "edge"
         chunks = []
         async for chunk in text_stream:
             chunks.append(chunk)
@@ -142,6 +144,8 @@ class FallbackTTSProvider(TTSProvider):
                           "Using EdgeTTS only.")
             self.primary = None
         self.fallback = EdgeTTSProvider()
+        self.last_provider = None
+        self.last_fallback_reason = None
 
     async def synthesize_stream(
         self, text_stream: AsyncGenerator[str, None]
@@ -160,6 +164,7 @@ class FallbackTTSProvider(TTSProvider):
             return
 
         try:
+            self.last_provider = "fish"
             primary_stream = self.primary.synthesize_stream(make_stream())
             first_chunk = await asyncio.wait_for(
                 primary_stream.__anext__(), timeout=5.0
@@ -168,6 +173,8 @@ class FallbackTTSProvider(TTSProvider):
             async for audio in primary_stream:
                 yield audio
         except (asyncio.TimeoutError, StopAsyncIteration, Exception) as e:
+            self.last_provider = "edge (fallback)"
+            self.last_fallback_reason = f"{type(e).__name__}: {str(e)[:150]}"
             if not isinstance(e, StopAsyncIteration):
                 logger.error(
                     f"[TTS Fallback] Fish Audio failed: {e}. "

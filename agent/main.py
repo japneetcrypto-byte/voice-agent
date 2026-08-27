@@ -232,13 +232,24 @@ async def entrypoint(ctx: JobContext):
         agent_speaking_event.set()
         tts_start = time.time()
         ttfa_logged = False
+        tts_audio_start = None
+        tts_total_samples = 0
+        turn["tts_text"] = ""  # final text spoken to TTS (spoken_text snapshot at end)
         log_event("TTS_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         try:
             audio_stream = tts_provider.synthesize_stream(text_stream_tee())
             async for audio_chunk in audio_stream:
+                if tts_audio_start is None:
+                    tts_audio_start = time.time()
+                tts_total_samples += getattr(audio_chunk.frame, "samples_per_channel", 0)
                 if not ttfa_logged:
                     ttfa_s = time.time() - tts_start
                     turn["tts_first_audio_s"] = round(ttfa_s, 3)
+                    try:
+                        speech_end_epoch = datetime.fromisoformat(turn.get("user_speech_end"))
+                        turn["speech_end_to_first_audio_s"] = round(time.time() - speech_end_epoch.timestamp(), 2)
+                    except Exception:
+                        pass
                     print(f"[Metrics] TTS Time to First Audio: {ttfa_s:.2f}s")
                     ttfa_logged = True
                     log_event("TTS_FIRST_AUDIO", turn_id=turn.get("turn"), response_id=response_id)
@@ -252,6 +263,19 @@ async def entrypoint(ctx: JobContext):
             
             if hasattr(agent_source, "wait_for_playout"):
                 await agent_source.wait_for_playout()
+
+            turn["tts_text"] = "".join(spoken_text)[:600]
+            turn["tts"] = {
+                "provider": getattr(tts_provider, "last_provider", "unknown"),
+                "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
+                "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
+                "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
+            }
+            print(f"[TurnEval] turn={turn.get('turn')} stt={turn.get('stt_latency_s')}s "
+                  f"llm_ttft={turn.get('llm_ttft_s')}s tts_ttfa={turn.get('tts_first_audio_s')}s "
+                  f"speech->audio={turn.get('speech_end_to_first_audio_s')}s "
+                  f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s "
+                  f"interrupted={False}")
 
             print("Agent finished speaking.")
             turn["response_trigger_reason"] = "completed"
@@ -285,6 +309,15 @@ async def entrypoint(ctx: JobContext):
         except asyncio.CancelledError:
             print("\n[Agent was interrupted]")
             turn["interrupted"] = True
+            turn["tts_text"] = "".join(spoken_text)[:600]
+            turn["tts"] = {
+                "provider": getattr(tts_provider, "last_provider", "unknown"),
+                "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
+                "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
+                "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
+            }
+            print(f"[TurnEval] turn={turn.get('turn')} INTERRUPTED provider={turn['tts']['provider']} "
+                  f"audio={turn['tts']['audio_duration_s']}s")
             turn["interruption_timestamp"] = datetime.now(timezone.utc).isoformat()
             log_event("AGENT_CANCELLED_EXCEPTION", turn_id=turn.get("turn"), response_id=response_id)
             log_event("AGENT_TASK_CANCELLED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
