@@ -24,6 +24,7 @@ class SessionState:
         self.store = store
         self.state = default_state()
         self.policy = derive_policy(self.state, {"turn": 0})
+        self.last_applied_turn = 0
         os.makedirs(log_dir, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(log_dir, f"state_{ts}_{owner_id[:8]}.jsonl")
@@ -55,6 +56,14 @@ class SessionState:
     def apply_turn(self, turn_record: dict, head: dict | None) -> dict:
         turn_record = dict(turn_record)
         turn_record.setdefault("owner_id", self.owner_id)
+        # P2 async order guard: a cancelled older task must never mutate state
+        # out of order. Stale turns are logged, not applied.
+        tno = int(turn_record.get("turn") or 0)
+        if tno and tno <= self.last_applied_turn:
+            with open(self.log_path, "a") as f:
+                f.write(json.dumps({"event": "STALE_TURN_SKIPPED", "turn": tno}) + "\n")
+            return self.policy
+        self.last_applied_turn = tno
         self.state, policy, log = update(self.state, turn_record, head)
         entry = {"turn": turn_record.get("turn"), "head": head,
                   "head_raw_snippet": turn_record.get("head_raw_snippet"),

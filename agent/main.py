@@ -333,19 +333,29 @@ async def entrypoint(ctx: JobContext):
             print("\n[Agent was interrupted]")
             turn["interrupted"] = True
             turn["tts_text"] = "".join(spoken_text)[:600]
+            if engine and engine.get("fused"):
+                turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
+                turn["system_sha1"] = engine["fused"].meta.get("system_sha1")
+                turn["llm_context"] = engine["fused"].meta.get("context")
             turn["tts"] = {
                 "provider": getattr(tts_provider, "last_provider", "unknown"),
                 "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
+                "interrupted_at_ms": round((time.time() - tts_audio_start) * 1000) if tts_audio_start else None,
             }
-            print(f"[TurnEval] turn={turn.get('turn')} lang={turn.get('stt_language')} "
-                  f"rel={turn.get('turn_relation')} spoke_because={turn.get('response_trigger_reason')} "
-                  f"stt={turn.get('stt_latency_s')}s llm_ttft={turn.get('llm_ttft_s')}s "
-                  f"tts_ttfa={turn.get('tts_first_audio_s')}s "
-                  f"speech->audio={turn.get('speech_end_to_first_audio_s')}s "
-                  f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s "
-                  f"interrupted=True")
+            print("[TurnTrace] " + json.dumps({
+                "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
+                "stt": {"text": turn.get("stt_transcript"), "logprob": turn.get("stt_avg_logprob")},
+                "perception": bool(engine["fused"].head) if engine else None,
+                "prompt_version": turn.get("prompt_version"),
+                "response": (turn.get("llm_response") or "")[:120],
+                "tts": turn.get("tts"), "tts_text": (turn.get("tts_text") or "")[:100],
+                "interrupted": True,
+            }, ensure_ascii=False, default=str)[:1200])
+            print(f"[TurnEval] turn={turn.get('turn')} INTERRUPTED provider={turn['tts']['provider']} "
+                  f"audio={turn['tts']['audio_duration_s']}s "
+                  f"at_ms={turn['tts'].get('interrupted_at_ms')}")
             log_event("AGENT_CANCELLED_EXCEPTION", turn_id=turn.get("turn"), response_id=response_id)
             log_event("AGENT_TASK_CANCELLED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
             await flush_audio_source(agent_source)

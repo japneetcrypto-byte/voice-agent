@@ -148,6 +148,12 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
     turn_type = tr.get("turn_type", "speech")
 
     # ---- Degradation turns (C7 D7/D8): no head, deterministic responses ----
+    if turn_type == "unclear_speech":
+        # P0: garbage STT -> clarification; never invent entities from unreliable text
+        _log(log, "TURN-UNCLEAR-SPEECH")
+        policy = _derive_policy(state, turn_record, head=None, degradation="clarify")
+        return state, policy, log
+
     if turn_type == "acoustic_only":
         _log(log, "TURN-ACOUSTIC-ONLY")
         e = state["emotion"]
@@ -560,6 +566,9 @@ def _derive_policy(state: dict, tr: dict, head: dict | None, degradation: str | 
         },
         "phase": state["conversation"].get("phase"),
     }
+    if degradation == "clarify":
+        policy["degradation"] = "clarify"
+        policy["turn_type_handling"] = "short speech-native clarification asking them to repeat"
     if degradation == "D7":
         policy["degradation"] = "D7"
         policy["turn_type_handling"] = "gentle presence acknowledgment; invite sharing; never claim mishearing"

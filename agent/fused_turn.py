@@ -19,9 +19,9 @@ import time
 from typing import AsyncGenerator
 
 from agent.prompt_fragments import (
-    SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11,
+    SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11, PROMPT_VERSION,
     FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, pick_line,
-    BACKCHANNEL_LINES, LISTEN_LINES,
+    BACKCHANNEL_LINES, LISTEN_LINES, CLARIFY_LINES,
 )
 
 TAG_RE = re.compile(r"<perception>(.*?)</perception>", re.DOTALL)
@@ -64,6 +64,13 @@ class FusedLLM:
         # Turn-taking (owner brief): backchannels get 1-3 word acknowledgments;
         # listen requests get one short listening line. No LLM call — the policy
         # decision is deterministic (structured turn_relation flag -> policy goal).
+        # P0 low-confidence STT: deterministic clarification, no LLM, no invention
+        if turn_type == "unclear_speech":
+            line = pick_line(CLARIFY_LINES, turn_no)
+            self.meta.update({"degradation": None, "llm_called": False, "spoke_because": "unclear_speech"})
+            yield line
+            return
+
         goal = (policy or {}).get("response_goal")
         if goal == "backchannel":
             line = pick_line(BACKCHANNEL_LINES, turn_no)
@@ -93,6 +100,9 @@ class FusedLLM:
             return
 
         system = self._degraded_system() if degraded else SYSTEM_FUSED_V11
+        import hashlib
+        self.meta["prompt_version"] = PROMPT_VERSION
+        self.meta["system_sha1"] = hashlib.sha1(system.encode()).hexdigest()[:10]
         contents = self.build_contents(user_text, policy, memory_view, threads, history)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
