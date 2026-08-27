@@ -43,10 +43,16 @@ class GroqSTT(STTProvider):
         wav_io.seek(0)
         wav_io.name = "audio.wav"
 
+        # Evidence 2026-08-27: without a language pin, Whisper auto-detect misfires on
+        # short Hinglish utterances (observed Spanish/Romanian/English outputs).
+        # Pin to Hindi (handles Hinglish + English code-switching); env-overridable.
+        # NOT a provider/model change — API parameter only.
+        stt_language = os.getenv("AIVA_STT_LANGUAGE", "hi")
         transcription = self.client.audio.transcriptions.create(
             file=("audio.wav", wav_io.read()),
             model="whisper-large-v3-turbo",
-            response_format="verbose_json"
+            response_format="verbose_json",
+            language=stt_language,
         )
         
         # Owner decision 2026-08-27: feed Devanagari to the LLM directly.

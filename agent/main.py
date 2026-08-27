@@ -61,6 +61,28 @@ def is_real_user_turn(transcript, speech_duration_ms: float) -> tuple[bool, str]
     return True, "accepted"
 
 
+# C7-style deterministic turn-taking flags (exact-match only — no interpretation;
+# same class as is_real_user_turn's hallucination blacklist). Consumed by the
+# policy derivation as structured booleans.
+BACKCHANNEL_TOKENS = {"haan", "han", "hmm", "hm", "hmmm", "okay", "ok", "accha", "achha",
+                       "acha", "phir", "bol", "yeah", "yes", "हाँ", "हम्म", "अच्छा", "ठीक"}
+LISTEN_REQUEST_TOKENS = {"chup", "chupchup", "suno", "suno_bas", "bassuno", "pehlemeribaatsun",
+                          "beechmeinmatbolo", "chupraho", "meribaatsun", "pehlesunomera"}
+
+
+def classify_turn_relation(transcript_text: str) -> str:
+    """Exact-token match on the normalized transcript (no interpretation)."""
+    norm = re.sub(r"[^\w\s]", "", (transcript_text or "").lower()).strip()
+    norm = re.sub(r"\s+", "", norm)
+    if not norm:
+        return "empty"
+    if any(tok in norm for tok in LISTEN_REQUEST_TOKENS):
+        return "listen_request"
+    if norm in BACKCHANNEL_TOKENS or norm in {"bas", "hmmhaan", "haanhmm"}:
+        return "backchannel"
+    return "content"
+
+
 def is_echo(transcript_text: str, recent_agent_text: str) -> tuple[bool, float]:
     if not recent_agent_text or not transcript_text:
         return False, 0.0
@@ -271,11 +293,12 @@ async def entrypoint(ctx: JobContext):
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
             }
-            print(f"[TurnEval] turn={turn.get('turn')} stt={turn.get('stt_latency_s')}s "
-                  f"llm_ttft={turn.get('llm_ttft_s')}s tts_ttfa={turn.get('tts_first_audio_s')}s "
+            print(f"[TurnEval] turn={turn.get('turn')} lang={turn.get('stt_language')} "
+                  f"rel={turn.get('turn_relation')} spoke_because={turn.get('response_trigger_reason')} "
+                  f"stt={turn.get('stt_latency_s')}s llm_ttft={turn.get('llm_ttft_s')}s "
+                  f"tts_ttfa={turn.get('tts_first_audio_s')}s "
                   f"speech->audio={turn.get('speech_end_to_first_audio_s')}s "
-                  f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s "
-                  f"interrupted={False}")
+                  f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s")
 
             print("Agent finished speaking.")
             turn["response_trigger_reason"] = "completed"
@@ -316,9 +339,13 @@ async def entrypoint(ctx: JobContext):
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
             }
-            print(f"[TurnEval] turn={turn.get('turn')} INTERRUPTED provider={turn['tts']['provider']} "
-                  f"audio={turn['tts']['audio_duration_s']}s")
-            turn["interruption_timestamp"] = datetime.now(timezone.utc).isoformat()
+            print(f"[TurnEval] turn={turn.get('turn')} lang={turn.get('stt_language')} "
+                  f"rel={turn.get('turn_relation')} spoke_because={turn.get('response_trigger_reason')} "
+                  f"stt={turn.get('stt_latency_s')}s llm_ttft={turn.get('llm_ttft_s')}s "
+                  f"tts_ttfa={turn.get('tts_first_audio_s')}s "
+                  f"speech->audio={turn.get('speech_end_to_first_audio_s')}s "
+                  f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s "
+                  f"interrupted=True")
             log_event("AGENT_CANCELLED_EXCEPTION", turn_id=turn.get("turn"), response_id=response_id)
             log_event("AGENT_TASK_CANCELLED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
             await flush_audio_source(agent_source)
@@ -508,6 +535,7 @@ async def entrypoint(ctx: JobContext):
                                 turn["stt_compression_ratio"] = transcript.compression_ratio
 
                                 echo_text = devanagari_to_roman(transcript.text)
+                                turn["turn_relation"] = classify_turn_relation(transcript.text)
                                 is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
                                 if is_echo_detected:
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")

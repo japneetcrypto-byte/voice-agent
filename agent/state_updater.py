@@ -503,6 +503,27 @@ def _derive_policy(state: dict, tr: dict, head: dict | None, degradation: str | 
                     mode: str | None = None) -> dict:
     md = state["mode"]
     m = mode or md["current"]
+
+    # Turn-taking decision (owner brief 2026-08-27): backchannels get minimal
+    # acknowledgments; listen requests suppress content responses. Deterministic
+    # structured flags from orchestration (exact-match, no interpretation).
+    relation = tr.get("turn_relation")
+    if relation == "backchannel" and not state["safety"].get("override_active"):
+        return {"mode": m, "response_goal": "backchannel",
+                 "advice_permission": "not_granted",
+                 "safety_override_active": bool(state["safety"].get("override_active")),
+                 "avoid": ["long_response", "questions", "advice", "naming_emotion"],
+                 "pacing": {"max_sentences": 1, "max_questions": 0, "max_words": 3},
+                 "emotion_label_allowed": False,
+                 "phase": state["conversation"].get("phase")}
+    if relation == "listen_request" and not state["safety"].get("override_active"):
+        return {"mode": m, "response_goal": "listen_quietly",
+                 "advice_permission": "not_granted",
+                 "safety_override_active": bool(state["safety"].get("override_active")),
+                 "avoid": ["questions", "advice", "naming_emotion", "long_response"],
+                 "pacing": {"max_sentences": 1, "max_questions": 0},
+                 "emotion_label_allowed": False,
+                 "phase": state["conversation"].get("phase")}
     override = state["safety"].get("override_active", False) if safety_override is None else safety_override
     if override:
         m = "CALM"

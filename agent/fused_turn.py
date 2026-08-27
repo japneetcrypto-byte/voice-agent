@@ -21,6 +21,7 @@ from typing import AsyncGenerator
 from agent.prompt_fragments import (
     SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11,
     FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, pick_line,
+    BACKCHANNEL_LINES, LISTEN_LINES,
 )
 
 TAG_RE = re.compile(r"<perception>(.*?)</perception>", re.DOTALL)
@@ -59,6 +60,21 @@ class FusedLLM:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
         self.meta["turn_type"] = turn_type
+
+        # Turn-taking (owner brief): backchannels get 1-3 word acknowledgments;
+        # listen requests get one short listening line. No LLM call — the policy
+        # decision is deterministic (structured turn_relation flag -> policy goal).
+        goal = (policy or {}).get("response_goal")
+        if goal == "backchannel":
+            line = pick_line(BACKCHANNEL_LINES, turn_no)
+            self.meta.update({"degradation": None, "llm_called": False, "spoke_because": "backchannel"})
+            yield line
+            return
+        if goal == "listen_quietly":
+            line = pick_line(LISTEN_LINES, turn_no)
+            self.meta.update({"degradation": None, "llm_called": False, "spoke_because": "listen_request"})
+            yield line
+            return
 
         # D7 / D8: no LLM call — deterministic lines (updater policy already encodes these)
         if turn_type == "acoustic_only":
