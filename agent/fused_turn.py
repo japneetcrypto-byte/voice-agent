@@ -105,7 +105,11 @@ class FusedLLM:
                         try:
                             self.head = json.loads(m.group(1).strip())
                         except json.JSONDecodeError:
-                            self.head = None  # D1: prose passthrough, no state update
+                            try:
+                                obj, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
+                                self.head = obj if isinstance(obj, dict) else None
+                            except json.JSONDecodeError:
+                                self.head = None  # D1: prose passthrough, no state update
                     if prose_started:
                         start = max(m.end(), emitted) if m else emitted
                         if len(buf) > start:
@@ -142,4 +146,8 @@ class FusedLLM:
                     try:
                         self.head = json.loads(m.group(1).strip())
                     except json.JSONDecodeError:
-                        self.head = None
+                        try:
+                            obj, _ = json.JSONDecoder().raw_decode(m.group(1).strip())
+                            self.head = obj if isinstance(obj, dict) else None
+                        except json.JSONDecodeError:
+                            self.head = None

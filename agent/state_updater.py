@@ -200,8 +200,12 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
     harm_others = bool(saf.get("harm_to_others", False))
     other_flag = bool(saf.get("other_flagged", False))
     safety_conf = float(saf.get("confidence", 0.0) or 0.0)
-    if risk == "none" and (self_harm or harm_others):
-        risk = "high_risk"  # consistency guard (rule 1, T4.1)
+    if self_harm or harm_others:
+        # T4.1 taxonomy rule 1 (locked): any self-harm / harm-to-others signal
+        # -> high_risk regardless of the head's risk_level or confidence.
+        if risk != "high_risk":
+            _log(log, "SAFE-RULE1-ESCALATE")
+        risk = "high_risk"
 
     # ---- Correction (A-U7): after normalize/validate, pins confidence ----
     corr = head.get("correction") or {}

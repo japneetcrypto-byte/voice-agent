@@ -192,11 +192,22 @@ def classify_parse_failure(full: str) -> str:
     try:
         json.loads(raw)
         return "parsed_ok"
-    except json.JSONDecodeError as e:
-        return f"invalid_json near char {e.pos}: {str(e)[:120]} | raw: {raw[:160]!r}"
+    except json.JSONDecodeError:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(raw)
+            if isinstance(obj, dict):
+                return "parsed_ok_with_trailing_data (raw_decode tolerance)"
+        except json.JSONDecodeError:
+            pass
+        return "invalid_json (unrecoverable)"
 
 
 def parse_head(full: str):
+    """C4 parser. Tolerance (added after full-set evidence, 2026-08-26): when the
+    extracted head is a complete JSON object followed by trailing data (model
+    occasionally appends text after the object, still inside the tags), the FIRST
+    complete object is accepted via raw_decode. Trailing data is logged, ignored.
+    No interpretation — deterministic transport tolerance."""
     import re
     m = re.search(r"<perception>(.*?)</perception>", full, re.DOTALL)
     if not m:
@@ -206,7 +217,13 @@ def parse_head(full: str):
         raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
     try:
         return json.loads(raw), full[m.end():].strip(), ""
-    except json.JSONDecodeError as e:
+    except json.JSONDecodeError:
+        try:
+            obj, _ = json.JSONDecoder().raw_decode(raw)
+            if isinstance(obj, dict):
+                return obj, full[m.end():].strip(), ""
+        except json.JSONDecodeError:
+            pass
         return None, full[m.end():].strip(), f"invalid JSON: {e}"
 
 
