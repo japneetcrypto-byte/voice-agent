@@ -45,7 +45,8 @@ class GroqSTT(STTProvider):
 
         # Evidence 2026-08-27: without a language pin, Whisper auto-detect misfires on
         # short Hinglish utterances (observed Spanish/Romanian/English outputs).
-        # Pin to Hindi (handles Hinglish + English code-switching); env-overridable.
+        # Product scope: Hindi + English + Hinglish. The 'hi' pin covers Hindi/Hinglish
+        # including English words; pure-English rooms may set AIVA_STT_LANGUAGE=en.
         # NOT a provider/model change — API parameter only.
         stt_language = os.getenv("AIVA_STT_LANGUAGE", "hi")
         # Evidence 2026-08-27: repetition loops ("ake ake ake") are a known Whisper
