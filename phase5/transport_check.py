@@ -20,11 +20,21 @@ from agent.fused_turn import FusedLLM  # noqa: E402
 
 
 async def main() -> int:
-    key = os.getenv("GEMINI_API_KEY", "")
-    if not key or key.startswith(("your_", "<<<")):
-        print("RESULT: GEMINI_API_KEY missing in .env")
+    keys = []
+    primary = os.getenv("GEMINI_API_KEY", "")
+    if primary and not primary.startswith(("your_", "<<<")):
+        keys.append(primary)
+    for i in (2, 3):
+        k = os.getenv(f"GEMINI_API_KEY_{i}", "")
+        if k and not k.startswith(("your_", "<<<")):
+            keys.append(k)
+    if not keys:
+        print("RESULT: no GEMINI_API_KEY found in .env")
         return 2
-    print(f"key: <set, len={len(key)}>")
+    key = keys[0]
+    print(f"keys available: {len(keys)}")
+    if len(keys) > 1:
+        print(f"rotation: key_1 -> key_2 -> ... on 429")
     f = FusedLLM()
     out = []
     async for c in f.stream_prose(
