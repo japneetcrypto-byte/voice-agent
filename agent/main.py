@@ -178,6 +178,9 @@ async def entrypoint(ctx: JobContext):
     agent_track = rtc.LocalAudioTrack.create_audio_track("agent-mic", agent_source)
     options = rtc.TrackPublishOptions()
     options.source = rtc.TrackSource.SOURCE_MICROPHONE
+    # Mark this participant as the assistant so frontend useVoiceAssistant()
+    # can identify the agent and animate the BarVisualizer.
+    await ctx.room.local_participant.set_metadata('{"agent": true}')
     await ctx.room.local_participant.publish_track(agent_track, options)
     
     agent_task = None  # Tracks the active response task so we can interrupt it

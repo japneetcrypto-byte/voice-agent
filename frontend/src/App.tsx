@@ -85,8 +85,14 @@ function VoiceAssistantUI() {
         <span>State: {state}</span>
       </div>
 
-      <div style={{ height: '50px', marginTop: '20px' }}>
-        {audioTrack && <BarVisualizer state={state} trackRef={audioTrack} />}
+      <div style={{ height: '50px', marginTop: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+        {audioTrack ? (
+          <BarVisualizer state={state} trackRef={audioTrack} />
+        ) : (
+          <span style={{ color: '#666', fontSize: '14px' }}>
+            {state === 'speaking' ? '🔊 speaking…' : state === 'thinking' ? '🤔 thinking…' : '👂 listening…'}
+          </span>
+        )}
       </div>
 
       <p style={{ color: '#888', fontSize: '14px' }}>Mic is live — just speak!</p>
