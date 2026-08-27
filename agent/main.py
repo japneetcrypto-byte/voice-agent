@@ -24,6 +24,7 @@ from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
+from agent.turn_controller import decide as turn_controller_decide
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
@@ -451,6 +452,10 @@ async def entrypoint(ctx: JobContext):
                             idle_state["last_activity"] = time.monotonic()
                             idle_state["line_sent"] = False
                         # Endpointing evidence: did speech resume right after an endpoint?
+                        wait_duration_ms = None
+                        if engine and engine.get("wait_started_at"):
+                            wait_duration_ms = round((time.monotonic() - engine["wait_started_at"]) * 1000, 1)
+                            engine["wait_started_at"] = None
                         premature_resume = None
                         resume_gap = getattr(vad_provider, "last_resume_gap_ms", None)
                         vad_provider.last_resume_gap_ms = None
@@ -463,6 +468,9 @@ async def entrypoint(ctx: JobContext):
                             print(f"[Endpoint] PREMATURE resume +{resume_gap_ms_}ms "
                                   f"(tts_active={premature_resume['agent_tts_active_at_resume']}, "
                                   f"next penalty={vad_provider.endpoint_penalty_ms}ms)")
+                        if wait_duration_ms is not None:
+                            print(f"[TurnController] continuation arrived after {wait_duration_ms}ms "
+                                  f"of waiting — previous pause was NOT a turn end")
                         
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
@@ -611,6 +619,24 @@ async def entrypoint(ctx: JobContext):
                                     print("[Turn Gate Rejected] Missing valid turn lifecycle state")
                                     return
 
+                                # ---- Conversation Turn Controller (locked brief):
+                                # a VAD speech-end is only a POSSIBLE handoff.
+                                prev_wait = bool(engine.get("last_turn_wait")) if engine else False
+                                action, ctrl_reason = turn_controller_decide(transcript.text, prev_wait)
+                                turn["continuation_detected"] = action == "suppress"
+                                turn["turn_end_decision"] = action
+                                if action == "suppress":
+                                    turn["suppression_reason"] = ctrl_reason
+                                    turn["response_suppressed"] = True
+                                    turn["wait_started_at"] = time.monotonic()
+                                    if engine:
+                                        engine["last_turn_wait"] = True
+                                    session.add_user_message(transcript.text)  # context preserved
+                                    print(f"[TurnController] WAIT ({ctrl_reason}) — silent, "
+                                          f"context kept: {transcript.text[:80]!r}")
+                                    return
+                                if engine:
+                                    engine["last_turn_wait"] = False
                                 turn["response_trigger_reason"] = "user_speech_ended"
                                 await run_agent_response(transcript.text, turn)
 
