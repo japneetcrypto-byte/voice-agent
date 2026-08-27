@@ -78,6 +78,7 @@ class FusedLLM:
 
         system = self._degraded_system() if degraded else SYSTEM_FUSED_V11
         contents = self.build_contents(user_text, policy, memory_view, threads, history)
+        self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
         client = self._client_for(key)
 

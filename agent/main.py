@@ -273,6 +273,7 @@ async def entrypoint(ctx: JobContext):
                         turn["head_raw_snippet"] = engine["fused"].meta.get("head_raw_snippet", "")
                         turn["head_fail_class"] = engine["fused"].meta.get("head_fail_class", "unknown")
                         print(f"[StateEngine] PARSE-FAIL turn {turn.get('turn')} class={turn['head_fail_class']} raw={turn['head_raw_snippet'][:240]!r}")
+                    turn["llm_context"] = engine["fused"].meta.get("context")
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
                     turn["policy_next"] = policy
