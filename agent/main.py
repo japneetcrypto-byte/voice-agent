@@ -157,6 +157,13 @@ async def entrypoint(ctx: JobContext):
             lcm = LayeredContextManager(log_dir="logs")
             lcm.recover_from_checkpoint()
             engine = {"fused": FusedLLM(), "store": MemoryStore(), "sess": None, "lcm": lcm}
+            try:
+                from providers.stt_gemini_live import GeminiLiveSTT
+                engine["gemini_stt"] = GeminiLiveSTT()
+                print("[STT] Gemini Live Transcribe active")
+            except (ValueError, ImportError) as e:
+                engine["gemini_stt"] = None
+                print(f"[STT] Gemini Live unavailable: {e}")
             print("[StateEngine] on (TRANSPORT_V1.1)")
         except Exception as e:
             print(f"[StateEngine] init failed, plain path: {type(e).__name__}: {e}")
@@ -572,12 +579,18 @@ async def entrypoint(ctx: JobContext):
                 # ALWAYS buffer speech if speaking (we evaluate echo later)
                 if is_speaking:
                     speech_buffer.append(audio_np)
+                    gemini_fwd = engine.get("gemini_stt") if engine else None
+                    if gemini_fwd and getattr(gemini_fwd, '_stream_active', False):
+                        asyncio.create_task(gemini_fwd.send_chunk(audio_np.tobytes()))
                     if 'raw_pcm_chunks' in dir():
                         raw_pcm_chunks.append(audio_np.tobytes())
 
                 for vad_event in vad_events:
                     if vad_event == VADEvent.SPEECH_STARTED:
                         is_speaking = True
+                        gemini_stt_s = engine.get("gemini_stt") if engine else None
+                        if gemini_stt_s:
+                            asyncio.create_task(gemini_stt_s.start_stream())
                         if engine:
                             idle_state["last_activity"] = time.monotonic()
                             idle_state["line_sent"] = False
@@ -625,6 +638,9 @@ async def entrypoint(ctx: JobContext):
                         is_speaking = False
                         endpoint_info = dict(getattr(vad_provider, "last_endpoint", {}) or {})
                         tmark("VAD_SPEECH_ENDED", turn=turn_number + 1, **endpoint_info)
+                        gemini_end = engine.get("gemini_stt") if engine else None
+                        if gemini_end and getattr(gemini_end, '_stream_active', False):
+                            asyncio.create_task(gemini_end.end_stream())
                         print(f"[Endpoint] turn-complete decision: {endpoint_info}")
                         print("User/Echo stopped. Transcribing to evaluate...")
                         log_event("USER_SPEECH_ENDED", turn_id=turn_number + 1)
@@ -702,7 +718,16 @@ async def entrypoint(ctx: JobContext):
                                 if raw_chunks and hasattr(stt_router, 'primary'):
                                     transcript = await stt_router.transcribe(audio_data, raw_chunks=raw_chunks)
                                 else:
-                                    transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
+                                    gstt = engine.get("gemini_stt") if engine else None
+                                    if gstt and gstt._final_text:
+                                        from providers.stt import Transcript as T
+                                        transcript = T(text=gstt._final_text, language="hi",
+                                                        no_speech_prob=0.0, avg_logprob=-0.2,
+                                                        compression_ratio=1.0)
+                                        gstt._final_text = None
+                                        print(f"[STT] Gemini Live: {transcript.text[:50]!r}")
+                                    else:
+                                        transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
                                 log_event("STT_COMPLETED", turn_id=turn.get("turn"))
                                 tmark("STT_COMPLETED", turn=turn.get("turn"),
