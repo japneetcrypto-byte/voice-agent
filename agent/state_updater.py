@@ -183,7 +183,13 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
         policy = _derive_policy(state, turn_record, head=None)
         return state, policy, log
 
-    # ---- Compact head: process mem field (relationship/fact memory) ----
+    # ---- Compact head: process delta field (entity-relation state) ----
+    delta = head.get("delta") or {}
+    if delta and isinstance(delta, dict):
+        # Store for the session state compiler to process
+        head["_delta"] = delta
+
+    # ---- Compact head: process mem field (legacy, backward compat) ----
     if "mem" in head and head["mem"]:
         mem_text = head["mem"].strip()
         if mem_text:

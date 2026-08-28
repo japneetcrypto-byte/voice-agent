@@ -15,6 +15,7 @@ import time
 from datetime import datetime, timezone
 
 from agent.memory_store import MemoryStore
+from agent.state_delta_compiler import StateDeltaCompiler
 from agent.state_updater import default_state, derive_policy, update
 
 
@@ -25,6 +26,7 @@ class SessionState:
         self.state = default_state()
         self.policy = derive_policy(self.state, {"turn": 0})
         self.last_applied_turn = 0
+        self.delta_compiler = StateDeltaCompiler()
         os.makedirs(log_dir, exist_ok=True)
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         self.log_path = os.path.join(log_dir, f"state_{ts}_{owner_id[:8]}.jsonl")
@@ -78,6 +80,15 @@ class SessionState:
                   "ts": datetime.now(timezone.utc).isoformat()}
         with open(self.log_path, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
+        # Process entity-relation delta from the perception head
+        delta = None
+        if head and isinstance(head, dict):
+            delta = head.get("delta") or head.get("_delta")
+        if delta and isinstance(delta, dict):
+            delta_changes = self.delta_compiler.process(turn_record.get("turn", 0), delta)
+            if delta_changes.get("entities_updated"):
+                print(f"[StateDelta] {delta_changes['entities_updated']}")
+
         self.policy = policy
         self._commit_explicit_memory(head)
         return policy
@@ -88,6 +99,12 @@ class SessionState:
                 self.store.commit(self.owner_id, mc, immediate=True)
 
     # ---- session lifecycle ----
+    def get_delta_memory_candidates(self) -> list:
+        return self.delta_compiler.get_memory_candidates()
+
+    def get_entity_context(self) -> str:
+        return self.delta_compiler.to_context_string()
+
     def end_session(self, keep_pending: bool = True) -> None:
         for c in self.state.get("memory", {}).get("write_candidates", []):
             self.store.commit(self.owner_id, {"type": c.get("type", "semantic"),
