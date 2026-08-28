@@ -22,7 +22,7 @@ for line in open(p):
     
     turn = t["turn"]
     stt = t.get("stt_transcript", "")
-    reply = t.get("llm_response", "")
+    reply = t.get("llm_response") or ""
     tts = t.get("tts") or {}
     ctx_raw = t.get("llm_context")
     
