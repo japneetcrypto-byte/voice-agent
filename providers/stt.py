@@ -41,9 +41,14 @@ def devanagari_to_roman(text: str) -> str:
 class GroqSTT(STTProvider):
     def __init__(self):
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
-        forced = os.getenv("AIVA_STT_LANGUAGE", "").strip().lower()
-        self.session_language = forced or None
-        self.auto_mode = not forced
+        # Product scope: Hindi/English/Hinglish for Indian users.
+        # Default pin to 'hi' — handles Hindi, English words, and code-switching.
+        # Auto-detect on the first utterance is unreliable (greetings are
+        # ambiguous, leading to wrong-language locks like English/Urdu/Filipino).
+        # Override only for non-Hindi use cases: AIVA_STT_LANGUAGE=en etc.
+        forced = os.getenv("AIVA_STT_LANGUAGE", "hi").strip().lower()
+        self.session_language = forced
+        self.auto_mode = False
 
     def transcribe(self, audio_data: np.ndarray) -> Transcript:
         if len(audio_data) < 4000:
