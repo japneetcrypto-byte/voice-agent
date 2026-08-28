@@ -93,3 +93,78 @@ class GeminiLiveSTT(STTProvider):
     def transcribe(self, audio_data) -> Transcript:
         """Sync batch mode — delegates to Groq (Gemini Live is streaming-only)."""
         return self.groq.transcribe(audio_data)
+
+    # ---- Streaming session interface (called by main.py per turn) ----
+
+    _stream_active: bool = False
+    _ws_session = None
+    _text_parts: list = None
+    _final_text: str | None = None
+    _client_instance = None
+
+    async def start_stream(self):
+        """Open a Gemini Live WS session and start accepting audio chunks."""
+        if self._stream_active:
+            return
+        from google import genai
+        from google.genai import types
+
+        self._text_parts = []
+        self._final_text = None
+        self._client_instance = genai.Client(api_key=self.api_key)
+        self._ws_config = types.LiveConnectConfig(
+            response_modalities=["TEXT"],
+            input_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=[],
+            ),
+        )
+        try:
+            self._ws_session = await asyncio.wait_for(
+                self._client_instance.aio.live.connect(
+                    model=self.model, config=self._ws_config
+                ), timeout=10)
+            self._stream_active = True
+            print("[GeminiSTT] stream opened")
+        except Exception as e:
+            print(f"[GeminiSTT] stream open failed: {e}")
+            self._stream_active = False
+
+    async def send_chunk(self, pcm_bytes: bytes):
+        """Send a raw PCM audio chunk to the active stream."""
+        if not self._stream_active or not self._ws_session:
+            return
+        try:
+            from google.genai import types
+            await self._ws_session.send_realtime_input(
+                audio=types.Blob(data=pcm_bytes, mime_type="audio/pcm;rate=16000")
+            )
+        except Exception:
+            self._stream_active = False
+
+    async def end_stream(self):
+        """Close the stream and extract the final transcription."""
+        if not self._stream_active or not self._ws_session:
+            return
+        try:
+            await self._ws_session.send_realtime_input(audio_stream_end=True)
+            # Collect final transcription events
+            async for response in self._ws_session.receive():
+                sc = response.server_content
+                if sc and sc.input_transcription:
+                    self._text_parts.append(sc.input_transcription.text)
+        except Exception:
+            pass
+        finally:
+            self._stream_active = False
+            try:
+                await self._ws_session.close()
+            except Exception:
+                pass
+            self._ws_session = None
+
+        full_text = " ".join(self._text_parts).strip()
+        if full_text:
+            self._final_text = full_text
+            print(f"[GeminiSTT] final: {full_text[:60]!r}")
+        else:
+            print("[GeminiSTT] empty transcription")
