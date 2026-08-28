@@ -37,6 +37,10 @@ class SessionState:
     def memory_view(self) -> list:
         return self.store.view(self.owner_id)
 
+    def entity_context(self) -> str:
+        """Known entities for LLM context — from delta compiler."""
+        return self.delta_compiler.to_context_string() if hasattr(self, 'delta_compiler') else ""
+
     def thread_summaries(self) -> list:
         out = []
         for t in self.state.get("threads", []):

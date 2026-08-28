@@ -36,6 +36,22 @@ PREF_PATTERNS = [
 ]
 
 
+# Known ASR variant groups — map variants to canonical name
+ALIAS_GROUPS = {
+    "gaggu": ["gaggu", "gagu", "गग्गू", "गगू", "gagoo", "gggu"],
+    "neetu": ["neetu", "nittu", "नीतू", "नित्तु", "netu"],
+    "rimi": ["rimi", "rimmi", "रिमी", "रिम्मी", "rimmee"],
+}
+
+def normalize_entity(name: str) -> str:
+    """Map ASR variants to a canonical form."""
+    low = name.lower().strip()
+    for canonical, variants in ALIAS_GROUPS.items():
+        if low in variants:
+            return canonical
+    return name.strip()
+
+
 def extract_entities_from_reply(reply: str) -> list[dict]:
     """Extract entity-relation pairs from Aiva's conversational reply.
 
@@ -50,9 +66,11 @@ def extract_entities_from_reply(reply: str) -> list[dict]:
         for match in pattern.finditer(reply):
             name = match.group(1).strip()
             norm = name.lower()
-            if norm not in seen and len(name) >= 2:
-                seen.add(norm)
-                entities.append({"name": name, "relation": relation})
+            canonical = normalize_entity(name)
+            cnorm = canonical.lower()
+            if cnorm not in seen and len(canonical) >= 2:
+                seen.add(cnorm)
+                entities.append({"name": canonical, "relation": relation})
     return entities
 
 
