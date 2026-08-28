@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 
 from agent.memory_store import MemoryStore
 from agent.state_delta_compiler import StateDeltaCompiler
+from agent.entity_extractor import extract_entities_from_reply
 from agent.state_updater import default_state, derive_policy, update
 
 
@@ -80,7 +81,7 @@ class SessionState:
                   "ts": datetime.now(timezone.utc).isoformat()}
         with open(self.log_path, "a") as f:
             f.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
-        # Process entity-relation delta from the perception head
+        # Process entity-relation delta from the perception head (if present)
         delta = None
         if head and isinstance(head, dict):
             delta = head.get("delta") or head.get("_delta")
@@ -88,6 +89,20 @@ class SessionState:
             delta_changes = self.delta_compiler.process(turn_record.get("turn", 0), delta)
             if delta_changes.get("entities_updated"):
                 print(f"[StateDelta] {delta_changes['entities_updated']}")
+        
+        # Entity extraction from LLM reply (deterministic, no LLM calls)
+        # When the perception head is missing, we extract from Aiva's own
+        # confirmation reply which mirrors what the user said.
+        reply_text = turn_record.get("llm_response") or ""
+        if reply_text:
+            extracted = extract_entities_from_reply(reply_text)
+            if extracted:
+                # Build a mini-delta from extracted entities
+                mini_delta = {"entities": extracted}
+                delta_changes = self.delta_compiler.process(
+                    turn_record.get("turn", 0), mini_delta)
+                if delta_changes.get("entities_updated"):
+                    print(f"[EntityExtract] {delta_changes['entities_updated']}")
 
         self.policy = policy
         self._commit_explicit_memory(head)
