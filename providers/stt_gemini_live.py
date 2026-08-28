@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import time
 from typing import AsyncGenerator
 
 from providers.stt import Transcript, STTProvider, GroqSTT
@@ -112,6 +113,7 @@ class GeminiLiveSTT(STTProvider):
 
         self._text_parts = []
         self._final_text = None
+        self._open_time = time.monotonic()
         self._client_instance = genai.Client(api_key=self.api_key)
         self._ws_config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
@@ -172,9 +174,24 @@ class GeminiLiveSTT(STTProvider):
             self._ws_session = None
             self._connect_cm = None
 
+        end_time = time.monotonic()
+        duration_s = round(end_time - getattr(self, "_open_time", end_time), 2)
         full_text = " ".join(self._text_parts).strip()
+        word_count = len(full_text.split()) if full_text else 0
+
+        self._last_metrics = {
+            "provider": "gemini_transcribe_live",
+            "duration_s": duration_s,
+            "word_count": word_count,
+        }
+
+        if not hasattr(self, "stt_metrics"):
+            self.stt_metrics = []
+        self.stt_metrics.append(self._last_metrics)
+
         if full_text:
             self._final_text = full_text
-            print(f"[GeminiSTT] final: {full_text[:60]!r}")
+            print(f"[GeminiSTT] ok {duration_s}s | {word_count}w | {full_text[:80]}")
         else:
-            print("[GeminiSTT] empty transcription")
+            self._final_text = None
+            print(f"[GeminiSTT] empty after {duration_s}s")

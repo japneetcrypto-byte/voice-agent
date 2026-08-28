@@ -725,7 +725,8 @@ async def entrypoint(ctx: JobContext):
                                                         no_speech_prob=0.0, avg_logprob=-0.2,
                                                         compression_ratio=1.0)
                                         gstt._final_text = None
-                                        print(f"[STT] Gemini Live: {transcript.text[:50]!r}")
+                                        m = gstt._last_metrics or {}
+                                        print(f"[GeminiSTT] {m.get('duration_s','?')}s | {m.get('word_count','?')}w | {m.get('words_per_second','?')} w/s")
                                     else:
                                         transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
