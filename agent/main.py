@@ -734,10 +734,7 @@ async def entrypoint(ctx: JobContext):
                                         # P0: garbled-but-present text (poor confidence or
                                         # Whisper repetition loop) -> deterministic
                                         # clarification, never invention
-                                        if rejection_reason in ("high_no_speech_prob",
-                                                                 "low_avg_logprob",
-                                                                 "catastrophic_low_confidence") \
-                                                or is_repetition_loop(transcript.text):
+                                        if rejection_reason in ("catastrophic_low_confidence",) or is_repetition_loop(transcript.text):
                                             turn["turn_type"] = "unclear_speech"
                                             turn["response_trigger_reason"] = "unclear_stt_clarify"
                                             await run_agent_response(transcript.text, turn)
