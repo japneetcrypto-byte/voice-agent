@@ -24,6 +24,7 @@ from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
+from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
 from providers.llm import get_llm_provider
@@ -139,6 +140,8 @@ async def entrypoint(ctx: JobContext):
 
     vad_provider = get_vad_provider()
     stt_provider = get_stt_provider()
+    stt_router = STTRouter()
+    print(f"[STT] Provider: {type(stt_router.primary).__name__ if stt_router.primary else 'GroqSTT'} (fallback: Groq)")
     llm_provider = get_llm_provider()
     tts_provider = get_tts_provider()
     session = ConversationSession()
@@ -526,7 +529,6 @@ async def entrypoint(ctx: JobContext):
             try:
                 from agent.session_state import SessionState
                 owner = (getattr(participant, "identity", None) or "ephemeral-unknown")
-                engine["sess"] = SessionState(owner, engine["store"])
                 print(f"[StateEngine] session bound to owner={owner}")
             except Exception as e:
                 print(f"[StateEngine] session init failed: {type(e).__name__}: {e}")
@@ -570,6 +572,8 @@ async def entrypoint(ctx: JobContext):
                 # ALWAYS buffer speech if speaking (we evaluate echo later)
                 if is_speaking:
                     speech_buffer.append(audio_np)
+                    if 'raw_pcm_chunks' in dir():
+                        raw_pcm_chunks.append(audio_np.tobytes())
 
                 for vad_event in vad_events:
                     if vad_event == VADEvent.SPEECH_STARTED:
@@ -605,6 +609,7 @@ async def entrypoint(ctx: JobContext):
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
                         speech_buffer = [audio_pre_roll, audio_np] if len(audio_pre_roll) > 0 else [audio_np]
+                        raw_pcm_chunks = [audio_pre_roll.tobytes(), audio_np.tobytes()]
                         
                         speech_start_ts = datetime.now(timezone.utc).isoformat()
                         
@@ -657,7 +662,8 @@ async def entrypoint(ctx: JobContext):
                                                           ms_since_agent_audio_end: float = None,
                                                           prev_task = None,
                                                           endpoint_info = None,
-                                                          premature_resume = None):
+                                                          premature_resume = None,
+                                                          raw_chunks = None):
                             nonlocal turn_number
                             turn_number += 1
                             turn = {
@@ -691,7 +697,12 @@ async def entrypoint(ctx: JobContext):
                                 log_event("STT_STARTED", turn_id=turn.get("turn"))
                                 tmark("STT_STARTED", turn=turn.get("turn"))
                                 stt_start = time.time()
-                                transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
+                                # Use router: Gemini Live streaming primary, Groq fallback
+                                raw_chunks = raw_chunks or []
+                                if raw_chunks and hasattr(stt_router, 'primary'):
+                                    transcript = await stt_router.transcribe(audio_data, raw_chunks=raw_chunks)
+                                else:
+                                    transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
                                 log_event("STT_COMPLETED", turn_id=turn.get("turn"))
                                 tmark("STT_COMPLETED", turn=turn.get("turn"),
@@ -819,7 +830,8 @@ async def entrypoint(ctx: JobContext):
                             transcribe_and_respond(
                                 float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
                                 agent_was_speaking, ms_since_end, prev_task=previous_task,
-                                endpoint_info=endpoint_info, premature_resume=premature_resume
+                                endpoint_info=endpoint_info, premature_resume=premature_resume,
+                                raw_chunks=raw_pcm_chunks if 'raw_pcm_chunks' in dir() else None
                             )
                         )
                         speech_buffer = []
