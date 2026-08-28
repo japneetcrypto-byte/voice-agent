@@ -83,10 +83,12 @@ THREAD_ACTIONS = ["new", "continue", "switch", "return"]
 # ---------------------------------------------------------------------------
 PERCEPTION_SPEC = (
     "FIRST, assess the user's message. Output ONE tiny JSON between <perception> and </perception>:\n"
-    '{"m":"C|R|U","c":<0-1>,"s":"SAFE|UNSAFE"}\n'
+    '{"m":"C|R|U","c":<0-1>,"s":"SAFE|UNSAFE","mem":"<optional: one-line fact worth remembering>"}\n'
     "m = C(clear) R(recoverable, partially garbled but inferable from context) U(unclear)\n"
     "c = confidence 0-1\n"
     "s = SAFE unless user mentions self-harm, harming others, or extreme distress\n"
+    "mem = OPTIONAL. Only include when the user shares a fact worth remembering for future sessions "
+    "(a person's name and relationship, a preference, an important event). Omit entirely when nothing new.\n"
     "This JSON is MANDATORY on every turn. Never skip it. Keep it to ONE line.\n"
     "THEN immediately after </perception>, write your spoken reply. The JSON is never spoken."
 )
