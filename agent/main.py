@@ -24,6 +24,7 @@ from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
+from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -150,7 +151,9 @@ async def entrypoint(ctx: JobContext):
             from agent.session_state import SessionState
             from agent.fused_turn import FusedLLM
             from agent.memory_store import MemoryStore
-            engine = {"fused": FusedLLM(), "store": MemoryStore(), "sess": None}
+            lcm = LayeredContextManager(log_dir="logs")
+            lcm.recover_from_checkpoint()
+            engine = {"fused": FusedLLM(), "store": MemoryStore(), "sess": None, "lcm": lcm}
             print("[StateEngine] on (TRANSPORT_V1.1)")
         except Exception as e:
             print(f"[StateEngine] init failed, plain path: {type(e).__name__}: {e}")
@@ -296,6 +299,14 @@ async def entrypoint(ctx: JobContext):
         tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
             sess = engine["sess"]
+            lcm = engine.get("lcm")
+            if user_text and turn.get("turn_type", "speech") == "speech":
+                lcm.add_turn("user", user_text)
+            if lcm.needs_compression():
+                overflow = lcm.get_overflow_turns()
+                if overflow:
+                    prompt = lcm.get_compression_prompt(overflow)
+                    asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
             turn["policy"] = sess.policy_for_turn()
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
@@ -303,7 +314,7 @@ async def entrypoint(ctx: JobContext):
                 policy=sess.policy_for_turn(),
                 memory_view=sess.memory_view(),
                 threads=sess.thread_summaries(),
-                history=[m for m in messages if m.get("role") != "system"][-6:],
+                history=lcm.get_layer1() if lcm else [m for m in messages if m.get("role") != "system"][-6:],
                 turn_no=int(turn.get("turn", 0)),
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
@@ -393,6 +404,8 @@ async def entrypoint(ctx: JobContext):
             
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
+            if engine and engine.get("lcm") and spoken_text:
+                engine["lcm"].add_turn("assistant", "".join(spoken_text))
             if engine and engine.get("sess"):
                 try:
                     tr = {"turn": turn.get("turn"),
@@ -415,6 +428,13 @@ async def entrypoint(ctx: JobContext):
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
                     turn["policy_next"] = policy
+                    reply_text = "".join(spoken_text) if spoken_text else ""
+                    if reply_text:
+                        from agent.entity_extractor import extract_entities_from_reply
+                        for ent in extract_entities_from_reply(reply_text):
+                            if ent.get("relation") and ent.get("name"):
+                                asyncio.create_task(_promote_relationship(
+                                    engine, turn.get("turn"), ent["name"], ent["relation"]))
                     if engine["fused"].meta.get("head_raw_snippet"):
                         print(f"[StateEngine] PARSE-FAIL raw head: {engine['fused'].meta['head_raw_snippet']}")
                 except Exception as e:
@@ -834,6 +854,42 @@ async def entrypoint(ctx: JobContext):
     async def _dump_telemetry():
         tl_dump()
 
+    async def _compress_layer2(lcm, prompt, overflow):
+        """Separate compression LLM call — isolated from response generation."""
+        try:
+            key = os.getenv("GEMINI_API_KEY", "")
+            if not key or key.startswith(("your_", "<<<")):
+                return
+            from google import genai
+            from google.genai import types
+            client = genai.Client(api_key=key)
+            config = types.GenerateContentConfig(temperature=0.3)
+            response = await asyncio.wait_for(
+                client.aio.models.generate_content(
+                    model="gemini-3.5-flash-lite", contents=prompt, config=config,
+                ), timeout=15)
+            raw = response.text.strip()
+            raw = raw.replace("```json", "").replace("```", "").strip()
+            new_state = json.loads(raw)
+            lcm.set_layer2(new_state)
+            lcm.remove_overflow(overflow)
+            lcm.save_checkpoint()
+            print(f"[Layer2] compressed {len(overflow)} turns -> new state")
+        except Exception as e:
+            print(f"[Layer2] compression failed: {type(e).__name__}: {str(e)[:100]}")
+
+    async def _promote_relationship(engine, turn_no, name, relation):
+        if not (engine and engine.get("store") and engine.get("sess")):
+            return
+        try:
+            content = f"{name} — user's {relation}"
+            engine["store"].commit(engine["sess"].owner_id,
+                {"type": "relationship", "content": content, "criterion": "explicit"},
+                immediate=True)
+            print(f"[Relationship] promoted: {name} ({relation})")
+        except Exception as e:
+            print(f"[Relationship] promotion failed: {e}")
+
     async def _commit_session_memory():
         if engine and engine.get("sess"):
             try:
@@ -844,6 +900,8 @@ async def entrypoint(ctx: JobContext):
     if hasattr(ctx, "add_shutdown_callback"):
         ctx.add_shutdown_callback(_commit_session_memory)
         ctx.add_shutdown_callback(_dump_telemetry)
+        if engine and engine.get("lcm"):
+            ctx.add_shutdown_callback(lambda: engine["lcm"].save_checkpoint())
         print("[Telemetry] shutdown hooks registered (summary written at session end)")
 
     # ---- Startup quota check ----
