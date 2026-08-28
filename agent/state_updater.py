@@ -183,6 +183,32 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
         policy = _derive_policy(state, turn_record, head=None)
         return state, policy, log
 
+    # ---- Compact head mapping (owner-approved optimization) ----
+    # New compact format: {"m":"C|R|U","c":0.8,"s":"SAFE"}
+    # Map to existing fields so the rest of the updater is unchanged.
+    if "m" in head and "emotion" not in head:
+        mode = head["m"]  # C=clear, R=recoverable, U=unclear
+        conf = float(head.get("c", 0.5))
+        safe = head.get("s", "SAFE")
+        # Infer emotion as neutral (compact head doesn't carry emotion detail)
+        head["emotion"] = {
+            "primary": "neutral_unclear" if mode == "U" else "neutral_unclear",
+            "valence": "neutral",
+            "intensity": {"ordinal": 2},
+            "confidence": conf,
+        }
+        head["safety"] = {
+            "risk_level": "elevated_distress" if safe == "UNSAFE" else "none",
+            "self_harm": safe == "UNSAFE",
+            "harm_to_others": False,
+            "other_flagged": safe == "UNSAFE",
+            "confidence": conf,
+        }
+        head["thread"] = {"action": "continue", "gist": "", "entities": []}
+        head["user_need"] = "be_heard"
+        head["advice_requested"] = False
+        head["memory_candidates"] = []
+
     # ---- C1.1 normalization (never an interpretation step) ----
     emo = head.get("emotion", {}) or {}
     raw_primary = emo.get("primary", "neutral_unclear")

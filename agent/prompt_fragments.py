@@ -75,27 +75,14 @@ THREAD_ACTIONS = ["new", "continue", "switch", "return"]
 # C1 perception-head spec (v1.1 + A-U7 correction field)
 # ---------------------------------------------------------------------------
 PERCEPTION_SPEC = (
-    "FIRST, silently assess the user's current message. Output your assessment as ONE JSON "
-    "object between the tags <perception> and </perception>, with exactly this shape:\n"
-    '{"v": 1,\n'
-    ' "emotion": {"primary": "<one of: %s>", "valence": "negative|neutral|positive", '
-    '"intensity": {"ordinal": <1-5>}, "confidence": <0-1>, "evidence_quote": "<short quote>"},\n'
-    ' "thread": {"action": "<one of: %s>", "gist": "<short topic>", "entities": ["Name (role)"]},\n'
-    ' "safety": {"risk_level": "<one of: %s>", "self_harm": <bool>, "harm_to_others": <bool>, '
-    '"other_flagged": <bool>, "confidence": <0-1>},\n'
-    ' "user_need": "be_heard|advice|clarify|other", "advice_requested": <bool>,\n'
-    ' "memory_candidates": [{"type": "episodic|semantic|relationship|preference", '
-    '"content": "<one line>", "criterion": "explicit|salient|recurrent|corrective"}],\n'
-    ' "correction": {"present": <bool>, "about": "emotion|thread|fact|preference"}}\n'
-    "Rules for the JSON: no commentary inside it; no code fences; use false/empty for absent "
-    "fields; omit the correction key entirely unless the user is explicitly correcting something "
-    "you previously said or interpreted; when present, about MUST be one of emotion|thread|fact|preference; "
-    "if unsure, lower the confidence instead of guessing.\n"
-    "The <perception> block is REQUIRED on EVERY turn. Never skip it, never leave it unclosed, "
-    "especially when the user is distressed or the message is short.\n"
-    "emotion.primary MUST be copied exactly from the list above — never invent or modify a label.\n"
-    "THEN, on a new line after </perception>, write your spoken reply. The JSON is never spoken."
-) % ("|".join(TAXONOMY), "|".join(THREAD_ACTIONS), "|".join(RISK_LEVELS))
+    "FIRST, assess the user's message. Output ONE tiny JSON between <perception> and </perception>:\n"
+    '{"m":"C|R|U","c":<0-1>,"s":"SAFE|UNSAFE"}\n'
+    "m = C(clear) R(recoverable, partially garbled but inferable from context) U(unclear)\n"
+    "c = confidence 0-1\n"
+    "s = SAFE unless user mentions self-harm, harming others, or extreme distress\n"
+    "This JSON is MANDATORY on every turn. Never skip it. Keep it to ONE line.\n"
+    "THEN immediately after </perception>, write your spoken reply. The JSON is never spoken."
+)
 
 SAFETY_GUIDANCE = (
     "SAFETY ASSESSMENT GUIDANCE (calibrated):\n"
@@ -109,7 +96,14 @@ SAFETY_GUIDANCE = (
     "- Single figurative complaints about work/study/objects remain 'none'. Never escalate those."
 )
 
-SYSTEM_FUSED_V11 = PERSONA + "\n\n" + PERCEPTION_SPEC + "\n\n" + SAFETY_GUIDANCE
+SYSTEM_FUSED_V11 = PERSONA + "\n\n" + PERCEPTION_SPEC + "\n\n" + SAFETY_GUIDANCE + "\n\n" + (
+    "RECOVERY EXAMPLES:\n"
+    "GARBLED but inferable from context → respond to your best interpretation:\n"
+    "  User: 'ब्रैंकिट से ला देगा' (context: online order)→ GOOD: 'Blinkit se mangwa dein?' BAD: 'thoda cut gaya'\n"
+    "  User: 'मैं गहरी अच्छा वाला मेकर लाकर देना' (context: bread maker)→ GOOD: 'bread maker ki baat kar raha hai na?' BAD: 'phir se bol'\n"
+    "TRULY UNCLEAR (no recognizable words) → ask naturally:\n"
+    "  User: 'गगू' → GOOD: 'haan? bol na.' BAD: inventing a meaning\n"
+)
 
 # D9 degraded_perception mode: response-only prompt variant (no head requested)
 SYSTEM_PLAIN_V11 = PERSONA + (
