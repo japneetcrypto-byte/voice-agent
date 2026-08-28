@@ -137,9 +137,7 @@ async def entrypoint(ctx: JobContext):
     print(f"Agent connected to room: {ctx.room.name}")
 
     vad_provider = get_vad_provider()
-    stt_provider = get_stt_provider()  # kept for backward compat
-    from providers.stt_router import STTRouter
-    stt_router = STTRouter()
+    stt_provider = get_stt_provider()
     llm_provider = get_llm_provider()
     tts_provider = get_tts_provider()
     session = ConversationSession()
@@ -552,9 +550,6 @@ async def entrypoint(ctx: JobContext):
                 # ALWAYS buffer speech if speaking (we evaluate echo later)
                 if is_speaking:
                     speech_buffer.append(audio_np)
-                    if 'raw_pcm_chunks' not in dir():
-                        raw_pcm_chunks = []
-                    raw_pcm_chunks.append(audio_np.tobytes())
 
                 for vad_event in vad_events:
                     if vad_event == VADEvent.SPEECH_STARTED:
@@ -590,7 +585,6 @@ async def entrypoint(ctx: JobContext):
                         # Prepend the pre-roll buffer to capture the speech onset
                         audio_pre_roll = np.array(pre_roll_buffer, dtype=np.int16)
                         speech_buffer = [audio_pre_roll, audio_np] if len(audio_pre_roll) > 0 else [audio_np]
-                        raw_pcm_chunks = [audio_pre_roll.tobytes(), audio_np.tobytes()]
                         
                         speech_start_ts = datetime.now(timezone.utc).isoformat()
                         
@@ -643,8 +637,7 @@ async def entrypoint(ctx: JobContext):
                                                           ms_since_agent_audio_end: float = None,
                                                           prev_task = None,
                                                           endpoint_info = None,
-                                                          premature_resume = None,
-                                                          raw_chunks = None):
+                                                          premature_resume = None):
                             nonlocal turn_number
                             turn_number += 1
                             turn = {
@@ -678,8 +671,7 @@ async def entrypoint(ctx: JobContext):
                                 log_event("STT_STARTED", turn_id=turn.get("turn"))
                                 tmark("STT_STARTED", turn=turn.get("turn"))
                                 stt_start = time.time()
-                                # Use router (streaming primary + batch fallback)
-                                transcript = await stt_router.transcribe(audio_data, raw_chunks=raw_chunks)
+                                transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
                                 log_event("STT_COMPLETED", turn_id=turn.get("turn"))
                                 tmark("STT_COMPLETED", turn=turn.get("turn"),
@@ -807,8 +799,7 @@ async def entrypoint(ctx: JobContext):
                             transcribe_and_respond(
                                 float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
                                 agent_was_speaking, ms_since_end, prev_task=previous_task,
-                                endpoint_info=endpoint_info, premature_resume=premature_resume,
-                                raw_chunks=raw_pcm_chunks if 'raw_pcm_chunks' in dir() else None
+                                endpoint_info=endpoint_info, premature_resume=premature_resume
                             )
                         )
                         speech_buffer = []
