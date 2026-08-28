@@ -24,6 +24,7 @@ class GeminiLiveSTT(STTProvider):
         if not self.api_key or self.api_key.startswith(("your_", "<<<")):
             raise ValueError("GEMINI_API_KEY required for GeminiLiveSTT")
         self.model = "gemini-3.5-transcribe-live"
+        self._connect_cm = None
 
     async def transcribe_stream(
         self, audio_chunks: AsyncGenerator[bytes, None]
@@ -119,14 +120,19 @@ class GeminiLiveSTT(STTProvider):
             ),
         )
         try:
+            cm = self._client_instance.aio.live.connect(
+                model=self.model, config=self._ws_config
+            )
+            self._connect_cm = cm
             self._ws_session = await asyncio.wait_for(
-                self._client_instance.aio.live.connect(
-                    model=self.model, config=self._ws_config
-                ), timeout=10)
+                cm.__aenter__(), timeout=10)
             self._stream_active = True
             print("[GeminiSTT] stream opened")
+        except asyncio.TimeoutError:
+            print("[GeminiSTT] stream open timed out")
+            self._stream_active = False
         except Exception as e:
-            print(f"[GeminiSTT] stream open failed: {e}")
+            print(f"[GeminiSTT] stream open failed: {type(e).__name__}: {e}")
             self._stream_active = False
 
     async def send_chunk(self, pcm_bytes: bytes):
@@ -157,10 +163,14 @@ class GeminiLiveSTT(STTProvider):
         finally:
             self._stream_active = False
             try:
-                await self._ws_session.close()
+                if hasattr(self, '_connect_cm') and self._connect_cm:
+                    await self._connect_cm.__aexit__(None, None, None)
+                elif self._ws_session:
+                    await self._ws_session.close()
             except Exception:
                 pass
             self._ws_session = None
+            self._connect_cm = None
 
         full_text = " ".join(self._text_parts).strip()
         if full_text:
