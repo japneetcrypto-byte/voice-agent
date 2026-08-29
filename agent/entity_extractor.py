@@ -93,6 +93,11 @@ def extract_entities_from_user_text(text: str) -> list[dict]:
     if not text:
         return []
     words = _WORD_RE.findall(text)
+    # Garble guard (evidence 2026-08-29 t3: 'काब बेटे' — a 2-word STT garble of
+    # 'kahan' — was captured as a relationship and polluted memory). A real
+    # relationship statement carries context around the name+relation pair.
+    if len(words) < 3:
+        return []
     entities = []
     seen = set()
     for i, w in enumerate(words):

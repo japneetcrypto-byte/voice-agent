@@ -95,6 +95,13 @@ def feminine_self_reference(text: str) -> str | None:
     m = FEMININE_FUT_RE.search(t)
     if m:
         return m.group(0)
+    # split sentences AND clauses (commas) — a feminine form agreeing with a
+    # female ADDRESSEE in another clause ('Main yahin hoon, batao kya keh rahi
+    # thi?') is correct speech, not a self-reference violation
+    # Sentence-level check with an addressee-imperative escape: when the
+    # feminine form sits in a clause commanded at the listener ('batao kya
+    # keh rahi thi?'), the feminine agrees with the ADDRESSEE (correct
+    # mirroring), not with the speaker. Evidence: t13 2026-08-29.
     for sent in re.split(r"[.!?।\n]+", t):
         m = FEMININE_AMBIG_RE.search(sent)
         if not m:
@@ -102,6 +109,14 @@ def feminine_self_reference(text: str) -> str | None:
         if not FIRST_PERSON_CUE.search(sent):
             continue
         if THIRD_PERSON_CUE.search(sent):
+            continue
+        for clause in re.split(r"[,;]", sent):
+            if not FEMININE_AMBIG_RE.search(clause):
+                continue
+            if re.search(r"\b(?:batao|bata|bolo|bol|sunao|dekho|sun)\b", clause, re.IGNORECASE):
+                m = None
+                break
+        if m is None:
             continue
         # Proper-noun subject ("Rimmi intezaar kar rahi thi") — drop the
         # sentence-initial capitalized word before scanning.
@@ -114,7 +129,8 @@ def feminine_self_reference(text: str) -> str | None:
 # Stray transport-tag fragments that must never be spoken (belt-and-braces on
 # top of fused_turn's head handling — evidence: session 091548 t30/t33 spoke
 # '<perception>{...}' and '</p>' aloud when the model mis-closed the tag).
-TAG_LEAK_RE = re.compile(r"</?(?:perception|p|per)>", re.IGNORECASE)
+# t28 (2026-08-29): model also emitted misspelled closers (</parception>)
+TAG_LEAK_RE = re.compile(r"</?(?:[a-z]*ception|p|per)>", re.IGNORECASE)
 TAG_BLOCK_RE = re.compile(r"<perception>.*?(?:</perception>|</p>)",
                           re.DOTALL | re.IGNORECASE)
 TAG_OPEN_TAIL_RE = re.compile(r"<perception>.*$", re.DOTALL | re.IGNORECASE)

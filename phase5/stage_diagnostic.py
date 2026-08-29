@@ -83,6 +83,14 @@ for t in turns:
         issues.append("TTS: no audio synthesized")
     if tts.get("interrupted_at_ms"):
         issues.append(f"INTERRUPTED at {tts['interrupted_at_ms']}ms")
+    if reply and not tts.get("provider"):
+        fb = t.get("tts_fallback_reason") or tts.get("fallback_reason")
+        if fb:
+            issues.append(f"TTS silent — fallback: {fb[:80]}")
+        else:
+            issues.append("TTS produced no audio (reason unknown — check events log)")
+    if t.get("llm_error"):
+        issues.append(f"LLM error: {str(t['llm_error'])[:80]}")
 
     flags = []
     if reply:

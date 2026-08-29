@@ -993,12 +993,18 @@ async def entrypoint(ctx: JobContext):
                                     # lost because capture only ran on Aiva's replies.
                                     # Zero LLM calls; store dedups by content.
                                     try:
-                                        from agent.entity_extractor import extract_entities_from_user_text
-                                        for ent in extract_entities_from_user_text(transcript.text):
-                                            if ent.get("relation") and ent.get("name"):
-                                                asyncio.create_task(_promote_relationship(
-                                                    engine, turn.get("turn"), ent["name"], ent["relation"]))
-                                                turn.setdefault("user_relations", []).append(ent)
+                                        # Confidence floor: never mine relationships
+                                        # from low-confidence transcripts.
+                                        lp = transcript.avg_logprob
+                                        if lp is not None and lp < -0.6:
+                                            print(f"[EntityCapture] skipped (logprob {lp:.2f} < -0.6)")
+                                        else:
+                                            from agent.entity_extractor import extract_entities_from_user_text
+                                            for ent in extract_entities_from_user_text(transcript.text):
+                                                if ent.get("relation") and ent.get("name"):
+                                                    asyncio.create_task(_promote_relationship(
+                                                        engine, turn.get("turn"), ent["name"], ent["relation"]))
+                                                    turn.setdefault("user_relations", []).append(ent)
                                     except Exception as ee:
                                         print(f"[EntityCapture] user-text extraction failed: {ee}")
                                     
@@ -1126,10 +1132,18 @@ async def entrypoint(ctx: JobContext):
             return
         try:
             content = f"{name} — user's {relation}"
-            engine["store"].commit(engine["sess"].owner_id,
+            store = engine["store"]
+            owner = engine["sess"].owner_id
+            # Garble containment (evidence t3 2026-08-29): a stated relation is
+            # committed PENDING on first sighting (promoted at session end) and
+            # IMMEDIATELY only when the store has already seen it before — a
+            # repeated fact is real, a one-off garble waits and stays out of
+            # the live context.
+            already = any(content in line for line in store.view(owner))
+            store.commit(owner,
                 {"type": "relationship", "content": content, "criterion": "explicit"},
-                immediate=True)
-            print(f"[Relationship] promoted: {name} ({relation})")
+                immediate=bool(already))
+            print(f"[Relationship] {'committed' if already else 'pending'}: {name} ({relation})")
         except Exception as e:
             print(f"[Relationship] promotion failed: {e}")
 

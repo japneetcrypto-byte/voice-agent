@@ -56,6 +56,11 @@ gender_cases = [
     ("Main sun raha hoon, bolo.", False),
     ("bas aapka hi intezaar kar raha tha.", False),
     ("main chahta hoon tum jaldi aao", False),
+    # t13 (session 100157): feminine form refers to the female ADDRESSEE
+    # ('batao kya keh rahi thi?') — correct mirroring, NOT a violation
+    ("Main yahin hoon, batao kya keh rahi thi?", False),
+    # ...but the same shape WITHOUT the address imperative IS a violation
+    ("Main bhi ekdum theek hoon, bas aapka hi intezaar kar rahi thi. Batao.", True),
     # third-person female reference is CORRECT speech -> no flag
     ("Rimmi so rahi thi kya?", False),
     ("woh ghar gayi hai", False),

@@ -26,6 +26,9 @@ cases = [
     ("आप तुम मुझे गगू बुलाते थे ना?", []),        # nickname recall, no relation
     # dedup within one utterance
     ("नीतु बहन है और नीतु बहन टीचर है", [("Neetu", "behen")]),
+
+    ("काब बेटे", []),   # t3: 2-word garble of 'kahan bete'
+    ("काप तेयो", []),   # t4: pure garble, no relation word
 ]
 
 fails = 0

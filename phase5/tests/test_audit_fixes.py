@@ -132,6 +132,15 @@ check("t33b: nothing leaked", tail_bad.strip() == "")
 # missing tags entirely: normal prose passthrough unaffected
 check("no tags: TAG_RE no match", TAG_RE.search("haan, Sunday hai") is None)
 
+# t28 (session 100157): misspelled closer '</parception>' spoken aloud
+leak28, stripped28 = strip_tag_leak('</parception>\nhaan yaar, yeh baat toh hai.')
+check("t28: </parception> stripped", leak28.strip() == "haan yaar, yeh baat toh hai." and stripped28,
+      repr(leak28[:40]))
+
+# t3 (session 100157): 2-word garble must NOT become a relationship
+from agent.entity_extractor import extract_entities_from_user_text as ex_user
+check("t3: garble 'kya' rejected", ex_user("kya") == [], str(ex_user("kya")))
+
 # belt-and-braces tee sanitizer
 cases_leak = [
     ('</p> kya haal', ' kya haal'),

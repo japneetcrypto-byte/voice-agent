@@ -172,3 +172,26 @@ Round-3 fixes from this evidence:
   hint; tag-leak counter.
 - User-entity extractor: oblique relation forms (बेटे/bete).
 Tests: 27 audit-fix cases incl. t30/t33 byte-exact regressions. All suites green.
+
+---
+
+## Session 100157 analysis + round-4 fixes (2026-08-29)
+
+Healthier: fused x31, ctx 31/31, heads 26/31, avg reply 2.09s, WAIT/suppress
+worked, garble recovery worked. Layer-2 compression visibly ran (hist oscillates).
+
+Issues found & fixed:
+1. t28: misspelled tag closer '</parception>' spoken aloud -> TAG_LEAK_RE now
+   strips any *ception variant; regression test with exact bytes.
+2. t3: 2-word STT garble ('काब बेटे') became a memory write AND polluted the
+   session context -> 3 defenses: 3-word minimum, logprob floor -0.6 at call
+   site, pending-until-session-end for first-sighting relations (immediate only
+   when the store has seen the fact before).
+3. t13: gender-detector false positive ('batao kya keh rahi thi' = addressee
+   mirroring) -> addressee-imperative escape; original violation case still caught.
+4. t9/t10: reply generated but TTS silent, no reason visible -> diagnostic now
+   surfaces tts fallback_reason + llm_error per turn.
+5. owner=5da0d644 ≠ 4da66eb5: different browser profile / cleared localStorage.
+   Frontend verified correct (persisted UUID). Owner to restore canonical UUID.
+6. hist=67 at turn 1 = leaked checkpoint from the PRE-fix session (expected
+   one-time; discard-on-clean-end now active).
