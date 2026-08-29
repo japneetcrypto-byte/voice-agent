@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import re
 
-# Safety-net cap (evidence session 103824 t16: 116 chars = 8.05s audio —
-# informational answers run slower per char than banter). ~180 chars is the
-# longest acceptable single reply; the persona word-budget is the primary lever.
-REPLY_MAX_CHARS = 180
+# Safety-net cap. Owner directive 2026-08-29: length must follow content —
+# substantive answers (costs, comparisons) need room, small talk stays short
+# (persona V1.10 drives that). 240 chars ~ 15s spoken ceiling; the trim still
+# cuts at sentence boundaries and keeps the full text in the log.
+REPLY_MAX_CHARS = 240
 
 # Sentence end: Latin . ! ? or Devanagari danda, optionally followed by a
 # closing quote/bracket, then whitespace or end-of-string.
@@ -238,3 +239,22 @@ def shape_signature(reply: str) -> str:
     elif r.endswith("?"):
         bucket += "+q"
     return bucket
+
+# ---- challenge detector (user challenging a previous statement) ----
+# Evidence: session 185741 t20-22 — Aiva said 5-10/min, user challenged,
+# model flip-flopped twice instead of reconciling. When this fires, the next
+# fused call gets a reconcile-claim nudge (see main.py parrot tracker).
+CHALLENGE_RE = re.compile(
+    "तूने|तुने|तुमने|tune\\s|tumne\\s"
+    "|you\\s+(?:said|told)\\b"
+    "|क्यों?\\s*बोला|kyon?\\s*bola"
+    "|झूठ|jhoot|jhut|galat\\s*(?:bola|kaha)|\\bwrong\\b|contradict"
+    "|(?:बता|बोल|bata|bol)\\s+"
+    "(?:रहे|रहा|रही|rahe|raha|rahi)\\s+"
+    "(?:थे|था|थी|the|tha|thi)(?=[\\s,.!?;:]|$)",
+    re.IGNORECASE)
+
+
+def is_challenge(text: str) -> bool:
+    """True when the user is challenging/questioning a previous statement."""
+    return bool(CHALLENGE_RE.search(text or ""))

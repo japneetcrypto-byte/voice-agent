@@ -12,17 +12,30 @@ trim_cases = [
     ("Haan bol, kya chal raha hai?", False),
     # 2-sentence reply under cap -> untouched, ends at sentence boundary
     ("Arre wah, accha laga sunkar! Batao phir, aaj ka din kaisa chal raha hai?", False),
-    # observed long reply style -> trimmed at a clean sentence boundary
+    # observed long reply style (cap raised to 240: this 236c is now under cap)
     ("Main ekdum badhiya hoon, aap batao sab theek hai? Aaj kya help chahiye mujhe? "
      "Batao na, mujhe sunna hai sab kuch jo aaj din bhar hua, poori kahani shuru se "
-     "leke aakhir tak tak, bina kisi bhi cheez ko chhode hue, ekdum detail mein batao.", True),
+     "leke aakhir tak tak, bina kisi bhi cheez ko chhode hue, ekdum detail mein batao.", False),
+    # over the 240 cap -> trimmed at a clean sentence boundary
+    ("Main ekdum badhiya hoon, aap batao sab theek hai? Aaj kya help chahiye mujhe? "
+     "Batao na, mujhe sunna hai sab kuch jo aaj din bhar hua, poori kahani shuru se "
+     "leke aakhir tak tak, bina kisi bhi cheez ko chhode hue, ekdum detail mein sab "
+     "kuch batao na yaar, dil khol ke sunao zara.", True),
     # no sentence boundary at all -> hard cut at word boundary
     ("word " * 80, True),
-    # evidence t16 (session 103824): informational replies run ~14 chars/sec
-    # of TTS — 116 chars was 8.05s of audio. Cap tightened 220 -> 180.
+    # 193c substantive reply is now legitimately under the raised cap
+    ("Udaipur ya Jaipur mat jaio, wahan toh abhi aag lagi hogi. Rajasthan ke", False),
+    # evidence t16 was the case that drove cap 220->180; owner directive
+    # 2026-08-29 (length follows content) raised it to 240 — this 193c
+    # info reply is now legitimately untrimmed.
     ("Udaipur ya Jaipur mat jaio, wahan toh abhi aag lagi hogi. Rajasthan ke mausam "
      "ke baare mein toh pata hi hai tumhe, abhi wahan jaane ka koi matlab nahi hai "
-     "kyunki garmi bahut zyada hai wahan pe.", True),
+     "kyunki garmi bahut zyada hai wahan pe.", False),
+    # over-240 info wall still trims at a sentence boundary
+    ("Udaipur ya Jaipur mat jaio, wahan toh abhi aag lagi hogi. Rajasthan ke mausam "
+     "ke baare mein toh pata hi hai tumhe, abhi wahan jaane ka koi matlab nahi hai "
+     "kyunki garmi bahut zyada hai wahan pe, aur haan garmi ke saath jo rehna hai "
+     "woh bhi mushkil hai, toh season dekh kar hi plan karna sahi rahega.", True),
     # empty / near-empty safety
     ("", False),
     ("ok", False),
@@ -105,6 +118,29 @@ for text, want in [("मौसम साफ है?", True), ("mausam saaf hai?"
     if not ok:
         fails += 1
     print(f"[{'PASS' if ok else 'FAIL'}] devanagari({text[:30]!r}) -> {got}")
+
+# --- challenge detector (owner brief 2026-08-29: flip-flop on challenge,
+# session 185741 t20-22) + adaptive cap ---
+from agent.reply_guard import is_challenge as ch, REPLY_MAX_CHARS as CAP
+if CAP != 240:
+    fails += 1
+print(f"[{'PASS' if CAP == 240 else 'FAIL'}] cap raised for substantive info (cap={CAP})")
+ccases = [
+    ("तो तुने पांच से दस क्यों बोला यार", True),
+    ("तु अभी बता रहे थे एक से दो रुपए", True),
+    ("you said it was free", True),
+    ("यह तो झूठ है", True),
+    ("bata raha tha main", True),
+    ("chal theek hai baad mein dekhte hain", False),
+    ("haan ek do rupaye sahi hai", False),
+    ("accha theek hai", False),
+]
+for text, want in ccases:
+    got = ch(text)
+    ok = got == want
+    if not ok:
+        fails += 1
+    print(f"[{'PASS' if ok else 'FAIL'}] challenge({text[:40]!r}) -> {got}")
 
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
 sys.exit(1 if fails else 0)

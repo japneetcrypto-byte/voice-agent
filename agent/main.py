@@ -36,7 +36,7 @@ from agent.response_state import classify as response_state_classify, \
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
                                clean_specials, is_confirm_echo, devanagari_present,
-                               shape_signature, REPLY_MAX_CHARS, SENT_END_RE)
+                               shape_signature, is_challenge, REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -373,6 +373,18 @@ async def entrypoint(ctx: JobContext):
             if int(turn.get("turn", 0)) < _stuck_nudged["until_turn"] and isinstance(turn["policy"], dict):
                 turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["echo_confirm_parroting"]
                 turn["policy"]["response_goal"] = "substantive_reaction"
+            # Challenge reconciliation (evidence 185741 t20-22: user challenged
+            # the 5-10 figure; model flip-flopped twice instead of reconciling
+            # with its own history). When the user challenges a previous claim,
+            # the model must CHECK history and reconcile — own the error or
+            # explain the difference. Never blind-agree.
+            if user_text and is_challenge(user_text) and isinstance(turn["policy"], dict):
+                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["flip_flop_agreeing"]
+                turn["policy"]["response_goal"] = "reconcile_claim"
+                turn["challenge_detected"] = True
+                log_event("CHALLENGE_DETECTED", turn_id=turn.get("turn"),
+                          details={"user_text": user_text[:80]})
+                print(f"[ReplyGuard] challenge detected — reconcile-claim nudge active")
             # Response reconciliation (directive fix 2): if the PREVIOUS reply
             # was interrupted (unheard / partially heard), tell this call —
             # popped, so it applies only to the immediately-following turn.
@@ -654,7 +666,15 @@ async def entrypoint(ctx: JobContext):
             try:
                 reply_shapes.append(shape_signature("".join(spoken_text)))
                 confirms = sum(1 for s in reply_shapes if "confirm" in s)
-                if confirms >= 3 and int(turn.get("turn", 0)) >= _stuck_nudged["until_turn"]:
+                _last_reply = getattr(engine.get("sess"), "_last_reply_text", None) if engine else None
+                engine and engine.get("sess") and setattr(
+                    engine["sess"], "_last_reply_text", "".join(spoken_text))
+                verbatim = _last_reply is not None and \
+                    "".join(spoken_text).strip() == _last_reply.strip()
+                if verbatim:
+                    log_event("REPLY_VERBATIM_REPEAT", turn_id=turn.get("turn"))
+                if ((confirms >= 3 or verbatim) and
+                        int(turn.get("turn", 0)) >= _stuck_nudged["until_turn"]):
                     _stuck_nudged["until_turn"] = int(turn.get("turn", 0)) + 4
                     log_event("RESPONSE_PATTERN_STUCK", turn_id=turn.get("turn"),
                               details={"confirm_ratio": confirms / len(reply_shapes)})

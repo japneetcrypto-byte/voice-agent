@@ -683,3 +683,37 @@ portion, never replay. stage_diagnostic prints response-state distribution.
 Directive's 7 validation scenarios mapped to 14 unit tests (all green).
 Latency: hangover applies only to hard-cut profile (natural speech unchanged);
 reconciliation is context-only (no LLM call added).
+
+---
+
+## Response quality: contradiction flip-flop + adaptive length (2026-08-29 night, session 185741)
+
+Owner: "it did not remember info from last turn... hardcoded 1/2 lines shall not
+work — prompt to be as compact as clear as possible depending on the type of
+info, ensuring user engagement."
+
+Evidence: t20 Aiva said '5-10 rupaye per minute'; t21 user challenged ('tune
+1-2 bola tha'), Aiva agreed ('1-2 bhi pad sakta hai lightweight model mein');
+t22 user pressed ('toh 5-10 kyon bola'), Aiva just agreed again — flip-flop
+with no reconciliation. Also: identical reply verbatim on t3 after t2 was
+interrupted.
+
+Shipped:
+- Persona V1.10: rule 1 REWRITTEN — length follows content (small talk short
+  2-8 words; substantive info as long as needed to be clear/complete; end with
+  forward motion). Rule 7f NEVER FLIP-FLOP: on challenge, check history;
+  both-true -> explain difference; wrong -> own it; never blind-agree.
+- reply_guard: is_challenge() detector (तूने/tune/you said/क्यों बोला/झूठ/
+  progressive-past 'बता रहे थे'). REPLY_MAX_CHARS 180->240 (safety net for
+  substantive info; trim still sentence-boundary, full text logged).
+- main.py: CHALLENGE_DETECTED event + reconcile-claim policy nudge
+  (avoid flip_flop_agreeing, goal reconcile_claim); REPLY_VERBATIM_REPEAT
+  event + verbatim repeats feed the anti-parrot streak.
+- Heredoc double-escaping bug in my own generator produced a broken regex +
+  \b-after-Devanagari-matra landmine (\b never matches after a matra — same
+  class as the smart_join issue). Both fixed; 8 detector cases green.
+
+Note: true self-consistency ideally needs the model to CHECK history on
+challenge — the nudge + persona rule directs it; verification = next session's
+substance ratio + challenge turns. If flip-flop persists: model-tier A/B gets
+stronger.
