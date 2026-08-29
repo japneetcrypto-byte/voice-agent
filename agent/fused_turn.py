@@ -48,6 +48,12 @@ class FusedLLM:
         self._client = None
         self.head: dict | None = None
         self.meta: dict = {}
+        # Monotonic per-call id: stream_prose() resets .meta on every call, so a
+        # concurrent reader (e.g. the previous turn finishing playback during a
+        # barge-in) could read the NEXT turn's meta or an empty dict. Readers
+        # snapshot this epoch before streaming and only trust .meta if it still
+        # matches afterwards.
+        self.epoch: int = 0
 
     def _client_for(self, key: str):
         if self._client is None:
@@ -74,6 +80,7 @@ class FusedLLM:
                             key: str) -> AsyncGenerator[str, None]:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
+        self.epoch += 1
         self.meta["turn_type"] = turn_type
 
         # Turn-taking (owner brief): backchannels get 1-3 word acknowledgments;
@@ -160,7 +167,7 @@ class FusedLLM:
                             except json.JSONDecodeError:
                                 self.head = None  # D1: prose passthrough, no state update
                                 self.meta["head_raw_snippet"] = m.group(1).strip()[:400]
-                                self.meta["head_fail_class"] = f"invalid_json: {str(_e)[:100]}" if '_e' in dir() else "invalid_json"
+                                self.meta["head_fail_class"] = "invalid_json"
                     if prose_started:
                         start = max(m.end(), emitted) if m else emitted
                         if len(buf) > start:

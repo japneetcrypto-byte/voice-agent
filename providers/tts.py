@@ -150,28 +150,56 @@ class FallbackTTSProvider(TTSProvider):
     async def synthesize_stream(
         self, text_stream: AsyncGenerator[str, None]
     ) -> AsyncGenerator[tts.SynthesizedAudio, None]:
-        text_chunks = []
-        async for chunk in text_stream:
-            text_chunks.append(chunk)
+        # Anticipatory pipeline fix (evidence: sessions 2026-08-28 — TTFA
+        # 1.3-3.7s included the FULL LLM generation time because this provider
+        # buffered all text before Fish started). Now: text is fanned out LIVE
+        # — Fish receives chunks as the LLM emits them (first audio races the
+        # LLM stream), and a parallel buffer keeps the full text for an
+        # EdgeTTS replay if Fish fails.
+        text_chunks: list[str] = []
+        queue: asyncio.Queue = asyncio.Queue()
+        src_done = asyncio.Event()
+
+        async def _tee():
+            try:
+                async for chunk in text_stream:
+                    text_chunks.append(chunk)
+                    await queue.put(chunk)
+            finally:
+                await queue.put(None)
+                src_done.set()
+
+        async def _live_reader():
+            while True:
+                item = await queue.get()
+                if item is None:
+                    return
+                yield item
+
+        tee_task = asyncio.create_task(_tee())
 
         async def make_stream():
-            for chunk in text_chunks:
+            for chunk in list(text_chunks):
                 yield chunk
-
-        if not self.primary:
-            async for chunk in self.fallback.synthesize_stream(make_stream()):
-                yield chunk
-            return
 
         try:
+            if not self.primary:
+                await tee_task
+                async for chunk in self.fallback.synthesize_stream(make_stream()):
+                    yield chunk
+                return
+
             self.last_provider = "fish"
-            primary_stream = self.primary.synthesize_stream(make_stream())
+            primary_stream = self.primary.synthesize_stream(_live_reader())
+            # Timeout covers LLM TTFT (worst healthy case ~3s) + Fish's own
+            # first-audio latency (~1-2s). A genuine Fish hang falls to Edge.
             first_chunk = await asyncio.wait_for(
-                primary_stream.__anext__(), timeout=5.0
+                primary_stream.__anext__(), timeout=7.0
             )
             yield first_chunk
             async for audio in primary_stream:
                 yield audio
+            await tee_task
         except (asyncio.TimeoutError, StopAsyncIteration, Exception) as e:
             self.last_provider = "edge (fallback)"
             self.last_fallback_reason = f"{type(e).__name__}: {str(e)[:150]}"
@@ -180,8 +208,12 @@ class FallbackTTSProvider(TTSProvider):
                     f"[TTS Fallback] Fish Audio failed: {e}. "
                     "Switching to EdgeTTS."
                 )
+            await src_done.wait()  # drain remaining text so Edge gets it all
             async for audio in self.fallback.synthesize_stream(make_stream()):
                 yield audio
+        finally:
+            if not tee_task.done():
+                tee_task.cancel()
 
 
 def get_tts_provider() -> TTSProvider:

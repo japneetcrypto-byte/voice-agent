@@ -89,3 +89,26 @@ No provider swaps (STT stayed Groq; LLM stayed Gemini flash-lite after an eviden
 3. **Commit ≠ working.** Verify wiring on disk, in the real flow, before claiming it.
 4. **Scope discipline.** ~10 owner-rulled decisions (O1–O3, U1–U7, D1–D7, D-4a–d) kept an emotionally-loaded, safety-critical product from becoming a moving-target rewrite.
 5. **The user's ear is the final gate.** Metrics caught regressions, but every "it doesn't *feel* like a conversation" report was real signal — and the biggest fixes (endpointing, register, memory discipline) came from listening to you.
+
+---
+
+## Session log (2026-08-29): two healthy sessions, five residuals fixed
+
+**Evidence:** `session_20260828_222656.log` + `session_20260828_224509.log` (owner's last live tests).
+
+**What improved (vs the 40+ PARSE-FAIL cascade session):**
+- Zero PARSE-FAILs, zero DEGRADED-PERCEPTION entries — death-spiral fix held; quota was healthy (TTFT 0.68–2.06s, no 66s stalls)
+- Every valid turn got a reply; barge-in worked (INTERRUPTED at 500ms)
+- Speech→audio 1.69–4.03s
+
+**What the logs exposed (and this session's fixes):**
+1. **`context: NOT CAPTURED` on every turn** — `llm_context` was read back *after* playback from `fused.meta`, which any newer `stream_prose` call resets (barge-in / idle turn) → races and misses. **Fix:** capture at first token (TTFT), epoch-guarded post-stream reads (`FusedLLM.epoch`), plus `perception_head` (m/c/s), `degradation`, `spoke_because`, `llm_called` now logged per turn.
+2. **Silent failures invisible** (S1 turn 1: decision=respond, empty reply, no TTS, no cause; S2 turn 5 `valid=None` with no reason). **Fix:** generic exception handlers in `run_agent_response` + `transcribe_and_respond` write `turn["pipeline_error"]` + `RESPONSE_FAILED`/`PIPELINE_ERROR` events — next session shows WHY inline.
+3. **Assistant-speak** — "aaj kya help chahiye?" (×2), "main aapke sawaalon ke jawaab dene ke liye…" → **SERVICE-MODE BANNED** block in persona (TRANSPORT_V1.3) with the exact observed BAD examples.
+4. **Feminine self-reference persists** — "intezaar kar **rahi thi**" despite the persona line. **Fix:** strengthened persona with the observed BAD/GOOD pair + full form list; added telemetry-only detector (`agent/reply_guard.py`) logging `GENDER_VIOLATION` so the prompt change is measurable (no auto-rewrite — a regex can't safely distinguish self-reference from third-person female references, and a rewrite pass would violate the one-call contract).
+5. **Reply length** — 3.4–7.25s of TTS. **Fix:** persona now has a word budget (target 4–12, ceiling ~20) with an observed BAD example; plus a deterministic safety net (sentence-boundary trim at 220 chars, `REPLY_TRIMMED` event, full text kept in `llm_response_full`).
+6. **TTFA 1.3–3.7s contained a hidden cost** — `FallbackTTSProvider` buffered the ENTIRE LLM stream before Fish Audio started, so TTFA = full LLM generation + Fish latency. **Fix:** Fish now consumes the live stream via a queue tee (text pushed as the LLM emits it); Edge fallback replays from the parallel buffer on failure. This is the "TTS pre-warm" anticipatory-pipeline item.
+
+**Also:** stage diagnostic rewritten (turns sorted — the TURN 5 before TURN 4 in session 2 was concurrent-task log interleaving, not a bug; now shows context summary, head, degradation, reply size, TRIMMED/GENDER/SERVICE flags, pipeline errors, session aggregates); duplicate TurnTrace print removed; dead `_e in dir()` head-fail class fixed.
+
+**Deliberately NOT done (owner decisions needed):** Fish Audio TTFA itself (0.6–2.4s after text arrives) is provider-tier bound — faster tiers or ElevenLabs Flash (~75ms) would need owner approval + voice re-clone evaluation. Barge-in stop latency (2–3s) stays Phase 7.

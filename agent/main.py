@@ -27,6 +27,7 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
+from agent.reply_guard import feminine_self_reference, REPLY_MAX_CHARS, SENT_END_RE
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
@@ -332,25 +333,109 @@ async def entrypoint(ctx: JobContext):
         else:
             text_stream = llm_provider.generate_response_stream(messages)
         
-        spoken_text = []
+        spoken_text = []   # what is actually spoken (post length-guard)
+        full_text = []     # everything the model generated (diagnostics)
         ttft_logged = False
+        fused_ref = engine.get("fused") if engine else None
+        fused_epoch = getattr(fused_ref, "epoch", None) if fused_ref else None
+        # Deterministic length guard state (safety net; prompt is the primary
+        # length lever). Prose is released sentence-by-sentence until the cap.
+        trim = {"pending": "", "emitted": 0, "done": False}
+        
         async def text_stream_tee():
             nonlocal ttft_logged
-            async for chunk in text_stream:
-                if not ttft_logged:
-                    ttft_s = time.time() - llm_start
-                    turn["llm_ttft_s"] = round(ttft_s, 3)
-                    print(f"[Metrics] LLM Time to First Token: {ttft_s:.2f}s")
-                    ttft_logged = True
-                    log_event("LLM_FIRST_TOKEN", turn_id=turn.get("turn"), response_id=response_id)
-                    tmark("LLM_FIRST_TOKEN", turn=turn.get("turn"))
-                print(chunk, end="", flush=True)
-                spoken_text.append(chunk)
-                session.recent_agent_text += chunk
-                yield chunk
-            print(f"\n[Metrics] LLM Total Generation Time: {time.time() - llm_start:.2f}s")
-            turn["llm_response"] = "".join(spoken_text)
-            log_event("LLM_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+            try:
+                async for chunk in text_stream:
+                    if not ttft_logged:
+                        ttft_s = time.time() - llm_start
+                        turn["llm_ttft_s"] = round(ttft_s, 3)
+                        print(f"[Metrics] LLM Time to First Token: {ttft_s:.2f}s")
+                        ttft_logged = True
+                        log_event("LLM_FIRST_TOKEN", turn_id=turn.get("turn"), response_id=response_id)
+                        tmark("LLM_FIRST_TOKEN", turn=turn.get("turn"))
+                        # Capture the EXACT context this call is using, at the
+                        # moment the call is live (race-proof: fused meta is
+                        # reset at the start of every stream_prose call, so a
+                        # post-playback read can miss or read the next turn's
+                        # meta — observed as 'context: NOT CAPTURED' in logs).
+                        if fused_ref is not None:
+                            turn["llm_context"] = fused_ref.meta.get("context")
+                            turn["llm_called"] = fused_ref.meta.get("llm_called", True)
+                            turn["spoke_because"] = fused_ref.meta.get("spoke_because", "llm")
+                            turn["degradation"] = fused_ref.meta.get("degradation")
+                    full_text.append(chunk)
+                    if trim["done"]:
+                        continue  # keep consuming so head/meta finalize, but speak no more
+                    trim["pending"] += chunk
+                    # Release complete sentences that fit under the cap.
+                    piece = ""
+                    while True:
+                        m = SENT_END_RE.search(trim["pending"])
+                        if not m:
+                            break
+                        sentence = trim["pending"][:m.end()]
+                        if trim["emitted"] + len(sentence) > REPLY_MAX_CHARS and trim["emitted"] > 0:
+                            trim["done"] = True
+                            break
+                        piece += sentence
+                        trim["pending"] = trim["pending"][m.end():]
+                        trim["emitted"] += len(sentence)
+                    # Pathological single unbroken sentence: cut at a word
+                    # boundary so audio can start at all.
+                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > REPLY_MAX_CHARS:
+                        cut = trim["pending"][:REPLY_MAX_CHARS]
+                        sp = cut.rfind(" ")
+                        if sp > 40:
+                            piece = trim["pending"][:sp + 1]
+                            trim["pending"] = trim["pending"][sp + 1:]
+                            trim["emitted"] = sp + 1
+                    if trim["done"] and trim["pending"].strip():
+                        turn["reply_trimmed"] = True
+                    if piece:
+                        print(piece, end="", flush=True)
+                        spoken_text.append(piece)
+                        session.recent_agent_text += piece
+                        yield piece
+                # Stream finished: release the tail after the last sentence
+                # boundary (most replies end without trailing punctuation).
+                # Done inside the body — a finally cannot yield.
+                if not trim["done"] and trim["pending"]:
+                    piece = trim["pending"]
+                    if trim["emitted"] + len(piece) > REPLY_MAX_CHARS and trim["emitted"] > 0:
+                        cut = piece[:REPLY_MAX_CHARS - trim["emitted"]]
+                        sp = cut.rfind(" ")
+                        piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
+                        turn["reply_trimmed"] = True
+                    trim["pending"] = ""
+                    if piece.strip():
+                        print(piece, end="", flush=True)
+                        spoken_text.append(piece)
+                        session.recent_agent_text += piece
+                        trim["emitted"] += len(piece)
+                        yield piece
+            finally:
+                print(f"\n[Metrics] LLM Total Generation Time: {time.time() - llm_start:.2f}s")
+                if not turn.get("reply_trimmed") and trim["pending"].strip():
+                    turn["reply_trimmed"] = True  # cap hit; leftover never released
+                turn["llm_response"] = "".join(spoken_text)
+                turn["llm_response_full"] = "".join(full_text)
+                turn["reply_words"] = len((turn["llm_response"] or "").split())
+                turn["reply_chars"] = len(turn["llm_response"] or "")
+                log_event("LLM_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+                if turn.get("reply_trimmed"):
+                    print(f"[ReplyGuard] TRIMMED spoken={turn['reply_chars']} chars "
+                          f"(full={len(turn['llm_response_full'])} chars, cap={REPLY_MAX_CHARS})")
+                    log_event("REPLY_TRIMMED", turn_id=turn.get("turn"), details={
+                        "spoken_chars": turn["reply_chars"],
+                        "full_chars": len(turn["llm_response_full"]),
+                        "full_text": turn["llm_response_full"][:400],
+                    })
+                gv = feminine_self_reference(turn["llm_response"] or "")
+                if gv:
+                    turn["gender_violation"] = gv
+                    print(f"[PersonaGuard] feminine self-reference: {gv!r}")
+                    log_event("GENDER_VIOLATION", turn_id=turn.get("turn"), details={
+                        "form": gv, "reply": (turn["llm_response"] or "")[:120]})
             
         print("Agent speaking...")
         agent_speaking_event.set()
@@ -434,7 +519,17 @@ async def entrypoint(ctx: JobContext):
                         turn["llm_error"] = engine["fused"].meta.get("llm_error", "")
                         turn["active_model"] = engine["fused"].meta.get("active_model", "unknown")
                         print(f"[StateEngine] LLM ERROR turn {turn.get('turn')}: {turn['llm_error'][:120]}")
-                    turn["llm_context"] = engine["fused"].meta.get("context")
+                    # Epoch guard: only trust fused meta if no newer
+                    # stream_prose call (barge-in, idle turn) has reset it
+                    # since this turn's stream started.
+                    if getattr(engine["fused"], "epoch", None) == fused_epoch:
+                        turn["perception_head"] = engine["fused"].head
+                        turn["degradation"] = turn.get("degradation") or engine["fused"].meta.get("degradation")
+                        turn["active_model"] = turn.get("active_model") or engine["fused"].meta.get("active_model")
+                        if not turn.get("llm_context"):
+                            turn["llm_context"] = engine["fused"].meta.get("context")
+                    else:
+                        turn["stale_meta_read"] = True
                     policy = engine["sess"].apply_turn(tr, engine["fused"].head)
                     engine["policy"] = policy
                     turn["policy_next"] = policy
@@ -457,7 +552,13 @@ async def entrypoint(ctx: JobContext):
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
                 turn["system_sha1"] = engine["fused"].meta.get("system_sha1")
-                turn["llm_context"] = engine["fused"].meta.get("context")
+                if getattr(engine["fused"], "epoch", None) == fused_epoch:
+                    turn["perception_head"] = engine["fused"].head
+                    turn["degradation"] = turn.get("degradation") or engine["fused"].meta.get("degradation")
+                    if not turn.get("llm_context"):
+                        turn["llm_context"] = engine["fused"].meta.get("context")
+                else:
+                    turn["stale_meta_read"] = True
             turn["tts"] = {
                 "provider": getattr(tts_provider, "last_provider", "unknown"),
                 "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
@@ -465,15 +566,6 @@ async def entrypoint(ctx: JobContext):
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
                 "interrupted_at_ms": round((time.time() - tts_audio_start) * 1000) if tts_audio_start else None,
             }
-            print("[TurnTrace] " + json.dumps({
-                "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
-                "stt": {"text": turn.get("stt_transcript"), "logprob": turn.get("stt_avg_logprob")},
-                "perception": bool(engine["fused"].head) if engine else None,
-                "prompt_version": turn.get("prompt_version"),
-                "response": (turn.get("llm_response") or "")[:120],
-                "tts": turn.get("tts"), "tts_text": (turn.get("tts_text") or "")[:100],
-                "interrupted": True,
-            }, ensure_ascii=False, default=str)[:1200])
             print("[TurnTrace] " + json.dumps({
                 "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
                 "stt": {"text": turn.get("stt_transcript"), "logprob": turn.get("stt_avg_logprob")},
@@ -511,6 +603,26 @@ async def entrypoint(ctx: JobContext):
                 except Exception as e:
                     print(f"[StateEngine] apply(interrupted) failed: {type(e).__name__}: {e}")
             raise
+        except Exception as e:
+            # Keep the failure INSIDE the session log. Without this, an error
+            # between LLM start and first TTS audio shows up downstream as
+            # 'empty reply / no TTS' with no visible cause (evidence: session
+            # 222656 turn 1 — decision=respond but zero output, no reason).
+            turn["pipeline_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+            turn["tts"] = {
+                "provider": getattr(tts_provider, "last_provider", "unknown"),
+                "fallback_reason": getattr(tts_provider, "last_fallback_reason", None),
+                "audio_duration_s": None,
+                "playback_duration_s": None,
+            }
+            print(f"[Agent] RESPONSE_FAILED turn={turn.get('turn')}: {turn['pipeline_error']}")
+            log_event("RESPONSE_FAILED", turn_id=turn.get("turn"), response_id=response_id,
+                      details={"error": turn["pipeline_error"]})
+            tmark("RESPONSE_FAILED", turn=turn.get("turn"))
+            try:
+                await flush_audio_source(agent_source)
+            except Exception:
+                pass
         finally:
             agent_speaking_event.clear()
             nonlocal agent_audio_ended_at
@@ -838,7 +950,10 @@ async def entrypoint(ctx: JobContext):
                                 turn["interruption_timestamp"] = datetime.now(timezone.utc).isoformat()
                                 print("[STT cancelled]")
                             except Exception as e:
-                                print(f"Pipeline Error: {e}")
+                                turn["pipeline_error"] = f"{type(e).__name__}: {str(e)[:200]}"
+                                print(f"Pipeline Error: {turn['pipeline_error']}")
+                                log_event("PIPELINE_ERROR", turn_id=turn.get("turn"),
+                                          details={"error": turn["pipeline_error"]})
                             finally:
                                 if turn.get("dropped_reason") or turn.get("stt_valid") is False:
                                     tmark("TURN_DROPPED", turn=turn.get("turn"),
