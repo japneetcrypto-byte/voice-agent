@@ -509,6 +509,19 @@ async def entrypoint(ctx: JobContext):
                             break
                         sentence = trim["pending"][:m.end()]
                         if trim["emitted"] + len(sentence) > active_cap and trim["emitted"] > 0:
+                            # THIN-OUTPUT GUARD (evidence 200615 t3: model wrote
+                            # 167c; first boundary at 16c; rest dropped ->
+                            # uselessly short reply). If kept-so-far is thin,
+                            # FILL the remaining budget with a word-boundary
+                            # cut of this sentence instead of dropping it.
+                            if trim["emitted"] < active_cap * 0.5:
+                                budget = active_cap - trim["emitted"]
+                                fill = sentence[:budget]
+                                sp = fill.rfind(" ")
+                                if sp > 15:
+                                    fill = fill[:sp + 1]
+                                piece += fill
+                                trim["emitted"] += len(fill)
                             trim["done"] = True
                             break
                         piece += sentence

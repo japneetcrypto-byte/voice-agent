@@ -83,6 +83,10 @@ USER_STOPWORDS = {
     # common VERB forms — a verb before/after a relation word is grammar,
     # not a name (evidence session 182736 t7: 'कहां गए भाई' captured गए='went'
     # as a person). Extend as observed.
+    # relative pronouns / connectives that precede relation words
+    # (evidence session 200615 t11: 'जो बेटा, तुमसे नहीं हो पाएगा' captured
+    # 'जो'='who/that' as a person)
+    "जो", "जो कि", "जब", "तब", "कि वो", "jo", "jab",
     "गए", "गया", "गई", "गये", "आए", "आया", "आई", "कर", "करें", "करो", "करना",
     "देख", "देखो", "जा", "जाओ", "आ", "आओ", "रहा", "रहे", "रही", "हो", "होगा",
     "gaya", "gayi", "gayo", "gae", "aaya", "aayi", "karo", "karen", "karna",
