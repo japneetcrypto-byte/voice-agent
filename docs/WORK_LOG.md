@@ -462,3 +462,29 @@ phase5/stage_verdict.py (also the first section of aiva_health reports):
 - FINAL VERDICT implements the owner rule literally: all stages before TTS pass
   and only TTS fails -> "SYSTEM UNIT HEALTHY - BOTTLENECK IS THE TTS PROVIDER"
   with the replace/upgrade prescription. Multiple failures -> ordered fix list.
+
+---
+
+## Session 163907 analysis: pre-audio cancel chain made visible (2026-08-29 evening)
+
+Owner: "not good as an experience." The transcript IS the evidence — user complained
+in-session: t4 'tum sahi se baat kyon nahi kar paaye', t15 'idhar baat suno idhar',
+t17+t18 'tum itna time lekar kyon bolte ho' (twice).
+
+Root cause chain (4/22 = 18% of turns): user speaks quickly → TTS TTFA ~1.7-2.1s →
+newer-turn cancel (prev_task.cancel()) kills the pending reply BEFORE first audio →
+user heard nothing → spoke again → frustration. Turns 1/5/15 + cancelled t11.
+These were INVISIBLE (interrupted=True, interrupted_at_ms=None → no flag anywhere).
+
+Fixes:
+- worker: turn["cancel_pre_audio"]=True in the CancelledError handler when ttfa never fired
+- stage_diagnostic: 'REPLY CANCELLED BEFORE AUDIO' flag + summary count
+- self_diagnose: new failure class (stale-reply race) with prescription
+- stage_verdict: TTS WATCH when pre-audio cancels >10% (TTFA vs user pace)
+- tts.py failover: samples-based (<0.1s = silence), not chunk-count
+- WORKER_BUILD stamp in every session log + aiva_health mismatch warning
+  (stale worker = missing safety nets; the recurring failure mode)
+
+Also noted: one Devanagari-script reply (161510 t6 'mausam saaf hai?') — persona
+says Roman Hinglish; watch. Old-session artifacts (th ik / j}}) in the audit are
+pre-fix sessions; 163907 text is clean → lexicon/corrections holding.

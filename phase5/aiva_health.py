@@ -93,6 +93,24 @@ for ef in (glob.glob(f"{LOGS}/events_*.log") if all_mode else [ep]):
         events.append(e)
         if e.get("event") == "SESSION_BOUND":
             bound.append(e)
+wb = [e for e in events if e.get("event") == "WORKER_BUILD"]
+head_short = ""
+try:
+    head_short = subprocess.run(["git", "log", "-1", "--format=%h"], capture_output=True,
+                                text=True, timeout=10, cwd=ROOT).stdout.strip()
+except Exception:
+    pass
+if wb:
+    wc = (wb[-1].get("details", {}) or {}).get("commit", "?")
+    short = str(wc).split(" ", 1)[0]
+    if head_short and short and short != head_short:
+        L.append(f"- ⚠ WORKER VERSION MISMATCH: worker ran `{short}`, repo is at `{head_short}`. "
+                 "Restart the worker (Ctrl+C → bash start_aiva.sh) — stale workers miss the "
+                 "latest safety nets (this exact gap caused silent turns on 2026-08-29).")
+    else:
+        L.append(f"- ✅ worker build matches repo (`{short}`)")
+else:
+    L.append(f"- (no WORKER_BUILD event — worker predates the build stamp; restart to enable)")
 if bound:
     for b in bound:
         d = b.get("details", b)

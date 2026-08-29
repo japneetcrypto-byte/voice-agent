@@ -199,18 +199,16 @@ class FallbackTTSProvider(TTSProvider):
                 primary_stream.__anext__(), timeout=first_timeout
             )
             yield first_chunk
-            chunks = 1
+            # Self-healing failover (evidence 141753: 6 turns where Fish
+            # 'succeeded' with zero/trace audio). Counted in SAMPLES, not
+            # chunks — the server may emit a few frames of near-silence.
+            samples = first_chunk.frame.samples_per_channel
             async for audio in primary_stream:
-                chunks += 1
+                samples += audio.frame.samples_per_channel
                 yield audio
             await tee_task
-            if chunks < 3:
-                # Self-healing failover (evidence session 141753: 6 turns where
-                # Fish 'succeeded' with zero/trace audio — reply text existed,
-                # provider reported success, user heard nothing). A healthy
-                # Fish turn emits many chunks; near-zero means the server
-                # returned an empty stream — replay on Edge immediately.
-                raise ValueError(f"fish_empty_stream ({chunks} chunks)")
+            if samples < 4800:  # <0.1s of audio = silence
+                raise ValueError(f"fish_silent_stream ({samples} samples)")
         except (asyncio.TimeoutError, StopAsyncIteration, Exception) as e:
             self.last_provider = "edge (fallback)"
             self.last_fallback_reason = f"{type(e).__name__}: {str(e)[:150]}"

@@ -221,6 +221,12 @@ async def entrypoint(ctx: JobContext):
     from datetime import datetime, timezone
     
     session_start = datetime.now(timezone.utc)
+    try:
+        import subprocess as _sp
+        _build = _sp.run(["git", "log", "-1", "--format=%h %s"], capture_output=True,
+                          text=True, timeout=5, cwd=os.getcwd()).stdout.strip()
+    except Exception:
+        _build = "unknown"
     log_dir = "logs"
     os.makedirs(log_dir, exist_ok=True)
     events_log_path = os.path.join(
@@ -248,6 +254,8 @@ async def entrypoint(ctx: JobContext):
     def log_turn(turn_data: dict):
         with open(session_log_path, "a") as f:
             f.write(json.dumps(turn_data) + "\n")
+
+    log_event("WORKER_BUILD", details={"commit": _build, "pid": os.getpid()})
 
     # ---- Phase-1 turn lifecycle telemetry (owner plan; monotonic, per event) ----
     # Crash-proof: every event APPENDS to disk immediately (never buffered), so
@@ -664,6 +672,12 @@ async def entrypoint(ctx: JobContext):
         except asyncio.CancelledError:
             print("\n[Agent was interrupted]")
             turn["interrupted"] = True
+            if not ttfa_logged:
+                # AUDIT FIX (session 163907 t1/t5/t15): reply cancelled before
+                # ANY audio played — user speaks faster than TTS first-audio.
+                # These were invisible (interrupted=True, no interrupted_at_ms),
+                # reading as 'silent TTS mysteries'. Now explicit.
+                turn["cancel_pre_audio"] = True
             turn["tts_text"] = "".join(spoken_text)[:600]
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")

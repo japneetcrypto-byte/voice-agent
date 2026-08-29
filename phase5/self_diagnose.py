@@ -61,6 +61,7 @@ def add(cls, n, why, done, rx):
 
 # ---------- per-turn classification ----------
 tts_silent, echo_drops, echo_saved, cancelled, merges = [], [], [], [], []
+cancel_pre = []
 clarify_streak, tag_leaks, trims, slow = [], 0, 0, []
 reply_texts = []
 
@@ -89,6 +90,11 @@ for t in turns:
         echo_drops.append(t)
     if t.get("echo_overridden"):
         echo_saved.append(t)
+    if t.get("cancel_pre_audio") or (t.get("interrupted") and t.get("llm_response")
+            and not (t.get("tts") or {}).get("audio_duration_s")
+            and not (t.get("tts") or {}).get("interrupted_at_ms")
+            and not t.get("interrupted_at_ms")):
+        cancel_pre.append(t)
     # 3. turn record incomplete = task cancelled mid-flight (barge-in race etc.)
     if t.get("stt_valid") is None and not t.get("echo_dropped") \
             and not t.get("pipeline_error") and not t.get("response_skipped"):
@@ -118,6 +124,17 @@ for i in range(len(reply_texts) - 2):
             clarify_streak.append((window[0][0], txt[:36], n))
 
 # ---------- WHY / DONE / PRESCRIPTION per class ----------
+if cancel_pre:
+    pct = round(len(cancel_pre) / max(len(turns), 1) * 100)
+    add("Replies cancelled BEFORE any audio (stale-reply race)", len(cancel_pre),
+        f"The user spoke again before TTS delivered first audio; cancel-on-newer-turn "
+        f"dropped the pending reply unheard (turns {[t.get('turn') for t in cancel_pre][:8]}, "
+        f"{pct}% of turns). Felt as being ignored.",
+        "The newer turn answers the latest text; pre-audio cancels are now VISIBLE "
+        "(were silent before).",
+        "Root fix = lower TTFA (voice provider decision: Fish paid tier / ElevenLabs). "
+        "If high even with a fast provider, consider duck-and-merge (play the pending "
+        "line at lower volume instead of cancelling).")
 if tts_silent:
     add("TTS silent (reply generated, zero audio)", len(tts_silent),
         "Fish Audio returned an empty/near-empty stream while reporting success "

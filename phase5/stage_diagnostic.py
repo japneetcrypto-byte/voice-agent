@@ -88,6 +88,10 @@ for t in turns:
         issues.append(f"INTERRUPTED at {tts['interrupted_at_ms']}ms")
     if reply and not tts.get("provider"):
         issues.append("TTS: no provider — audio not synthesized")
+    if reply and t.get("cancel_pre_audio"):
+        issues.append("REPLY CANCELLED BEFORE AUDIO — user spoke again before first "
+                      "sound (TTS TTFA slower than user's pace); reply text was never heard")
+        agg["cancel_pre"] = agg.get("cancel_pre", 0) + 1
     if reply and tts.get("provider") and tts.get("audio_duration_s") in (None, 0) \
             and not t.get("interrupted"):
         fb = t.get("tts_fallback_reason") or tts.get("fallback_reason")
@@ -164,6 +168,9 @@ if agg.get("tag_leaks"):
     print(f"tag-leaks stripped: {agg['tag_leaks']}")
 if agg.get("skipped"):
     print(f"⚠ response skips: {agg['skipped']} — see RESPONSE SKIPPED turns")
+if agg.get("cancel_pre"):
+    print(f"⚠ replies cancelled BEFORE audio: {agg['cancel_pre']} — user outpaced TTS "
+          "first-audio; root fix = lower TTFA (voice provider decision)")
 corrs = [t.get("echo_corr_score") for t in turns if t.get("echo_corr_score") is not None]
 if corrs:
     corrs.sort()
