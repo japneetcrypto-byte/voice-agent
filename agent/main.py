@@ -36,7 +36,8 @@ from agent.response_state import classify as response_state_classify, \
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
                                clean_specials, is_confirm_echo, devanagari_present,
-                               shape_signature, is_challenge, REPLY_MAX_CHARS, SENT_END_RE)
+                               shape_signature, is_challenge, is_detail_request,
+                               is_repeat_of, cap_for, remaining_text, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -367,6 +368,20 @@ async def entrypoint(ctx: JobContext):
                     prompt = lcm.get_compression_prompt(overflow)
                     asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
             turn["policy"] = sess.policy_for_turn()
+            # DETAILED MODE (directive synthesis): explicit detail request
+            # latches chunked delivery for the next N turns; continuation
+            # cues ('haan/aage/phir') keep it alive. Policy marker
+            # policy.delivery drives persona V1.11 rule 1b.
+            if user_text and is_detail_request(user_text):
+                detail_mode["turns_left"] = 6
+            if detail_mode["turns_left"] > 0 and isinstance(turn["policy"], dict):
+                detail_mode["turns_left"] -= 1
+                turn["detail_mode"] = True
+                if user_text and any(w in user_text.lower() for w in
+                                     ("haan", "aage", "phir", "हाँ", "आगे", "और")):
+                    turn["policy"]["delivery"] = "continue_detail"
+                else:
+                    turn["policy"]["delivery"] = "chunked_detail"
             # Anti-parrot nudge (application layer, deterministic): when the
             # parrot-streak detector fired, extend the avoid list for this call.
             # The mutated object goes to the LLM AND the turn log — one truth.
@@ -385,6 +400,14 @@ async def entrypoint(ctx: JobContext):
                 log_event("CHALLENGE_DETECTED", turn_id=turn.get("turn"),
                           details={"user_text": user_text[:80]})
                 print(f"[ReplyGuard] challenge detected — reconcile-claim nudge active")
+            # Recovery turns (routing contract): meaningful-but-rejected
+            # transcripts get BOUNDED recovery — short + checkpoint-oriented,
+            # never a substantive wall on a shaky transcript.
+            if turn.get("route_action") == "contextual_recovery":
+                turn["recovery_mode"] = "contextual_recovery"
+                if isinstance(turn["policy"], dict):
+                    turn["policy"]["response_goal"] = "checkpoint_recovery"
+                    turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["long_monologue_on_shaky_transcript"]
             # Response reconciliation (directive fix 2): if the PREVIOUS reply
             # was interrupted (unheard / partially heard), tell this call —
             # popped, so it applies only to the immediately-following turn.
@@ -435,6 +458,13 @@ async def entrypoint(ctx: JobContext):
         spoken_text = []   # what is actually spoken (post length-guard)
         full_text = []     # everything the model generated (diagnostics)
         ttft_logged = False
+        # Spoken-chunk cap: detail mode delivers ONE coherent thought per turn
+        # (~110 chars); normal mode's ceiling is higher. Recovery turns are
+        # ALWAYS chunk-capped (bounded blast radius on shaky transcripts).
+        # Semantic length is achieved across turns — never a 10-15s monologue.
+        active_cap = cap_for(detail_mode["turns_left"] > 0)
+        if turn.get("route_action") == "contextual_recovery":
+            active_cap = min(active_cap, 110)
         fused_ref = engine.get("fused") if engine else None
         # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
@@ -478,7 +508,7 @@ async def entrypoint(ctx: JobContext):
                         if not m:
                             break
                         sentence = trim["pending"][:m.end()]
-                        if trim["emitted"] + len(sentence) > REPLY_MAX_CHARS and trim["emitted"] > 0:
+                        if trim["emitted"] + len(sentence) > active_cap and trim["emitted"] > 0:
                             trim["done"] = True
                             break
                         piece += sentence
@@ -486,8 +516,8 @@ async def entrypoint(ctx: JobContext):
                         trim["emitted"] += len(sentence)
                     # Pathological single unbroken sentence: cut at a word
                     # boundary so audio can start at all.
-                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > REPLY_MAX_CHARS:
-                        cut = trim["pending"][:REPLY_MAX_CHARS]
+                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > active_cap:
+                        cut = trim["pending"][:active_cap]
                         sp = cut.rfind(" ")
                         if sp > 40:
                             piece = trim["pending"][:sp + 1]
@@ -520,8 +550,8 @@ async def entrypoint(ctx: JobContext):
                 # Done inside the body — a finally cannot yield.
                 if not trim["done"] and trim["pending"]:
                     piece = trim["pending"]
-                    if trim["emitted"] + len(piece) > REPLY_MAX_CHARS and trim["emitted"] > 0:
-                        cut = piece[:REPLY_MAX_CHARS - trim["emitted"]]
+                    if trim["emitted"] + len(piece) > active_cap and trim["emitted"] > 0:
+                        cut = piece[:active_cap - trim["emitted"]]
                         sp = cut.rfind(" ")
                         piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
                         turn["reply_trimmed"] = True
@@ -558,7 +588,7 @@ async def entrypoint(ctx: JobContext):
                 log_event("LLM_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
                 if turn.get("reply_trimmed"):
                     print(f"[ReplyGuard] TRIMMED spoken={turn['reply_chars']} chars "
-                          f"(full={len(turn['llm_response_full'])} chars, cap={REPLY_MAX_CHARS})")
+                          f"(full={len(turn['llm_response_full'])} chars, cap={active_cap})")
                     log_event("REPLY_TRIMMED", turn_id=turn.get("turn"), details={
                         "spoken_chars": turn["reply_chars"],
                         "full_chars": len(turn["llm_response_full"]),
@@ -682,15 +712,21 @@ async def entrypoint(ctx: JobContext):
             # confirmations, nudge the NEXT fused call's policy 'avoid' list.
             # Deterministic, application-layer (updater untouched); turn-logged.
             try:
-                reply_shapes.append(shape_signature("".join(spoken_text)))
+                _now_spoken = "".join(spoken_text)
+                reply_shapes.append(shape_signature(_now_spoken))
                 confirms = sum(1 for s in reply_shapes if "confirm" in s)
-                _last_reply = getattr(engine.get("sess"), "_last_reply_text", None) if engine else None
-                engine and engine.get("sess") and setattr(
-                    engine["sess"], "_last_reply_text", "".join(spoken_text))
-                verbatim = _last_reply is not None and \
-                    "".join(spoken_text).strip() == _last_reply.strip()
-                if verbatim:
-                    log_event("REPLY_VERBATIM_REPEAT", turn_id=turn.get("turn"))
+                # Repetition detection: last 3 assistant replies, DETECTION
+                # ONLY (directive: no blind suppression — reconciliation/
+                # persona decide legitimacy).
+                rep_kind = ""
+                if recent_reply_texts:
+                    rep, rep_kind = is_repeat_of(_now_spoken, list(recent_reply_texts))
+                    if rep:
+                        turn["repeat_detected"] = rep_kind
+                        log_event("REPEAT_DETECTED", turn_id=turn.get("turn"),
+                                  details={"kind": rep_kind})
+                recent_reply_texts.append(_now_spoken)
+                verbatim = rep_kind in ("verbatim", "extension", "near_identical")
                 if ((confirms >= 3 or verbatim) and
                         int(turn.get("turn", 0)) >= _stuck_nudged["until_turn"]):
                     _stuck_nudged["until_turn"] = int(turn.get("turn", 0)) + 4
@@ -757,16 +793,21 @@ async def entrypoint(ctx: JobContext):
                 # These were invisible (interrupted=True, no interrupted_at_ms),
                 # reading as 'silent TTS mysteries'. Now explicit.
                 turn["cancel_pre_audio"] = True
-            # Directive fix 2: Generated ≠ Spoken ≠ Heard. Explicit playback
-            # state + reconciliation payload for the NEXT fused call.
-            _state = response_state_classify(True, ttfa_logged, len("".join(spoken_text)))
+            # Directive fix 2 + 4: Generated ≠ Spoken ≠ Heard. Explicit
+            # playback state + BOTH halves for the NEXT fused call:
+            # heard_text (never repeat) + remaining_text (semantic remainder).
+            _spoken = "".join(spoken_text)
+            _state = response_state_classify(True, ttfa_logged, len(_spoken))
             turn["response_state"] = _state
-            turn["heard_text"] = "".join(spoken_text)[:200]
+            turn["heard_text"] = _spoken[:200]
+            _remainder = remaining_text("".join(full_text), _spoken)
+            turn["remaining_text"] = _remainder[:300]
             if engine is not None:
                 engine["last_response"] = {"status": _state,
                                             "turn": turn.get("turn"),
-                                            "heard_text": "".join(spoken_text)}
-            turn["tts_text"] = "".join(spoken_text)[:600]
+                                            "heard_text": _spoken,
+                                            "remaining_text": _remainder}
+            turn["tts_text"] = _spoken[:600]
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
                 turn["system_sha1"] = engine["fused"].meta.get("system_sha1")
@@ -1336,7 +1377,12 @@ async def entrypoint(ctx: JobContext):
     # Response-variety guard (owner brief 2026-08-29: 'quality of response gone
     # bad' — sessions drifted into echo-confirm parroting, 36% of one session).
     reply_shapes = collections.deque(maxlen=4)
+    recent_reply_texts = collections.deque(maxlen=3)
     _stuck_nudged = {"until_turn": 0}
+    # DETAILED MODE (directive 2026-08-29, synthesis): explicit detail request
+    # ('detail mein samjhao', 'poora batao', 'ek-ek point') latches chunked
+    # delivery for the next N turns; 'haan/aage/phir' continues the next chunk.
+    detail_mode = {"turns_left": 0}
     _last_engine_path = {"v": None}
 
     async def _send_supervisor_alert(snapshot: dict):

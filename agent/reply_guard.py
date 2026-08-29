@@ -283,3 +283,35 @@ CHALLENGE_RE = re.compile(
 def is_challenge(text: str) -> bool:
     """True when the user is challenging/questioning a previous statement."""
     return bool(CHALLENGE_RE.search(text or ""))
+
+def remaining_text(full_text: str, spoken_text: str) -> str:
+    """Unspoken remainder of an interrupted reply (capped by caller).
+    spoken_text must be a prefix of full_text (it is: streaming order);
+    falls back to empty when it is not."""
+    f, s = (full_text or ""), (spoken_text or "")
+    if s and f.startswith(s):
+        return f[len(s):].strip()
+    return ""
+
+
+def is_repeat_of(new_reply: str, previous: list[str], threshold: float = 0.85) -> tuple[bool, str]:
+    """DETECTION ONLY (directive: never blindly suppress). Returns
+    (is_repeat, matched_kind) vs the last few assistant replies.
+    verbatim = exact match; near = high similarity same shape."""
+    new = (new_reply or "").strip()
+    if not new:
+        return False, ""
+    import difflib
+    for prev in previous or []:
+        p = (prev or "").strip()
+        if not p:
+            continue
+        if new == p:
+            return True, "verbatim"
+        # containment: new reply extends the old one verbatim (partial-repeat)
+        if len(p) >= 12 and (p in new or new in p):
+            return True, "extension"
+        if abs(len(new) - len(p)) < 30 and \
+                difflib.SequenceMatcher(None, new.lower(), p.lower()).ratio() >= threshold:
+            return True, "near_identical"
+    return False, ""

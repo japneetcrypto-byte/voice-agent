@@ -747,3 +747,35 @@ provider stability, unseen patterns).
 
 Old promotion-guard test updated to post-gate invariants (it asserted the
 pre-gate world). All 11 suites green.
+
+---
+
+## Directive 192439 synthesis IMPLEMENTED (2026-08-29 night) — counter-arguments first
+
+Owner ratified the synthesis with adjustments (detail mode, voice chunking,
+STT synthesis, remainder, detection-only repeats, topic defer, VAD done,
+latency separate).
+
+Implemented:
+1. DETAILED MODE: is_detail_request (detail/poora/ek-ek/step-by-step/samjhao/
+   khul-ke, Devanagari+roman) latches chunked delivery 6 turns; policy.delivery
+   = chunked_detail / continue_detail drives persona V1.11 rule 1b (ONE
+   coherent thought per turn ~5-6s, checkpoint cue, continue on
+   haan/aage/phir, never restart). 2-sentence rule explicitly does NOT apply
+   in this mode (semantic depth via multiple chunks).
+2. VOICE CHUNKING: adaptive cap — cap_for(detail)=110 vs cap_for(normal)=240;
+   tee uses active_cap. Recovery turns always min(cap, 110) (bounded blast
+   radius on shaky transcripts) + policy goal checkpoint_recovery.
+3. STT ROUTING: synthesis confirmed as shipped (transcript_router, 10 tests);
+   every route logged; recovery bounded per above.
+4. REMAINDER: PARTIALLY_PLAYED payloads now carry heard_text AND
+   remaining_text (full minus spoken, prefix-safe, capped); UNHEARD still
+   withholds text.
+5. REPEATS: detection widened to last-3 replies (verbatim/extension/
+   near_identical via containment+ratio) — DETECTION ONLY (REPEAT_DETECTED
+   event + anti-parrot nudge; no suppressor). Extension case (t11->t13
+   'dono hisaab se sahi...') now caught.
+6. TOPIC: deferred per directive. 7. VAD: done prior. 8. LATENCY: separate.
+
+Tests: test_detail_and_repeats.py (21) — acceptance trace included. All 13
+suites green.

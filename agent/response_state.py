@@ -33,7 +33,11 @@ def reconcile_payload(last_response: dict | None) -> dict | None:
 
     Returns None when there is nothing to reconcile (no previous response, or
     it was fully played — the user heard everything, so no special handling).
-    Applies only to the immediately-following turn; the caller pops it."""
+    Applies only to the immediately-following turn; the caller pops it.
+
+    PARTIALLY_PLAYED payloads carry BOTH halves (directive 2026-08-29 #4):
+      heard_text     — what the user actually heard (never repeat it)
+      remaining_text — the unspoken semantic remainder (resume from here)"""
     if not last_response:
         return None
     status = last_response.get("status")
@@ -42,4 +46,5 @@ def reconcile_payload(last_response: dict | None) -> dict | None:
     payload = {"status": status, "turn": last_response.get("turn")}
     if status == PARTIALLY_PLAYED:
         payload["heard_text"] = (last_response.get("heard_text") or "")[:160]
+        payload["remaining_text"] = (last_response.get("remaining_text") or "")[:220]
     return payload
