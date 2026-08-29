@@ -293,19 +293,27 @@ class FusedLLM:
             except Exception as e:
                 if "429" in str(e) and not prose_started:
                     attempt += 1
+                    ak, am = rotations[rot_idx] if rot_idx < len(rotations) else ("?", "?")
+                    err_detail = str(e)[:200]
+                    print(f"[LLM] 429 on key#{rot_idx+1}/{am}: {err_detail[:100]}")
+                    self.meta.setdefault("attempt_errors", []).append(
+                        {"key": rot_idx + 1, "model": am, "error": err_detail[:150]})
                     if attempt < len(rotations):
                         rot_idx = attempt
                         ak, am = rotations[rot_idx]
-                        print(f"[LLM] 429 — rotating to key/model #{rot_idx+1}: {am}")
+                        print(f"[LLM] rotating to key/model #{rot_idx+1}: {am}")
                         continue
                     else:
-                        # BUGFIX 212641: the 65s cooldown BLOCKED the task; user
-                        # spoke again → task cancelled mid-sleep → SILENCE.
-                        # Fix: immediate filler + return. Next turn retries
-                        # from scratch (fresh 429 attempts).
-                        print(f"[LLM] all {len(rotations)} combos exhausted (429)")
+                        # BUGFIX 212641: 65s cooldown blocked the task; user
+                        # spoke again → cancelled mid-sleep → SILENCE.
+                        # Fix: immediate filler + return.
+                        all_errs = "; ".join(
+                            f"k{a['key']}/{a['model']}: {a['error'][:60]}"
+                            for a in self.meta.get("attempt_errors", [])[-3:])
+                        print(f"[LLM] all {len(rotations)} combos exhausted")
+                        print(f"[LLM] REAL ERRORS: {all_errs}")
                         self.meta["llm_failed"] = True
-                        self.meta["llm_error"] = "429: all key×model combos exhausted"
+                        self.meta["llm_error"] = f"429 all combos: {all_errs[:200]}"
                         self.meta["degradation"] = "D4"
                         yield pick_line(FILLER_LINES, turn_no)
                         return
