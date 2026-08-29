@@ -24,7 +24,32 @@ import re
 # substantive answers (costs, comparisons) need room, small talk stays short
 # (persona V1.10 drives that). 240 chars ~ 15s spoken ceiling; the trim still
 # cuts at sentence boundaries and keeps the full text in the log.
-REPLY_MAX_CHARS = 240
+REPLY_MAX_CHARS = 240          # default (small talk / normal turns)
+DETAIL_CHUNK_CAP = 110         # detailed answers: SMALL chunks (directive
+                               # 2026-08-29 192439: no 10-15s monologues —
+                               # detail is delivered across turns with
+                               # checkpoints, not in one breath)
+
+
+def cap_for(detail_mode: bool) -> int:
+    """Spoken-chunk cap: detail mode delivers in small chunks; the semantic
+    length is achieved across turns (persona V1.11 rule 1)."""
+    return DETAIL_CHUNK_CAP if detail_mode else REPLY_MAX_CHARS
+
+
+# explicit requests for detail ("detail mein samjhao", "poora batao",
+# "ek-ek point", "step by step") — evidence: session 192439 t14-t28
+DETAIL_RE = re.compile(
+    r"detail|डिटेल|poora|poori|पूरा|पूरी"
+    r"|ek[\s\-]?ek|एक\s+एक|step[\s\-]?by[\s\-]?step|point[\s\-]?by[\s\-]?point"
+    r"|samjhao|समझाओ|explain|deeply|elaborate"
+    r"|खुल\s*के|khul\s*ke|कैसे\s+काम",
+    re.IGNORECASE)
+
+
+def is_detail_request(text: str) -> bool:
+    """True when the user explicitly asks for detail/depth."""
+    return bool(DETAIL_RE.search(text or ""))
 
 # Sentence end: Latin . ! ? or Devanagari danda, optionally followed by a
 # closing quote/bracket, then whitespace or end-of-string.
