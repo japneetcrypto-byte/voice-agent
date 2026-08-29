@@ -31,6 +31,7 @@ from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
      continues_or_asks
 from agent.transcript_router import route_transcript
+from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
      reconcile_payload as response_reconcile_payload, \
      FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
@@ -1360,6 +1361,24 @@ async def entrypoint(ctx: JobContext):
                                     engine["wait_streak"] = 0
                                     engine["last_turn_wait"] = False
                                 turn["response_trigger_reason"] = "user_speech_ended"
+                                # Ack bridge: play a cached vocal cue to fill
+                                # the LLM+TTS latency gap (zero added latency —
+                                # cached PCM, written directly to AudioSource).
+                                if (ack_bridge.ready and
+                                        turn.get("route_action") in (None, "normal", "contextual_recovery")
+                                        and not agent_was_speaking_at_detection):
+                                    try:
+                                        clip = ack_bridge.get_clip()
+                                        chunk_size = 960
+                                        for i in range(0, len(clip), chunk_size):
+                                            c = clip[i:i + chunk_size]
+                                            frame = rtc.AudioFrame(
+                                                data=c.tobytes(), sample_rate=48000,
+                                                num_channels=1, samples_per_channel=len(c))
+                                            await agent_source.capture_frame(frame)
+                                        turn["ack_played"] = True
+                                    except Exception as e:
+                                        print(f"[AckBridge] play failed: {e}")
                                 await run_agent_response(transcript.text, turn)
 
                             except asyncio.CancelledError:
@@ -1421,6 +1440,11 @@ async def entrypoint(ctx: JobContext):
     # if Aiva still isn't audible — speaks one deterministic recovery line and
     # writes a SUPERVISOR_ENGAGED snapshot. Repeat engagements escalate.
     supervisor = CallSupervisor()
+
+    # ---- Ack Bridge (naturalness): pre-synthesized vocal cues ----
+    # Fills the 2-3s speech→reply gap with a natural "achha"/"haan" sound,
+    # making the wait feel like "thinking" rather than "system latency".
+    ack_bridge = AckBridge()
     # Response-variety guard (owner brief 2026-08-29: 'quality of response gone
     # bad' — sessions drifted into echo-confirm parroting, 36% of one session).
     reply_shapes = collections.deque(maxlen=4)
@@ -1636,6 +1660,10 @@ async def entrypoint(ctx: JobContext):
         asyncio.create_task(_quota_check())
     else:
         print("[StateEngine] no shutdown hook available - pending memory not committed")
+
+    async def _pregen_acks():
+        await ack_bridge.pregenerate()
+    asyncio.create_task(_pregen_acks())
 
     # Handle tracks from participants that join AFTER the agent
     @ctx.room.on("track_subscribed")

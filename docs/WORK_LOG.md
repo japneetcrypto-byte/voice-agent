@@ -867,3 +867,24 @@ cap) should pull it back down; measure next session.
 includes the matched form for self-description). Echo report timing: run
 AFTER session end (mid-session run showed 0 scored though diagnostic
 showed n=2). All suites green.
+
+---
+
+## Ack Bridge: natural timing fix (2026-08-29 night)
+
+Owner: "timing of speaking does not look natural."
+
+Root cause: 2-3s of DEAD SILENCE between user stopping and Aiva starting.
+Human friends fill that gap with a sound ("achha", "hmm") almost instantly —
+acknowledging receipt, then thinking.
+
+Fix: agent/ack_bridge.py — 4 short clips ("achha", "haan bol", "hmm", "theek
+hai") pre-synthesized via EdgeTTS at startup (one-time, free), cached as PCM
+in memory. At play time (after STT validates, before LLM call): random clip
+written DIRECTLY to AudioSource — zero latency, no TTS call. User hears:
+
+  user stops → 0.1s → "achha" → 1.5s gap → full reply
+
+instead of: user stops → 2.5s DEAD SILENCE → full reply
+
+The ack makes the gap feel like "thinking" rather than "system latency."
