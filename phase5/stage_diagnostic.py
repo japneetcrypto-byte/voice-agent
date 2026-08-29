@@ -94,12 +94,6 @@ for t in turns:
     if reply and devanagari_present(reply):
         flags.append("देवनागरी SCRIPT")
         agg["devi"] = agg.get("devi", 0) + 1
-    if t.get("detail_mode"):
-        flags.append("📋 DETAIL")
-    if t.get("route_action"):
-        flags.append(f"route={t['route_action']}")
-    if t.get("repeat_detected"):
-        flags.append(f"↻ REPEAT({t['repeat_detected']})")
     if t.get("response_state"):
         agg.setdefault("states", {})
         agg["states"][t["response_state"]] = agg["states"].get(t["response_state"], 0) + 1
@@ -119,6 +113,13 @@ for t in turns:
         issues.append(f"LLM error: {str(t['llm_error'])[:80]}")
 
     flags = []
+
+    if t.get("detail_mode"):
+        flags.append("📋 DETAIL")
+    if t.get("route_action"):
+        flags.append(f"route={t['route_action']}")
+    if t.get("repeat_detected"):
+        flags.append(f"↻ REPEAT({t['repeat_detected']})")
     if reply:
         agg["replies"] += 1
         if feminine_self_reference(reply):
