@@ -193,3 +193,86 @@ posture. The one place we should resist over-building is Stage 3: if the
 acoustic layer proves sufficient for echo, the speaker registry should wait
 for a *product* need (multi-person or memory attribution), not arrive for
 technical interest.
+
+---
+
+## K. Directive Ratification & Status Report (2026-08-29 night, §19 format)
+
+The refined directive was reconciled against the implementation line by line.
+Verdict: **compliant on every checkable point**; three artifacts added (locked
+Stage-2 decision table, workstream separation, this report).
+
+### K.1 Compliance matrix (directive → implementation)
+
+| Directive point | Status |
+|---|---|
+| §2 playback-signal over voice-prints | ✅ implemented (the core insight, independently derived) |
+| §3 Stage-1 inventory (12s ring, multi-band NCC, shadow events, text filter sole decider, no embeddings/registry, zero behavior change) | ✅ all verified in code |
+| §3 thresholds synthetic-only, configurable | ✅ env (AIVA_ECHO_AGREE/MISS/FLOOR) with synthetic-only warning |
+| §4 non-negotiable decision table | ✅ matches the designed Stage-2 gate exactly (below, now LOCKED) |
+| §5-6 Stage-1 goal + exit (≥3 sessions, ≥30 kept, ≥8 echo candidates, report verdict; investigate-if-not-separable) | ✅ exit criteria identical; report implements both verdicts |
+| §7 conservative gate (agreement→drop; else keep; uncertainty→keep) | ✅ locked spec, not yet built (Stage 2) |
+| §8 short utterances = explicit limitation | ✅ documented (corr=None → text filter) |
+| §10 promotion rule (no identity from one segment) | ✅ in design doc Stage 3 |
+| §11 embedding levels (L1 corr → L2 features → L3 embeddings) | ✅ Stage-1 = L1; L2/L3 gated |
+| §13 privacy (device-local, deletable) | ✅ design doc |
+| §14 do-not-overbuild list | ✅ matches "not built" list in section A |
+| §15 latency budget | ✅ 52–68ms scoring, zero user-perceived (measured) |
+| §16 system-level boundary questions | covered by per-turn telemetry + stage-verdict + health report (formal boundary audit = Stage-2 task) |
+| §17 dual scores (infrastructure vs conversation) | health report tracks both (engineering flags + substance/parrot/clarify ratios) |
+| §19 reporting format | adopted (this section is the first instance) |
+| §21 workstream separation A (echo) vs B (multi-speaker) | adopted — B cannot modify A's code path; both logged separately |
+
+### K.2 LOCKED Stage-2 decision table (directive §4 — implementation spec, not yet built)
+
+| Acoustic | Text | Action |
+|---|---|---|
+| strong echo | strong match | DROP as echo |
+| strong echo | no match | KEEP user speech |
+| weak echo / None | strong match | KEEP (investigate: ECHO_TEXT_ONLY) |
+| weak / None | weak | KEEP |
+| no score (short utt) | match | existing text behavior |
+| uncertain | uncertain | KEEP |
+
+Bias: **uncertainty always preserves user speech.** Pre-enablement tests
+required (directive §7): genuine echo, genuine user speech, similar-sounding
+user speech, low-volume, overlap, no playback, playback-ended-recently, short
+utterance, background noise — nine test families before the gate ships.
+
+### K.3 §19 status report — speaker-attribution workstream
+
+1. **What changed (this cycle):** full-context shadow records
+   (`turn["echo_shadow"]`: corr, text_sim, text_echo, speech_ms,
+   ms_since_playback_end, played_ring_s, decision) + env-configurable
+   thresholds. Files: agent/main.py.
+2. **Why:** directive §8 — shadow mode must record enough to calibrate.
+3. **Architecture impact:** telemetry only; no stage's behavior touched.
+4. **Runtime behavior:** at each speech-end, capture vs 12s played buffer →
+   multi-band NCC → record + classify → proceed exactly as before.
+5. **Metrics:** scoring 52–68ms worst case; zero added user-perceived latency;
+   real-distribution counts: kept-turn samples n=3 so far (below exit bar).
+6. **Tests:** test_speaker_signature.py (8: separation, degradation tolerance,
+   degenerates, latency). No new suites needed for telemetry.
+7. **Known limitations:** synthetic-only threshold validation; speech-end (not
+   continuous) scoring; <~1.5s utterances unscoreable; BT/headset untested.
+8. **DECISION: KEEP IN SHADOW MODE.**
+9. **Next action:** collect ≥3 sessions / ≥30 kept-turns / ≥8 echo candidates
+   (owner talks right after Aiva speaks to seed candidates), then run
+   `phase5/echo_shadow_report.py`. No code until the verdict.
+
+### K.4 Workstream separation (§21) — registered
+
+- **Workstream A (echo reliability):** everything in this document. Owner of
+  `providers/speaker_signature.py`, `echo_shadow*`, `is_echo`.
+- **Workstream B (multi-speaker experience):** separate roadmap item; may not
+  modify Workstream A code paths; enters at Stage 3 of the design doc only
+  after a written product requirement.
+
+### K.5 Directive §18 classification of today's other changes (samples)
+
+- Pre-audio cancel visibility → **B** (reliability) · evidence: 4/22 turns
+- Anti-parrot guard (V1.7/V1.8) → **D** (conversation quality) · evidence:
+  36% echo-confirm ratio; UNPROVEN — next session's substance ratio decides
+- Samples-based TTS failover → **B** · evidence: 6 silent-stream turns
+- Worker build stamp → **F** (infra) · evidence: stale-worker incidents
+- Stage verdict engine → **F** · evidence: repeated manual decomposition
