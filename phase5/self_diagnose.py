@@ -178,6 +178,20 @@ if quota_429:
 
 slow.sort(reverse=True)
 lat_avg = round(sum(s for s, *_ in slow) / len(slow), 2) if slow else None
+
+# TTS first-audio degradation (provider-side slowness, evidence 155556:
+# tts_ttfa 2.9-4.05s vs the 1.5-1.9s baseline while LLM TTFT stayed normal)
+ttfa_bad = [(t.get("tts_first_audio_s"), t.get("turn"))
+            for t in turns if (t.get("tts_first_audio_s") or 0) > 2.5]
+if ttfa_bad:
+    add("TTS first-audio degradation (TTFA > 2.5s)", len(ttfa_bad),
+        f"Fish Audio served slow first audio on turns {[t for _, t in ttfa_bad][:8]} "
+        f"(worst {max(s for s, _ in ttfa_bad)}s) while LLM TTFT stayed normal — "
+        "provider-side latency, not the pipeline.",
+        "Containment: first-audio timeout (AIVA_TTS_FIRST_TIMEOUT, 5s) fails a hung "
+        "Fish over to EdgeTTS; zero-audio turns fail over automatically.",
+        "If >20% of turns exceed 2.5s across sessions: owner decision — paid Fish "
+        "tier / ElevenLabs Flash re-clone / parallel Edge race.")
 lat_p95 = round(sorted(s for s, *_ in slow)[int(len(slow) * 0.95) - 1], 2) if len(slow) >= 4 else None
 
 # ---------- report ----------

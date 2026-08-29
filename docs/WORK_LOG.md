@@ -388,3 +388,20 @@ Shipped (Stage 1, SHADOW — telemetry only, zero behavior change):
 
 Stage gates: 3 live sessions of shadow data -> calibrate -> Stage 2 gate
 activation. Tests: test_speaker_signature.py (8). All suites green.
+
+---
+
+## Session 155556: latency decomposition = Fish Audio, not the pipeline (2026-08-29)
+
+Owner: "taking a lot more time." Decomposition: LLM TTFT normal (1.0-1.8s), STT
+normal, TTS TTFA spiked 2.9-4.05s (baseline 1.5-1.9s) + turns 1-2 zero-audio
+(provider=fish, audio=None). Fish Audio free-tier degradation episode — third
+session with Fish misbehaving.
+
+Shipped:
+- Diagnostic now flags provider-present silent TTS (t1/t2 signature previously
+  slipped through: provider=fish + audio=None had no flag)
+- AIVA_TTS_FIRST_TIMEOUT (default 5s, was fixed 7s) — hung Fish fails to Edge sooner
+- self_diagnose: new TTS-TTFA-degradation class with owner-decision prescription
+Note: supervisor rescue lines ride the same TTS — the zero-audio failover
+(b3065ee) is what makes the supervisor audible during TTS incidents.

@@ -191,10 +191,12 @@ class FallbackTTSProvider(TTSProvider):
 
             self.last_provider = "fish"
             primary_stream = self.primary.synthesize_stream(_live_reader())
-            # Timeout covers LLM TTFT (worst healthy case ~3s) + Fish's own
-            # first-audio latency (~1-2s). A genuine Fish hang falls to Edge.
+            # First-audio timeout. Fish TTFA baseline is 1.5-1.9s; degradation
+            # episodes (sessions 155556: 2.9-4.05s) still play the clone, but a
+            # HANG fails over to Edge this many seconds after TTS start.
+            first_timeout = float(os.getenv("AIVA_TTS_FIRST_TIMEOUT", "5.0"))
             first_chunk = await asyncio.wait_for(
-                primary_stream.__anext__(), timeout=7.0
+                primary_stream.__anext__(), timeout=first_timeout
             )
             yield first_chunk
             chunks = 1
