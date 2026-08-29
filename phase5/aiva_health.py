@@ -129,7 +129,11 @@ if os.path.exists(db):
     except Exception as e:
         L.append(f"## Memory store\n\n(read failed: {e})\n")
 
-# ---- the four diagnostics (verbatim from their own tools) ----
+# ---- STAGE VERDICT (the owner decision rule, top of the report) ----
+ok, out = run(["phase5/stage_verdict.py", sp])
+L.append(section("STAGE VERDICT — per-stage proof + final call", out, ok))
+
+# ---- full diagnostics (verbatim from their own tools) ----
 ok, out = run(["phase5/stage_diagnostic.py", sp])
 L.append(section(f"Stage diagnostic — {os.path.basename(sp)}", out, ok))
 

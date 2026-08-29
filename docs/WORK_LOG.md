@@ -444,3 +444,21 @@ Owner shared their real diagnosis file (161510): 24 turns, 9 failures / 6 classe
 - New cross-session trend table (last 8 sessions): turns, speech->audio avg/p95,
   TTFA avg, silent count, supervisor count, 429 count — the objective
   "are we degrading vs earlier" answer, included in every diagnosis + aiva_health.
+
+---
+
+## Stage verdict engine (2026-08-29): the owner decision rule, automated
+
+Owner: "add each thing to the report — voice key, ASR, LLM, TTS, time taken, echo,
+words spoken/heard, interruption handling. If the log confirms Fish is the bad
+experience, we look for an alternative; if everything before that is fine, the
+system as a unit works — we just update the outermost part."
+
+phase5/stage_verdict.py (also the first section of aiva_health reports):
+- Per-stage PASS/WATCH/FAIL: STT (hearing), LLM (brain, incl 429s/quota), TTS
+  (voice: TTFA p95 + silent turns + failovers), ECHO (drops/saves/voice-key corr),
+  BARGE-IN (interrupted replies + stop latency), PIPELINE GUARDS, CONVERSATION
+  volume (turns, words heard, words spoken, words cut by barge-in)
+- FINAL VERDICT implements the owner rule literally: all stages before TTS pass
+  and only TTS fails -> "SYSTEM UNIT HEALTHY - BOTTLENECK IS THE TTS PROVIDER"
+  with the replace/upgrade prescription. Multiple failures -> ordered fix list.
