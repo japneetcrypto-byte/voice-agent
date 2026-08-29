@@ -43,7 +43,8 @@ check("garble first sighting is PENDING (not in live view)",
       not any("गए" in v for v in view), str(view))
 row = store.db.execute("SELECT status FROM memory WHERE owner_id=? AND content LIKE '%गए%'",
                        (OWNER,)).fetchone()
-check("garble row exists as pending", row is not None and row[0] == "pending", str(row))
+check("garble row exists as QUARANTINED (store-level guard)",
+      row is not None and row[0] == "quarantined", str(row))
 
 # --- a REAL fact, repeated (the promotion path) ---
 promote("Neetu — user's behen", already=False)     # first sighting
@@ -53,18 +54,20 @@ promote("Neetu — user's behen", already=True)      # owner repeats -> confirme
 check("real fact repeated -> COMMITTED (in view)",
       any("Neetu" in v for v in store.view(OWNER)))
 
-# --- session-end promotion: pending survives only if keep=True ---
+# --- session-end promotion: quarantined rows are NEVER promoted ---
 store.promote_pending(OWNER, keep=True)
-check("session-end promote_pending commits the pending garble too (known "
-      "D3 behavior - hygiene gate is separate)",
-      any("गए" in v for v in store.view(OWNER)))
+check("session-end does NOT promote quarantined rows",
+      not any("गए" in v for v in store.view(OWNER)))
 
-# --- the OLD buggy path, documented as forbidden ---
+# --- the OLD buggy path is now IMPOSSIBLE at store level ---
 store2 = MemoryStore(db_path=db + ".old")
 store2.commit(OWNER, {"type": "relationship", "content": "गए — user's bhai",
                       "criterion": "explicit"}, immediate=False)
-check("OLD BUGGY PATH demonstrably committed instantly (this is what we fixed)",
-      any("गए" in v for v in store2.view(OWNER)))
+check("OLD BUGGY PATH now quarantined (was instant-commit pre-gate)",
+      not any("गए" in v for v in store2.view(OWNER)))
+row2 = store2.db.execute("SELECT status FROM memory WHERE content LIKE '%गए%'").fetchone()
+check("old-path row lands as quarantined for audit",
+      row2 is not None and row2[0] == "quarantined", str(row2))
 
 os.remove(db)
 if os.path.exists(db + ".old"):

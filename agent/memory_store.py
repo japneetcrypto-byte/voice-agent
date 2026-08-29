@@ -14,6 +14,8 @@ import sqlite3
 import time
 from datetime import datetime, timedelta, timezone
 
+from agent.memory_gate import gate_candidate
+
 DEFAULT_DB = os.path.join("logs", "aiva_memory.db")
 UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 RETENTION_DAYS = 90  # U2
@@ -69,6 +71,26 @@ class MemoryStore:
         content = (candidate.get("content", "") or "").strip()[:200]
         criterion = candidate.get("criterion", "salient")
         now = datetime.now(timezone.utc).isoformat()
+
+        # GUARDRAIL (owner directive 2026-08-29): every write passes the
+        # store-level gate BEFORE touching the database. Blast radius of any
+        # upstream extractor/policy bug: a rejected or quarantined row —
+        # never live-context pollution.
+        verdict, reason = gate_candidate(candidate | {"criterion": criterion,
+                                                      "immediate": immediate})
+        if verdict == "reject":
+            print(f"[MemoryGate] REJECTED {typ} {content[:40]!r}: {reason}")
+            self.db.commit()
+            return
+        if verdict == "quarantine":
+            print(f"[MemoryGate] QUARANTINED {typ} {content[:40]!r}: {reason}")
+            self.db.execute(
+                "INSERT INTO memory (owner_id, type, content, criterion, status, created_at, last_seen)"
+                " VALUES (?,?,?,?, 'quarantined', ?, ?)",
+                (owner_id, typ, content, criterion, now, now))
+            self.db.commit()
+            return
+
         existing = self.db.execute(
             "SELECT id FROM memory WHERE owner_id=? AND type=? AND content=?",
             (owner_id, typ, content)).fetchone()
@@ -102,11 +124,14 @@ class MemoryStore:
         self.db.commit()
 
     def promote_pending(self, owner_id: str, keep: bool = True) -> None:
-        """Session-end commit evaluation (D3): pending -> committed (or dropped)."""
+        """Session-end commit evaluation (D3), GUARDED (directive 2026-08-29):
+        a pending row is promoted ONLY if seen >=2 times (repeated facts are
+        real; one-offs stay pending to age out or be confirmed next session).
+        Closes the blanket-promotion path that would commit one-off garbles."""
         if keep:
             self.db.execute(
-                "UPDATE memory SET status='committed' WHERE owner_id=? AND status='pending'",
-                (owner_id,))
+                "UPDATE memory SET status='committed' WHERE owner_id=? AND status='pending' "
+                "AND occurrences>=2", (owner_id,))
         else:
             self.db.execute("DELETE FROM memory WHERE owner_id=? AND status='pending'", (owner_id,))
         self.db.execute(

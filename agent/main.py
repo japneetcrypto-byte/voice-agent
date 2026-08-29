@@ -499,6 +499,15 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
+                        # GUARDRAIL: script enforcement — persona says Roman;
+                        # code enforces it (transliterate instead of trust).
+                        if devanagari_present(piece):
+                            try:
+                                piece = devanagari_to_roman(piece)
+                                turn["script_transliterated"] = True
+                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
+                            except Exception as _te:
+                                print(f"[ScriptGuard] transliteration failed: {_te}")
                         if leaked:
                             turn["tag_leak_stripped"] = True
                             log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
@@ -521,6 +530,15 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
+                        # GUARDRAIL: script enforcement — persona says Roman;
+                        # code enforces it (transliterate instead of trust).
+                        if devanagari_present(piece):
+                            try:
+                                piece = devanagari_to_roman(piece)
+                                turn["script_transliterated"] = True
+                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
+                            except Exception as _te:
+                                print(f"[ScriptGuard] transliteration failed: {_te}")
                         if leaked:
                             turn["tag_leak_stripped"] = True
                             log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))

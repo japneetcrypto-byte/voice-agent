@@ -717,3 +717,33 @@ Note: true self-consistency ideally needs the model to CHECK history on
 challenge — the nudge + persona rule directs it; verification = next session's
 substance ratio + challenge turns. If flip-flop persists: model-tier A/B gets
 stronger.
+
+---
+
+## GUARDRAILS: store-level memory gate + enforcement stack (2026-08-29 night)
+
+Owner: "beating around the bush; blast radius not contained; will fail in
+extreme situations again." Response: structural containment, not more patches.
+
+NEW: agent/memory_gate.py — EVERY MemoryStore.commit passes the gate BEFORE
+touching the DB. Verdicts: reject (structural garbage, not stored),
+quarantine (suspicious: invisible, auditable, purgeable), pending (first
+legit sighting), commit (repeat-confirmed). Garbled names ('गए') now land
+QUARANTINED — even when a caller passes explicit+immediate with max
+privileges. promote_pending: session-end blanket promotion REMOVED — pending
+rows promote only at occurrences>=2.
+
+CONTAINMENT GUARANTEE (tested): no single upstream bug can put garbage into
+committed memory in one sighting; worst case = invisible quarantined/pending
+row. Fuzz test (test_memory_gate.py): 9 adversarial candidates with max
+privileges -> 0 committed leaks, 6Q/3R, view() clean, deterministic.
+
+Enforcement-in-code stack extended: Devanagari replies now AUTO-TRANSLITERATED
+in the TTS tee (SCRIPT_TRANSLITERATED) — persona script rule becomes a code
+guarantee. docs/GUARDRAILS.md: the four-layer containment architecture
+(L1 enforcement-in-code, L2 store gate, L3 containment, L4 observability),
+the enforcement-vs-instruction table, the honest boundary (model variance,
+provider stability, unseen patterns).
+
+Old promotion-guard test updated to post-gate invariants (it asserted the
+pre-gate world). All 11 suites green.
