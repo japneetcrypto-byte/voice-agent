@@ -170,3 +170,80 @@ supervisor + telemetry around it. All code on `arena/01a03e6f-voice-agent`,
 - Tests: `python3 phase5/tests/test_*.py` (9 suites, ~204 cases)
 - Full code: repo `arena/01a03e6f-voice-agent`; every fix is a commit with
   evidence in its message; `docs/WORK_LOG.md` is the complete chronicle.
+
+---
+
+## F. PRE-REVIEW RED TEAM (self-administered — treat with suspicion, verify)
+
+Self-review has blind spots by definition. These are our own adversarial
+answers to section D, written to be falsified by the external reviewer.
+
+**F1 — D1 (smart_join): revert was right, but both the heuristic AND the
+revert dodged the real question.** Does a merged word ("sahikaam") actually
+sound wrong to a listener? Fish Audio does its own text normalization — we
+flagged merges in TEXT but never A/B-listened to merged vs corrected audio.
+Cheap action before any more engineering: record 5 merged vs 5 corrected
+replies, blind listen. If inaudible → A4 is cosmetic; retire the lexicon churn.
+
+**F2 — D2 (attribution): it IS decidably cheap, and we never ran the test.**
+Generate one reply in batch (non-streaming) mode. Merges persist → model-emitted
+(model-tier fix). Merges vanish → streaming artifact (buffer-to-boundary fix).
+Five minutes of work decides which fix class is correct. We assumed instead of
+measuring — exactly what our own discipline forbids.
+
+**F3 — D3 (parrot layer): the nudge is the third patch on a symptom.** Parrot
+rate correlates with STT garble rate; garbled input forces clarify/confirm
+loops. If the mic test (A3) shows clean input kills parroting, retire the
+policy nudge. Long-term, variety control belongs in the deterministic updater
+(architecture principle: "LLM interprets; deterministic code decides") — but
+even that may be over-engineering if the input fix suffices.
+
+**F4 — D4 (thresholds): our gates are lenient by industry standards.**
+Outbound-sales-grade stacks (Deepgram + ElevenLabs Flash class) target TTFA
+<500ms and end-to-end <1s. Our FAIL gate (3.5s p95) is ~4x that; WATCH (2.2s)
+is ~2x. Acceptable for a companion MVP; unsellable as a sales product. We also
+lack end-to-end latency targets as a product spec — per-stage gates only.
+
+**F5 — D5 (model tier AND prompt): two sharp self-criticisms.**
+(a) The persona has grown to ~90 lines of accumulated incident rules. Every
+incident added a rule; instruction dilution is a real failure mode, and our
+BAD examples may be TEACHING the failure patterns (negative-example leakage —
+"don't think of an elephant"). (b) We never ran the obvious control: same
+sessions against a ~25-line persona with enforcement moved to code. The
+prompt-rebuild experiment should precede model-tier spend.
+
+**F6 — D6 (Devanagari): the strongest untested lever in this document.**
+Devanagari output sidesteps the ENTIRE romanization merge/split class; our STT
+already outputs Devanagari and the model reads it fine; Fish handles
+Devanagari input. Unknowns: Fish pronunciation quality Devanagari-vs-roman,
+and script normalization for the memory/entity stores. Cost of a trial: one
+session. We have no good reason it hasn't been tried.
+
+**F7 — The strategic critique an external reviewer will certainly make:**
+"You built an elaborate containment system around sub-bar components."
+Containment does not compound; component quality does. Six of our nine open
+issues (A1 latency, A2 parroting, A3 garble, A4 merges, A5 tier, A6 quota)
+trace to two component choices (free-tier model + free-tier voice) and would
+shrink or vanish after a component upgrade. Sequence matters: run the two A/B
+harnesses (model + voice) BEFORE building more containment — half of it may
+retire. Also missing: an end-to-end golden quality set (20 scripted turns,
+blind-scored after every change) so 'is it better?' stops being a feeling; and
+provider redundancy (one Fish account, one Groq key = single-point outages).
+
+**F8 — Strengths (calibration, so the review is honest both ways):**
+observability depth (per-turn context/head/latency + one-command health),
+determinism discipline (LLM interprets / code decides), memory scoping,
+safety containment, and honest incident archaeology including our own
+misdiagnoses (smart_join, epoch off-by-one) — documented, not hidden.
+
+**F9 — Five falsification targets for the external reviewer:**
+1. Reproduce the echo-score separation (0.43–0.69 vs ≤0.30) on REAL session
+   audio, not our synthetic fixtures. If real-room floor is higher, Stage 2
+   gates are wrong.
+2. Listen to merged-word audio (F1). If inaudible, our text-level flagging
+   overstates the problem.
+3. Batch-generation test (F2). Attribute the merges definitively.
+4. 25-line persona vs 90-line persona on the same logged turns. Is prompt
+   bloat actively degrading quality?
+5. Attack the pre-audio-cancel framing: is cancel-on-newer-turn even wrong,
+   or is answering the newest input correct and the only fix really TTFA?
