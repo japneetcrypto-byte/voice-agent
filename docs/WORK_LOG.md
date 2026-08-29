@@ -843,3 +843,27 @@ vs rate correlation CLEAN (long clips stdev 1.8 < short 3.6 — Fish handles
 long synthesis fine; stutter reports are not assembly glitches); barge-in
 stop latency avg 1.86s (n=9); latency 2.56s stable; 429 ×8 = quota pressure
 elevated.
+
+---
+
+## Session 210637: A-P1 PLANS LIVE + plan-driven cap (2026-08-29 night)
+
+A-P1 WORKING LIVE: t10 PLAN(1/2: voice agent market), t11 PLAN(2/3: voice
+agent busine) — the model emitted chunk plans AND advanced them across
+turns. Detail conversation survived barge-ins (PARTIALLY_PLAYED x3 handled).
+
+Issue found: plans emitted/advanced but the LATCH had expired (no explicit
+detail phrase this session) → t11 chunk ran 10.68s at normal cap. FIX:
+plan-driven cap — when the head carries plan.total>1, the chunk cap drops
+to 110 for that turn AND the latch renews (>=3). The model announcing
+multi-chunk intent IS the detail signal; the latch-expiry gap closes
+structurally (mutable caps dict, adapted at TTFT).
+
+Barge-in stop latency rose (avg 3.12s, max 5.58s, n=3) — correlates with
+longer replies (deeper buffered audio to flush). Chunk discipline (plan
+cap) should pull it back down; measure next session.
+
+♀ GENDER flag on t10 needs verification (visible text clean — flag now
+includes the matched form for self-description). Echo report timing: run
+AFTER session end (mid-session run showed 0 scored though diagnostic
+showed n=2). All suites green.

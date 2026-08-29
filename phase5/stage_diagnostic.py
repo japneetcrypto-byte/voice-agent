@@ -132,8 +132,9 @@ for t in turns:
         flags.append(f"↻ REPEAT({t['repeat_detected']})")
     if reply:
         agg["replies"] += 1
-        if feminine_self_reference(reply):
-            flags.append("♀ GENDER")
+        _gf = feminine_self_reference(reply)
+        if _gf:
+            flags.append(f"♀ GENDER({_gf})")
             agg["gender"] += 1
         rl = reply.lower()
         if any(w in rl for w in SERVICE_PHRASES):

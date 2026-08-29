@@ -472,13 +472,13 @@ async def entrypoint(ctx: JobContext):
         spoken_text = []   # what is actually spoken (post length-guard)
         full_text = []     # everything the model generated (diagnostics)
         ttft_logged = False
-        # Spoken-chunk cap: detail mode delivers ONE coherent thought per turn
-        # (~110 chars); normal mode's ceiling is higher. Recovery turns are
-        # ALWAYS chunk-capped (bounded blast radius on shaky transcripts).
-        # Semantic length is achieved across turns — never a 10-15s monologue.
-        active_cap = cap_for(detail_mode["turns_left"] > 0)
+        # Spoken-chunk cap (mutable): default from detail latch; a head plan
+        # (A-P1) tightens it at TTFT — the model announcing total>1 chunks is
+        # itself the detail signal, closing the latch-expiry gap (session
+        # 210637: plans emitted/advanced but latch had expired → 10.7s chunk).
+        caps = {"cap": cap_for(detail_mode["turns_left"] > 0)}
         if turn.get("route_action") == "contextual_recovery":
-            active_cap = min(active_cap, 110)
+            caps["cap"] = min(caps["cap"], 110)
         fused_ref = engine.get("fused") if engine else None
         # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
@@ -505,10 +505,17 @@ async def entrypoint(ctx: JobContext):
                             turn["llm_called"] = fused_ref.meta.get("llm_called", True)
                             turn["spoke_because"] = fused_ref.meta.get("spoke_because", "llm")
                             turn["degradation"] = fused_ref.meta.get("degradation")
-                            # A-P1: chunk plan (when the model emits one)
+                            # A-P1: chunk plan (when the model emits one).
+                            # A multi-chunk plan IS the detail signal — apply
+                            # the chunk cap for this turn and renew the latch
+                            # (session 210637: plans advanced but latch had
+                            # expired → 10.7s chunk).
                             plan = fused_ref.meta.get("head_plan")
                             if plan:
                                 turn["head_plan"] = plan
+                                if isinstance(plan.get("total"), int) and plan["total"] > 1:
+                                    caps["cap"] = min(caps["cap"], 110)
+                                    detail_mode["turns_left"] = max(detail_mode["turns_left"], 3)
                             # AUDIT FIX 2026-08-29: the epoch snapshot MUST be
                             # taken here, after stream_prose's body has run
                             # (generators only execute on first consume — a
@@ -526,14 +533,14 @@ async def entrypoint(ctx: JobContext):
                         if not m:
                             break
                         sentence = trim["pending"][:m.end()]
-                        if trim["emitted"] + len(sentence) > active_cap and trim["emitted"] > 0:
+                        if trim["emitted"] + len(sentence) > caps["cap"] and trim["emitted"] > 0:
                             # THIN-OUTPUT GUARD (evidence 200615 t3: model wrote
                             # 167c; first boundary at 16c; rest dropped ->
                             # uselessly short reply). If kept-so-far is thin,
                             # FILL the remaining budget with a word-boundary
                             # cut of this sentence instead of dropping it.
-                            if trim["emitted"] < active_cap * 0.5:
-                                budget = active_cap - trim["emitted"]
+                            if trim["emitted"] < caps["cap"] * 0.5:
+                                budget = caps["cap"] - trim["emitted"]
                                 fill = sentence[:budget]
                                 sp = fill.rfind(" ")
                                 if sp > 15:
@@ -547,8 +554,8 @@ async def entrypoint(ctx: JobContext):
                         trim["emitted"] += len(sentence)
                     # Pathological single unbroken sentence: cut at a word
                     # boundary so audio can start at all.
-                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > active_cap:
-                        cut = trim["pending"][:active_cap]
+                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > caps["cap"]:
+                        cut = trim["pending"][:caps["cap"]]
                         sp = cut.rfind(" ")
                         if sp > 40:
                             piece = trim["pending"][:sp + 1]
@@ -581,8 +588,8 @@ async def entrypoint(ctx: JobContext):
                 # Done inside the body — a finally cannot yield.
                 if not trim["done"] and trim["pending"]:
                     piece = trim["pending"]
-                    if trim["emitted"] + len(piece) > active_cap and trim["emitted"] > 0:
-                        cut = piece[:active_cap - trim["emitted"]]
+                    if trim["emitted"] + len(piece) > caps["cap"] and trim["emitted"] > 0:
+                        cut = piece[:caps["cap"] - trim["emitted"]]
                         sp = cut.rfind(" ")
                         piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
                         turn["reply_trimmed"] = True
@@ -619,7 +626,7 @@ async def entrypoint(ctx: JobContext):
                 log_event("LLM_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
                 if turn.get("reply_trimmed"):
                     print(f"[ReplyGuard] TRIMMED spoken={turn['reply_chars']} chars "
-                          f"(full={len(turn['llm_response_full'])} chars, cap={active_cap})")
+                          f"(full={len(turn['llm_response_full'])} chars, cap={caps['cap']})")
                     log_event("REPLY_TRIMMED", turn_id=turn.get("turn"), details={
                         "spoken_chars": turn["reply_chars"],
                         "full_chars": len(turn["llm_response_full"]),
