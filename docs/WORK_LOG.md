@@ -418,3 +418,17 @@ never printed the shadow corr scores. Shipped:
   echo_corr_score across sessions split by text-filter verdict, prints speech
   floor (p95) vs echo band (p25), proposes T_low/T_high/ambiguous zone, verdict
   KEEP-SHADOWING vs SEPARABLE. Locked calibration rule; deterministic.
+
+---
+
+## One-command health check (2026-08-29): phase5/aiva_health.py
+
+Owner: "can you not merge all this into 1 command — I run it and share the file?"
+
+phase5/aiva_health.py: runs stage_diagnostic + tts_audit + self_diagnose +
+echo_shadow_report + identity/memory/events/sqlite scans + config fingerprint,
+assembles ONE markdown file (logs/health_<session>.md) to share verbatim.
+Each section is the existing tool's own output (single source of truth),
+captured verbatim; per-section failure isolation (one broken tool can't kill
+the report). `--all` mode for multi-session + full shadow aggregation.
+Console prints a 1-line quick verdict (brain bound? supervisor? skips? 429?).
