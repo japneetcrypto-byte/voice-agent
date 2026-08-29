@@ -27,7 +27,11 @@ from agent.prompt_fragments import (
 # Evidence 2026-08-29 (session 091548 t30/t33): flash-lite sometimes closes
 # the head with '</p>' (HTML habit) or never closes it at all. Accept both;
 # the unclosed case is salvaged by salvage_unclosed_head() below.
-TAG_RE = re.compile(r"<perception>(.*?)</(?:perception|p)>", re.DOTALL)
+# Class-level fix (evidence t8 session 103824, 4 variants so far:
+# /perception, /p, /parception, /s_perception, /s:perception): accept ANY
+# short closing tag — prose never contains angle brackets (persona forbids
+# special chars), so this cannot misfire on real replies.
+TAG_RE = re.compile(r"<perception>(.*?)</[^>]{1,24}>", re.DOTALL)
 OPEN_TAG = "<perception>"
 
 
@@ -46,7 +50,9 @@ def salvage_unclosed_head(buf: str) -> tuple[dict | None, str]:
     try:
         obj, end = json.JSONDecoder().raw_decode(rest)
         if isinstance(obj, dict):
-            return obj, (before + rest[end:]).strip()
+            from agent.reply_guard import strip_tag_leak
+            tail = strip_tag_leak((before + rest[end:]))[0]
+            return obj, tail.strip()
     except json.JSONDecodeError:
         pass
     return None, before.strip()
@@ -277,6 +283,10 @@ class FusedLLM:
                 return
             finally:
                 # D1/D2 final head extraction (even on D4b partial streams)
+                if self.head is None and "head_fail_class" not in self.meta:
+                    # no class recorded anywhere -> stream ended before the
+                    # head completed (cancel/empty). Name it, don't say "unknown".
+                    self.meta["head_fail_class"] = "head_never_completed"
                 full = buf
                 m = TAG_RE.search(full)
                 if m and self.head is None:

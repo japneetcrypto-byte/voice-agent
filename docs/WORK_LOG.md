@@ -221,3 +221,29 @@ Fixed from this evidence:
 5. DB pollution flagged: "user's name is Yekaramukii" (STT garble committed by
    an old session) — cleanup command given to owner; future guard = the new
    pending-until-confirmed rule (relations), name facts still need a decision.
+
+---
+
+## Session 103824 analysis + round-6 fixes (2026-08-29)
+
+First NON-VENTING session: full travel-planning conversation. Aiva gave
+recommendations, recalled its own suggestions 10 turns later (t21), recovered
+from a suppress ("Hello, are you there?" -> "haan, yahin hoon. sun raha tha."),
+matched register ("bye bro"), owner+mem+hist all correct, errors=0, heads 20/22.
+t5 showcase: deterministic clarify at 0.78s speech->audio (zero LLM).
+
+Fixed:
+1. t8: FOURTH tag variant '</s:perception>' spoken. Class-level fix at last:
+   TAG_RE accepts ANY short closer (</[^>]{1,24}> — prose never contains angle
+   brackets); salvage tail strips tags; sanitizer kills ANY XML-ish token in
+   prose. Variant whack-a-mole is over.
+2. t16: 8.05s reply (116 chars, info-listing) -> REPLY_MAX_CHARS 220->180
+   (info answers run ~14 chars/s of TTS) + persona V1.6 INFO-ANSWERS-STAY-SHORT
+   (max TWO options, one sentence, ask which) with the t16 BAD example.
+3. t4 FAIL(unknown) -> named 'head_never_completed' (stream ended pre-head;
+   observability, not a new failure mode).
+
+Noted, not coded: merged words in long Hinglish replies ('sebaithne',
+'saathchalna') = flash-lite model-tier ceiling (feeds the model-tier decision);
+avg reply 3.29s is info-heavy-session effect, bounded now by V1.6; barge-in
+immediate-cancel decision still pending with owner.

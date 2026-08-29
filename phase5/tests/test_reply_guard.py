@@ -18,6 +18,11 @@ trim_cases = [
      "leke aakhir tak tak, bina kisi bhi cheez ko chhode hue, ekdum detail mein batao.", True),
     # no sentence boundary at all -> hard cut at word boundary
     ("word " * 80, True),
+    # evidence t16 (session 103824): informational replies run ~14 chars/sec
+    # of TTS — 116 chars was 8.05s of audio. Cap tightened 220 -> 180.
+    ("Udaipur ya Jaipur mat jaio, wahan toh abhi aag lagi hogi. Rajasthan ke mausam "
+     "ke baare mein toh pata hi hai tumhe, abhi wahan jaane ka koi matlab nahi hai "
+     "kyunki garmi bahut zyada hai wahan pe.", True),
     # empty / near-empty safety
     ("", False),
     ("ok", False),

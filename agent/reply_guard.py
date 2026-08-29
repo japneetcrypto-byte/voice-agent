@@ -20,9 +20,10 @@ from __future__ import annotations
 
 import re
 
-# Safety-net cap: ~220 chars is roughly 12-15s of Hinglish TTS — far above
-# the persona's target (4-12 words) but low enough to stop 20s monologues.
-REPLY_MAX_CHARS = 220
+# Safety-net cap (evidence session 103824 t16: 116 chars = 8.05s audio —
+# informational answers run slower per char than banter). ~180 chars is the
+# longest acceptable single reply; the persona word-budget is the primary lever.
+REPLY_MAX_CHARS = 180
 
 # Sentence end: Latin . ! ? or Devanagari danda, optionally followed by a
 # closing quote/bracket, then whitespace or end-of-string.
@@ -130,8 +131,10 @@ def feminine_self_reference(text: str) -> str | None:
 # top of fused_turn's head handling — evidence: session 091548 t30/t33 spoke
 # '<perception>{...}' and '</p>' aloud when the model mis-closed the tag).
 # t28 (2026-08-29): model also emitted misspelled closers (</parception>)
-# t11 (094645): model emitted </s_perception> (underscore variant)
-TAG_LEAK_RE = re.compile(r"</?(?:[a-z_]*ception|p|per)>", re.IGNORECASE)
+# CLASS-LEVEL (evidence t8 103824: '</s:perception>' — 5th variant): strip ANY
+# XML-ish tag token. Spoken prose never legitimately contains <...> (persona
+# forbids special characters), so this is safe and ends the variant whack-a-mole.
+TAG_LEAK_RE = re.compile(r"</?[A-Za-z][A-Za-z0-9_:.-]{0,24}>", re.IGNORECASE)
 TAG_BLOCK_RE = re.compile(r"<perception>.*?(?:</perception>|</p>)",
                           re.DOTALL | re.IGNORECASE)
 TAG_OPEN_TAIL_RE = re.compile(r"<perception>.*$", re.DOTALL | re.IGNORECASE)

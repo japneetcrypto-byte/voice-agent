@@ -132,6 +132,19 @@ check("t33b: nothing leaked", tail_bad.strip() == "")
 # missing tags entirely: normal prose passthrough unaffected
 check("no tags: TAG_RE no match", TAG_RE.search("haan, Sunday hai") is None)
 
+# t8 (session 103824): '</s:perception>' closer — TAG_RE must consume it and
+# parse the head; the tail after m.end() is already tag-free.
+buf8 = '<perception>{"m":"R","c":0.9,"s":"SAFE"}</s:perception>\nHimachal ya Uttarakhand chale ja'
+m8 = TAG_RE.search(buf8)
+check("t8: head parses with any-closer TAG_RE", m8 is not None and
+      '{"m":"R","c":0.9,"s":"SAFE"}' in m8.group(1))
+if m8:
+    check("t8: tail after closer is clean prose", strip_tag_leak(buf8[m8.end():])[0].strip()
+          == "Himachal ya Uttarakhand chale ja")
+# ...but if the closer arrives in the PROSE path (split chunks), the sanitizer kills it
+c8b, s8b = strip_tag_leak('</s:perception>\nHimachal ya Uttarakhand chale ja')
+check("t8: sanitizer kills stray closer in prose path", s8b and c8b.strip() == "Himachal ya Uttarakhand chale ja")
+
 # t11 (session 094645): underscore variant '</s_perception>' spoken aloud
 leak11, stripped11 = strip_tag_leak('</s_perception>\nneetu ki baat kar raha tha na?')
 check("t11: </s_perception> stripped", stripped11 and leak11.strip() == "neetu ki baat kar raha tha na?",
