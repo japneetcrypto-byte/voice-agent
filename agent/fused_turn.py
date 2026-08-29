@@ -65,18 +65,24 @@ class FusedLLM:
         return SYSTEM_PLAIN_V11
 
     def build_contents(self, user_text: str, policy: dict, memory_view: list,
-                       threads: list, history: list) -> str:
-        return json.dumps({
+                       threads: list, history: list, layer2: dict | None = None) -> str:
+        payload = {
             "policy": policy,
             "memory": memory_view,
             "threads": threads,
             "history": history,
             "user_turn": user_text,
-        }, ensure_ascii=False)
+        }
+        # Layer 2 (compressed session state) — only when it carries content,
+        # per the approved 3-layer design (docs/LAYERED_CONTEXT_ARCHITECTURE.md).
+        if layer2 and (layer2.get("people") or layer2.get("open_items")
+                       or layer2.get("emotional_context")):
+            payload["session_state"] = layer2
+        return json.dumps(payload, ensure_ascii=False)
 
     async def stream_prose(self, *, user_text: str, turn_type: str, policy: dict,
                             memory_view: list, threads: list, history: list,
-                            turn_no: int, degraded: bool,
+                            turn_no: int, degraded: bool, layer2: dict | None = None,
                             key: str) -> AsyncGenerator[str, None]:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
@@ -125,7 +131,8 @@ class FusedLLM:
         import hashlib
         self.meta["prompt_version"] = PROMPT_VERSION
         self.meta["system_sha1"] = hashlib.sha1(system.encode()).hexdigest()[:10]
-        contents = self.build_contents(user_text, policy, memory_view, threads, history)
+        contents = self.build_contents(user_text, policy, memory_view, threads, history,
+                                       layer2=layer2)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
 

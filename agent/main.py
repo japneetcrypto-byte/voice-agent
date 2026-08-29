@@ -153,7 +153,6 @@ async def entrypoint(ctx: JobContext):
     engine = None
     if state_engine_on:
         try:
-            from agent.session_state import SessionState
             from agent.fused_turn import FusedLLM
             from agent.memory_store import MemoryStore
             lcm = LayeredContextManager(log_dir="logs")
@@ -161,8 +160,17 @@ async def entrypoint(ctx: JobContext):
             engine = {"fused": FusedLLM(), "store": MemoryStore(), "sess": None, "lcm": lcm}
             try:
                 from providers.stt_gemini_live import GeminiLiveSTT
-                engine["gemini_stt"] = GeminiLiveSTT()
-                print("[STT] Gemini Live Transcribe active")
+                # AUDIT 2026-08-29: only construct the per-session streaming
+                # STT when Gemini Live is ALSO the router primary. Otherwise
+                # the SAME audio was double-sent (session WS stream + a second
+                # per-turn Live connection in the router). With
+                # AIVA_STT_PRIMARY=groq (current recommendation) this stays off.
+                if os.getenv("AIVA_STT_PRIMARY", "gemini_live") == "gemini_live":
+                    engine["gemini_stt"] = GeminiLiveSTT()
+                    print("[STT] Gemini Live Transcribe active")
+                else:
+                    engine["gemini_stt"] = None
+                    print("[STT] session streaming off (router primary is not gemini_live)")
             except Exception as e:
                 # Provider init failure must NEVER kill the state engine binding
                 engine["gemini_stt"] = None
@@ -332,6 +340,7 @@ async def entrypoint(ctx: JobContext):
                 memory_view=sess.memory_view(),
                 threads=sess.thread_summaries(),
                 history=lcm.get_layer1() if lcm else [m for m in messages if m.get("role") != "system"][-6:],
+                layer2=lcm.get_layer2() if lcm else None,
                 turn_no=int(turn.get("turn", 0)),
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
@@ -346,6 +355,7 @@ async def entrypoint(ctx: JobContext):
             # session_20260829_083519, 6 verbatim repeats). Contract C7
             # behavior instead: deterministic filler + loud telemetry.
             turn["engine_path"] = "unbound_filler"
+            turn["llm_called"] = False
             print(f"[StateEngine] CRITICAL: engine on but sess unbound — "
                   f"D4 filler instead of legacy brain (turn {turn.get('turn')})")
             log_event("ENGINE_UNBOUND", turn_id=turn.get("turn"), response_id=response_id)
@@ -364,8 +374,7 @@ async def entrypoint(ctx: JobContext):
         full_text = []     # everything the model generated (diagnostics)
         ttft_logged = False
         fused_ref = engine.get("fused") if engine else None
-        fused_epoch = getattr(fused_ref, "epoch", None) if fused_ref else None
-        # Deterministic length guard state (safety net; prompt is the primary
+        # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
         trim = {"pending": "", "emitted": 0, "done": False}
         
@@ -390,6 +399,12 @@ async def entrypoint(ctx: JobContext):
                             turn["llm_called"] = fused_ref.meta.get("llm_called", True)
                             turn["spoke_because"] = fused_ref.meta.get("spoke_because", "llm")
                             turn["degradation"] = fused_ref.meta.get("degradation")
+                            # AUDIT FIX 2026-08-29: the epoch snapshot MUST be
+                            # taken here, after stream_prose's body has run
+                            # (generators only execute on first consume — a
+                            # pre-stream snapshot is always off-by-one and
+                            # invalidates every end-of-turn read).
+                            turn["fused_epoch"] = fused_ref.epoch
                     full_text.append(chunk)
                     if trim["done"]:
                         continue  # keep consuming so head/meta finalize, but speak no more
@@ -548,8 +563,9 @@ async def entrypoint(ctx: JobContext):
                         print(f"[StateEngine] LLM ERROR turn {turn.get('turn')}: {turn['llm_error'][:120]}")
                     # Epoch guard: only trust fused meta if no newer
                     # stream_prose call (barge-in, idle turn) has reset it
-                    # since this turn's stream started.
-                    if getattr(engine["fused"], "epoch", None) == fused_epoch:
+                    # since this turn's stream produced its first token.
+                    if turn.get("fused_epoch") is not None and \
+                            getattr(engine["fused"], "epoch", None) == turn["fused_epoch"]:
                         turn["perception_head"] = engine["fused"].head
                         turn["degradation"] = turn.get("degradation") or engine["fused"].meta.get("degradation")
                         turn["active_model"] = turn.get("active_model") or engine["fused"].meta.get("active_model")
@@ -579,7 +595,8 @@ async def entrypoint(ctx: JobContext):
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
                 turn["system_sha1"] = engine["fused"].meta.get("system_sha1")
-                if getattr(engine["fused"], "epoch", None) == fused_epoch:
+                if turn.get("fused_epoch") is not None and \
+                        getattr(engine["fused"], "epoch", None) == turn["fused_epoch"]:
                     turn["perception_head"] = engine["fused"].head
                     turn["degradation"] = turn.get("degradation") or engine["fused"].meta.get("degradation")
                     if not turn.get("llm_context"):
@@ -667,6 +684,7 @@ async def entrypoint(ctx: JobContext):
         pre_roll_buffer = []
         speech_start_ts = None
         current_sample_rate = None
+        raw_pcm_chunks = None  # raw 16k PCM bytes of the current utterance
 
         print("Listening for user speech...")
 
@@ -730,7 +748,7 @@ async def entrypoint(ctx: JobContext):
                     gemini_fwd = engine.get("gemini_stt") if engine else None
                     if gemini_fwd and getattr(gemini_fwd, '_stream_active', False):
                         asyncio.create_task(gemini_fwd.send_chunk(audio_np.tobytes()))
-                    if 'raw_pcm_chunks' in dir():
+                    if raw_pcm_chunks is not None:
                         raw_pcm_chunks.append(audio_np.tobytes())
 
                 for vad_event in vad_events:
@@ -871,9 +889,11 @@ async def entrypoint(ctx: JobContext):
                                     gstt = engine.get("gemini_stt") if engine else None
                                     if gstt and gstt._final_text:
                                         from providers.stt import Transcript as T
+                                        # AUDIT: honest None — a fake avg_logprob
+                                        # would blind the validity gates.
                                         transcript = T(text=gstt._final_text, language="hi",
-                                                        no_speech_prob=0.0, avg_logprob=-0.2,
-                                                        compression_ratio=1.0)
+                                                        no_speech_prob=0.0, avg_logprob=None,
+                                                        compression_ratio=None)
                                         gstt._final_text = None
                                         turn["stt_provider"] = "gemini_live_session"
                                         m = gstt._last_metrics or {}
@@ -1027,7 +1047,7 @@ async def entrypoint(ctx: JobContext):
                                 float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
                                 agent_was_speaking, ms_since_end, prev_task=previous_task,
                                 endpoint_info=endpoint_info, premature_resume=premature_resume,
-                                raw_chunks=raw_pcm_chunks if 'raw_pcm_chunks' in dir() else None
+                                raw_chunks=raw_pcm_chunks
                             )
                         )
                         speech_buffer = []

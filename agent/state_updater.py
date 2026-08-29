@@ -179,7 +179,21 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
         _log(log, "PARSE-FAIL")
         if state["parse_fail_streak"] >= 2 and not state["degraded_perception"]:
             state["degraded_perception"] = True
+            state["degraded_turns"] = 0
             _log(log, "DEGRADED-PERCEPTION-ENTER")
+        if state["degraded_perception"]:
+            state["degraded_turns"] = int(state.get("degraded_turns", 0)) + 1
+            if state["degraded_turns"] >= 3:
+                # U6 cooldown exit (owner-approved fix): in degraded mode the
+                # plain prompt never requests a head, so the success-based
+                # exit below can never fire — the original implementation
+                # spiraled forever (evidence: 40+ consecutive PARSE-FAILs,
+                # session 2026-08-28). After 3 degraded turns, re-enable the
+                # fused prompt and let the next turn attempt a real head.
+                state["degraded_perception"] = False
+                state["parse_fail_streak"] = 0
+                state["degraded_turns"] = 0
+                _log(log, "DEGRADED-PERCEPTION-EXIT-COOLDOWN")
         policy = _derive_policy(state, turn_record, head=None)
         return state, policy, log
 
@@ -428,6 +442,7 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
     if state.get("degraded_perception"):
         state["degraded_perception"] = False
         state["parse_fail_streak"] = 0
+        state["degraded_turns"] = 0
         _log(log, "DEGRADED-PERCEPTION-EXIT")
     state["parse_fail_streak"] = 0
 

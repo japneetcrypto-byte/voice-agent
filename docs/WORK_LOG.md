@@ -136,3 +136,15 @@ a single turn (silent NameError → Groq every time).
   commit immediately (deterministic, no LLM call) — closes the Neetu hole
 - Gender detector v2 (sakti/chahti), persona V1.4, LEGACY-BRAIN flag in diagnostic
 - .env.example + LIVE_TEST.md pre-flight checklist (STT primary recommendation: groq)
+
+---
+
+## Full audit (2026-08-29): "audit again — no issues later"
+
+Method: pyflakes over all modules + full cross-module read + regression tests.
+10 bugs fixed (A1-A10, see docs/AUDIT_2026_08_29.md), most notably:
+- A1 epoch off-by-one (yesterday's own bug — would have zeroed perception_head capture)
+- A2 degraded-perception death spiral FIXED (owner-known bug #1; cooldown exit, tests + determinism)
+- A3 double STT streaming eliminated; A4 dir() hack removed; A5 fake logprobs (x2) -> None
+- A6 session STT language pin; A7 Layer 2 finally reaches the fused call (approved 3-layer design)
+5 findings documented-not-changed (owner decisions / dead paths). All suites green.

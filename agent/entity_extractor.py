@@ -149,7 +149,6 @@ def extract_entities_from_reply(reply: str) -> list[dict]:
     for pattern, relation in RELATION_PATTERNS:
         for match in pattern.finditer(reply):
             name = match.group(1).strip()
-            norm = name.lower()
             canonical = normalize_entity(name)
             cnorm = canonical.lower()
             if cnorm not in seen and len(canonical) >= 2:

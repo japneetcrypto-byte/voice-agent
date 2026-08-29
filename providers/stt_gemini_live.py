@@ -25,6 +25,8 @@ class GeminiLiveSTT(STTProvider):
         if not self.api_key or self.api_key.startswith(("your_", "<<<")):
             raise ValueError("GEMINI_API_KEY required for GeminiLiveSTT")
         self.model = "gemini-3.5-transcribe-live"
+        # Same locked language pin as GroqSTT / router (owner ruling: hi default)
+        self.language = os.getenv("AIVA_STT_LANGUAGE", "hi").strip().lower()
         self._connect_cm = None
 
     async def transcribe_stream(
@@ -46,7 +48,7 @@ class GeminiLiveSTT(STTProvider):
         config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
             input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[],  # auto-detect
+                language_codes=[self.language] if self.language else [],
             ),
         )
 
@@ -79,10 +81,11 @@ class GeminiLiveSTT(STTProvider):
 
         return Transcript(
             text=full_text,
-            language="auto",  # Gemini handles internally
+            language=self.language or "auto",
             no_speech_prob=0.0,
-            avg_logprob=-0.2,  # Gemini doesn't expose this; use good default
-            compression_ratio=1.0,
+            # AUDIT: honest None — a fake value blinds the validity gates.
+            avg_logprob=None,
+            compression_ratio=None,
         )
 
     async def _groq_fallback(self, audio_chunks) -> Transcript:
@@ -118,7 +121,7 @@ class GeminiLiveSTT(STTProvider):
         self._ws_config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
             input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[],
+                language_codes=[self.language] if self.language else [],
             ),
         )
         try:

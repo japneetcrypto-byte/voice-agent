@@ -132,14 +132,6 @@ class GroqSTT(STTProvider):
             compression_ratio=compression_ratio
         )
 
-def devanagari_to_roman(text: str) -> str:
-    from indic_transliteration import sanscript
-    from indic_transliteration.sanscript import transliterate
-    if any('\u0900' <= c <= '\u097F' for c in text):
-        return transliterate(text, sanscript.DEVANAGARI, sanscript.ITRANS)
-    return text
-
-
 _LANG_MAP = {"hindi": "hi", "english": "en", "urdu": "hi"}
 
 def normalize_lang(name: str) -> str | None:
