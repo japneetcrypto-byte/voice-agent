@@ -130,7 +130,8 @@ def feminine_self_reference(text: str) -> str | None:
 # top of fused_turn's head handling — evidence: session 091548 t30/t33 spoke
 # '<perception>{...}' and '</p>' aloud when the model mis-closed the tag).
 # t28 (2026-08-29): model also emitted misspelled closers (</parception>)
-TAG_LEAK_RE = re.compile(r"</?(?:[a-z]*ception|p|per)>", re.IGNORECASE)
+# t11 (094645): model emitted </s_perception> (underscore variant)
+TAG_LEAK_RE = re.compile(r"</?(?:[a-z_]*ception|p|per)>", re.IGNORECASE)
 TAG_BLOCK_RE = re.compile(r"<perception>.*?(?:</perception>|</p>)",
                           re.DOTALL | re.IGNORECASE)
 TAG_OPEN_TAIL_RE = re.compile(r"<perception>.*$", re.DOTALL | re.IGNORECASE)

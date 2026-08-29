@@ -132,6 +132,11 @@ check("t33b: nothing leaked", tail_bad.strip() == "")
 # missing tags entirely: normal prose passthrough unaffected
 check("no tags: TAG_RE no match", TAG_RE.search("haan, Sunday hai") is None)
 
+# t11 (session 094645): underscore variant '</s_perception>' spoken aloud
+leak11, stripped11 = strip_tag_leak('</s_perception>\nneetu ki baat kar raha tha na?')
+check("t11: </s_perception> stripped", stripped11 and leak11.strip() == "neetu ki baat kar raha tha na?",
+      repr(leak11[:40]))
+
 # t28 (session 100157): misspelled closer '</parception>' spoken aloud
 leak28, stripped28 = strip_tag_leak('</parception>\nhaan yaar, yeh baat toh hai.')
 check("t28: </parception> stripped", leak28.strip() == "haan yaar, yeh baat toh hai." and stripped28,

@@ -18,8 +18,8 @@ RELATION_PATTERNS = [
     (re.compile(r"(\w+)\s+(?:tera|tumhara|apna)\s+(beta|बेटा)", re.IGNORECASE), "beta"),
     (re.compile(r"(\w+)\s+(?:tera|tumhara|apna)?\s*(bhai|भाई)\s+hai", re.IGNORECASE), "bhai"),
     (re.compile(r"(\w+)\s+(?:tera|tumhara|apna)\s+(bhai|भाई)", re.IGNORECASE), "bhai"),
-    (re.compile(r"(\w+)\s+(?:teri|tumhari|apni)?\s*(behen|बहन|behena|भैन|भैरन)\s+hai", re.IGNORECASE), "behen"),
-    (re.compile(r"(\w+)\s+(?:teri|tumhari|apni)\s+(behen|बहन|behena|भैन)", re.IGNORECASE), "behen"),
+    (re.compile(r"(\w+)\s+(?:teri|tumhari|apni)?\s*(behen|behan|bahan|bahen|behena|भैन|भैना|बहन)\s+hai", re.IGNORECASE), "behen"),
+    (re.compile(r"(\w+)\s+(?:teri|tumhari|apni)\s+(behen|behan|bahan|bahen|behena|भैन|भैना|बहन)", re.IGNORECASE), "behen"),
     (re.compile(r"(\w+)\s+(?:teri|tumhari|apni)?\s*(wife|वाइफ|biwi|बीवी)\s+hai", re.IGNORECASE), "wife"),
     (re.compile(r"(\w+)\s+(?:tera|tumhara|apna)?\s*(pati|पति|पती)\s+hai", re.IGNORECASE), "pati"),
     (re.compile(r"(\w+)\s+(?:tera|tumhara|apna)?\s*(pati|पति|पती)", re.IGNORECASE), "pati"),
@@ -48,16 +48,28 @@ ALIAS_GROUPS = {
 # match Aiva's replies). "ben/बेन" = Gujarati for behen (evidence: session
 # 20260829_083519 — 'नीतु बेन', 'Neetu Ben', 'नीतु भाइनों' garble).
 USER_REL_WORDS = {
-    "behen": ["behen", "bhen", "behena", "bahen", "ben", "bain",
-              "बहन", "बहिन", "बहेन", "बेन", "भैन", "भाइन", "भाइनों"],
-    "bhai": ["bhai", "bhaiya", "bhaiyya", "भाई", "भैया", "भइया"],
-    "beta": ["beta", "बेटा", "बेटे", "bete", "बेटा को"],
-    "beti": ["beti", "बेटी"],
+    "behen": ["behen", "behan", "bhen", "behena", "bahen", "bahin", "ben", "bain",
+              "sister", "सिस्टर",
+              "बहन", "बहिन", "बहेन", "बेन", "भैन", "भैना", "भाइन", "भाइनों"],
+    "bhai": ["bhai", "bhaiya", "bhaiyya", "brother", "भाई", "भैया", "भइया"],
+    "beta": ["beta", "bete", "son", "बेटा", "बेटे"],
+    "beti": ["beti", "daughter", "बेटी"],
     "wife": ["wife", "biwi", "वाइफ", "बीवी", "पत्नी", "patni"],
-    "pati": ["pati", "पति", "पती"],
+    "pati": ["pati", "husband", "पति", "पती"],
+    "maa": ["maa", "mummy", "mom", "mother", "माँ", "मां", "मम्मी"],
+    "papa": ["papa", "dad", "father", "पापा", "डैड", "पिता"],
     "dost": ["dost", "friend", "दोस्त"],
     "manager": ["manager", "boss", "मैनेजर"],
     "bhatiji": ["bhatiji", "भतीजी", "niece"],
+}
+
+# FIRST-PERSON possessives that anchor a relation to the USER (evidence
+# 094645 t18/t21: 'नीतु मेरी भैना', 'नीतु मेरी सिस्टर है'). Third-person
+# possessives (उसकी/uski) are deliberately excluded — that is someone else's
+# relation, not the user's.
+FIRST_PERSON_POSSESSIVES = {
+    "mera", "meri", "mere", "hamara", "hamari", "hamare",
+    "मेरा", "मेरी", "मेरे", "हमारा", "हमारी", "हमारे",
 }
 
 # Tokens that are NEVER a name (pronouns/possessives/postpositions/grammar).
@@ -114,15 +126,23 @@ def extract_entities_from_user_text(text: str) -> list[dict]:
         if i > 0 and words[i - 1].lower() not in USER_STOPWORDS \
                 and words[i - 1].lower() not in USER_REL_WORDS:
             candidates.append(words[i - 1])
-        # Orientation 2: possessive + relation + NAME ('meri behen Neetu')
-        if i + 1 < len(words):
-            nxt = words[i + 1].lower()
-            if nxt not in USER_STOPWORDS and nxt not in USER_REL_WORDS:
-                # only if the previous word WAS a possessive (first-person
-                # anchor), else 'relation ke baare mein' style would misfire
-                prev = words[i - 1].lower() if i > 0 else ""
-                if prev in ("mera", "meri", "mere", "मेरा", "मेरी", "मेरे"):
-                    candidates.append(words[i + 1])
+        # Orientation 2: FIRST-PERSON possessive + relation + NAME ('meri behen Neetu')
+        prev = words[i - 1].lower() if i > 0 else ""
+        next_word = words[i + 1].lower() if i + 1 < len(words) else ""
+        if next_word and next_word not in USER_STOPWORDS and next_word not in USER_REL_WORDS:
+            # Orientation 2: FIRST-PERSON possessive + relation + NAME
+            if prev in FIRST_PERSON_POSSESSIVES:
+                candidates.append(words[i + 1])
+        # Orientation 3 (evidence t18/t21: 'नीतु मेरी भैना', 'नीतु मेरी सिस्टर है'):
+        # NAME + FIRST-PERSON possessive + relation — used when orientation 2
+        # has no usable name after the relation word.
+        if prev in FIRST_PERSON_POSSESSIVES and i >= 2 and not (
+                next_word and next_word not in USER_STOPWORDS
+                and next_word not in USER_REL_WORDS
+                and prev in FIRST_PERSON_POSSESSIVES):
+            before = words[i - 2].lower()
+            if before not in USER_STOPWORDS and before not in USER_REL_WORDS:
+                candidates.append(words[i - 2])
         for name in candidates:
             canonical = normalize_entity(name)
             key = (canonical.lower(), relation)

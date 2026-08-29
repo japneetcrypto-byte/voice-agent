@@ -195,3 +195,29 @@ Issues found & fixed:
    Frontend verified correct (persisted UUID). Owner to restore canonical UUID.
 6. hist=67 at turn 1 = leaked checkpoint from the PRE-fix session (expected
    one-time; discard-on-clean-end now active).
+
+---
+
+## Session 094645 analysis + round-5 fixes (2026-08-29)
+
+BEST SESSION: owner 4da66eb5 (canonical), mem=21 from turn 1, hist=1 (checkpoint
+discard works), heads 21/21, avg reply 1.67s, speech->audio 2.07s, 0 flags,
+Layer-2 cycling. The pipeline is healthy end-to-end for the first time.
+
+Fixed from this evidence:
+1. t11: '</s_perception>' (underscore variant) spoken aloud -> TAG_LEAK_RE now
+   [a-z_]*ception; regression test with exact bytes.
+2. t14/t15 "Neetu meri kaun hai" -> "tumhi batao" — CORRECT behavior: the Neetu
+   relation was never in the DB for this owner (told pre-extractor + the
+   5da0d644 wrong-owner session). Root gap: extractor missed 'Neetu MERI
+   bhaiNA/sister' (no possessive orientation, missing variants). Added
+   orientation 3 (NAME + first-person possessive + relation), bhaiNA/bahan/
+   sister/brother/son/daughter/maa/papa variants, third-person possessive guard.
+3. t5/t7: Aiva role-played checking Blinkit ("search kar raha hoon, list mein
+   kuch nahi aaya") -> persona V1.5 REALITY HONESTY rule with the exact BAD/GOOD
+   examples from this session.
+4. Barge-in stop latency now precisely measured: avg 2217ms, max 2827ms (n=6)
+   — top remaining latency item, needs owner decision on immediate-cancel-on-VAD.
+5. DB pollution flagged: "user's name is Yekaramukii" (STT garble committed by
+   an old session) — cleanup command given to owner; future guard = the new
+   pending-until-confirmed rule (relations), name facts still need a decision.
