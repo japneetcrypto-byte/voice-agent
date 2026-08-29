@@ -1364,7 +1364,16 @@ async def entrypoint(ctx: JobContext):
                                 # Ack bridge: play a cached vocal cue to fill
                                 # the LLM+TTS latency gap (zero added latency —
                                 # cached PCM, written directly to AudioSource).
-                                if (ack_bridge.ready and
+                                # Ack plays only when the LLM is healthy
+                                # (skip during 429 storms / TTFT spikes — a
+                                # random "achha" followed by silence is worse
+                                # than silence). Evidence: session 213711 —
+                                # ack played on turns where no reply followed.
+                                _llm_healthy = (
+                                    turn.get("llm_ttft_s") is None  # not measured yet this turn
+                                    or turn.get("llm_ttft_s", 0) < 3.0  # healthy
+                                ) or not ack_bridge.ready  # let it try anyway if no clips
+                                if (ack_bridge.ready and _llm_healthy and
                                         turn.get("route_action") in (None, "normal", "contextual_recovery")
                                         and not agent_was_speaking_at_detection):
                                     try:

@@ -315,6 +315,7 @@ class FusedLLM:
                         self.meta["llm_failed"] = True
                         self.meta["llm_error"] = f"429 all combos: {all_errs[:200]}"
                         self.meta["degradation"] = "D4"
+                        self.meta["llm_healthy"] = False
                         yield pick_line(FILLER_LINES, turn_no)
                         return
                 self.meta["llm_failed"] = True

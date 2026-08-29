@@ -911,3 +911,32 @@ no retry) and returns. Next turn retries from scratch. The user hears:
 This is the structural difference between:
   OLD: 429 → 65s block → user cancels → silence → user calls out → silence
   NEW: 429 → filler spoken → user hears response → next turn tries fresh
+
+---
+
+## Session 213711: four issues traced + fixed (2026-08-29 late night)
+
+Owner: four complaints after detail-mode session.
+
+1. MEMORY BLEED (wrong topic recalled): "kya bola tha?" → Aiva answered about
+   Akharan (old-session memory) instead of AI business (current conversation).
+   ROOT CAUSE: no recall order rule — model treated memory as equal to history.
+   FIX: persona V1.14 rule 13b — check CURRENT conversation first, memory only
+   if nothing relevant exists. BAD/GOOD examples from this session.
+
+2. CANNOT REMEMBER CURRENT CONVERSATION: same root cause — when the model
+   pulls from memory instead of context, the current thread appears "forgotten."
+
+3. EDGE TTS VOICE DIFFERENT: Fish Audio failed → EdgeTTS fallback (different
+   voice). This is the failover doing its job but the voice change is jarring.
+   NOT a code bug — provider dependency. Fish paid tier or ElevenLabs would
+   eliminate the jarring voice switch.
+
+4. RANDOM "ACHHA THEEK HAI": Ack Bridge playing clips before LLM call — when
+   the LLM then fails (429), the user hears "achha" followed by silence.
+   FIX: backward-looking health gate — if the LAST turn's LLM was unhealthy
+   (429/failure/silence), skip the ack. Tracked via engine["last_llm_healthy"],
+   set False on all failure paths, True on success.
+
+Also: TTS TTFA 429s + rotation delays (6.3s, 6.4s TTFT) = quota pressure.
+All suites green.
