@@ -575,3 +575,38 @@ FLOOR). Honest fragilities documented: synthetic-only validation, scoring at
 speech-end not continuous, short utterances return None, BT scenarios untested.
 Rollout plan with explicit per-stage exit criteria; final rec: no more code —
 Stage-1 exit is DATA (>=3 sessions, >=30 kept-turns, >=8 echo candidates).
+
+---
+
+## P0 routing contract + directive fixes (2026-08-29 night, session 181237)
+
+Directive with evidence-based priorities from session 181237 (13/13 healthy).
+Measure→Diagnose→Fix→Measure.
+
+P0 FIXED — routing contract: turn 7 (14-word meaningful transcript, rejected
+high_no_speech_prob) was silently processed by LLM with no marker. New
+agent/transcript_router.py: explicit routes (acoustic_only / clarify /
+contextual_recovery / normal); invalid-but-meaningful (>=4 words + logprob
+>= -0.5) -> contextual_recovery, turn marked + CONTEXTUAL_RECOVERY event;
+unusable -> deterministic clarify; every route logged (route_action/reason).
+10 regression cases incl. exact turn-7 bytes.
+
+P1 latency — MEASURED, not code-changed (component-bound): speech->audio 2.11s
+= STT ~0.45 + TTFT ~1.08 + TTFA ~1.62. The 1.2-1.5s target requires provider
+decisions (Fish paid tier / ElevenLabs for TTFA; model tier for TTFT). No
+quality-sacrificing hacks shipped.
+
+P1 recovery quality — turn 8 'कर दो' clarify came from the LLM (head m=U c=0.2)
+which is CORRECT per directive (genuinely unrecoverable single garble ->
+clarify). 'झाल' same. No change: policy already matches the directive's intent;
+contract now makes the routing legible.
+
+P1 barge-in — MEASURED & surfaced: stage_diagnostic now prints interrupt points
++ BARGE_IN_STOP_LATENCY avg/max from lifecycle summary. 181237: interrupts at
+532ms/1976ms of playback; stop latency n=0 in this session's summary (no
+completed barge-stop windows) — measurement exists, will report when present.
+
+P2 echo — NO ACTION (per directive): shadow continues; session added n=4 corr
+samples (incl. first negative: -0.1434 = no relation, good sign; 0.5163 on a
+m=U garble turn = interesting candidate). 26 total still below >=30 kept-turn
+bar. No threshold tuning from single sessions.

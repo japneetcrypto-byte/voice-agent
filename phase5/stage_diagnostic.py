@@ -187,6 +187,22 @@ if corrs:
     corrs.sort()
     print(f"echo corr (voice key): n={len(corrs)} min={corrs[0]} med={corrs[len(corrs)//2]} max={corrs[-1]} "
           f"→ python3 phase5/echo_shadow_report.py")
+# barge-in measurement (directive P1: not fixed until measured)
+barges = [t.get("interrupted_at_ms") for t in turns if t.get("interrupted_at_ms")]
+if barges:
+    print(f"barge-in interrupts: n={len(barges)} at {sorted(barges)}ms of playback")
+tlp = sorted(glob.glob("logs/turn_lifecycle_*.jsonl"), key=os.path.getmtime)
+if tlp:
+    try:
+        for line in open(tlp[-1]):
+            e = json.loads(line)
+            if e.get("ev") == "SESSION_SUMMARY":
+                b = (e.get("barge_stop_latency_ms") or {})
+                if b.get("n"):
+                    print(f"barge-in stop latency: avg={b.get('avg')}ms max={b.get('max')}ms (n={b.get('n')})")
+                break
+    except Exception:
+        pass
 if agg["turns"] and agg["ctx_ok"] == 0 and agg["replies"] == 0:
     pass
 owners = sorted(agg.get("owners", set()))

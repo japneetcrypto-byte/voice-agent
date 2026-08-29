@@ -29,6 +29,7 @@ from providers.stt_router import STTRouter
 from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
+from agent.transcript_router import route_transcript
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
                                clean_specials, is_confirm_echo, devanagari_present,
@@ -1105,29 +1106,42 @@ async def entrypoint(ctx: JobContext):
                                         "decision": "INTERRUPT_AGENT" if is_valid else "IGNORE_ECHO"
                                     })
 
+                                # P0 contract (directive 2026-08-29): invalid
+                                # transcripts get an EXPLICIT route — never a
+                                # silent fall-through. Actions: acoustic_only /
+                                # clarify (deterministic) / contextual_recovery
+                                # (fused LLM, turn marked) / normal.
+                                action, route_reason = route_transcript(
+                                    transcript.text, is_valid, rejection_reason,
+                                    transcript.avg_logprob,
+                                    is_repetition=is_repetition_loop(transcript.text),
+                                    is_catastrophic=(rejection_reason == "catastrophic_low_confidence"))
+                                turn["route_action"] = action
+                                turn["route_reason"] = route_reason
                                 if not is_valid:
-                                    print(f"[STT Rejected] reason={rejection_reason}")
-                                    # C7/D7: real speech detected (energy gate passed) but no
-                                    # valid transcript -> acoustic-only presence turn. Never on
-                                    # echo (agent's own voice) or while the agent is speaking.
-                                    if (engine and engine.get("sess")
-                                            and not agent_was_speaking_at_detection):
-                                        if not transcript.text.strip():
+                                    print(f"[STT Rejected] reason={rejection_reason} "
+                                          f"-> route={action} ({route_reason})")
+                                    if action == "acoustic_only":
+                                        if (engine and engine.get("sess")
+                                                and not agent_was_speaking_at_detection):
                                             turn["turn_type"] = "acoustic_only"
                                             turn["response_trigger_reason"] = "acoustic_only_presence"
                                             await run_agent_response(transcript.text, turn)
                                             return
-                                        # P0: garbled-but-present text (poor confidence or
-                                        # Whisper repetition loop) -> deterministic
-                                        # clarification, never invention
-                                        if rejection_reason in ("catastrophic_low_confidence",) or is_repetition_loop(transcript.text):
+                                    elif action == "clarify":
+                                        if (engine and engine.get("sess")
+                                                and not agent_was_speaking_at_detection):
                                             turn["turn_type"] = "unclear_speech"
                                             turn["response_trigger_reason"] = "unclear_stt_clarify"
                                             await run_agent_response(transcript.text, turn)
                                             return
-                                    # Other invalid reasons (punctuation_only, high_no_speech):
-                                    # let LLM attempt semantic recovery from context
-                                    # don't blanket-return
+                                    elif action == "contextual_recovery":
+                                        turn["recovery_mode"] = "contextual_recovery"
+                                        tmark("CONTEXTUAL_RECOVERY", turn=turn.get("turn"))
+                                        log_event("CONTEXTUAL_RECOVERY", turn_id=turn.get("turn"),
+                                                  details={"reason": route_reason})
+                                    # action == "normal": impossible when is_valid
+                                    # is False, kept for exhaustiveness
                                 else:
                                     # Deterministic capture of relationship facts the USER
                                     # stated ('नीतु बहन एक टीचर है...' -> Neetu/behen).
