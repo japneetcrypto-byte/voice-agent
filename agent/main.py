@@ -28,6 +28,7 @@ from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
 from agent.reply_guard import feminine_self_reference, REPLY_MAX_CHARS, SENT_END_RE
+from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
@@ -162,12 +163,16 @@ async def entrypoint(ctx: JobContext):
                 from providers.stt_gemini_live import GeminiLiveSTT
                 engine["gemini_stt"] = GeminiLiveSTT()
                 print("[STT] Gemini Live Transcribe active")
-            except (ValueError, ImportError) as e:
+            except Exception as e:
+                # Provider init failure must NEVER kill the state engine binding
                 engine["gemini_stt"] = None
-                print(f"[STT] Gemini Live unavailable: {e}")
-            print("[StateEngine] on (TRANSPORT_V1.1)")
+                print(f"[STT] Gemini Live unavailable: {type(e).__name__}: {e}")
+            print(f"[StateEngine] on (persona {PROMPT_VERSION}) — components: "
+                  f"fused=ON store=ON lcm=ON sess=BINDS-ON-PARTICIPANT-JOIN "
+                  f"gemini_stt={'ON' if engine.get('gemini_stt') else 'off'}")
         except Exception as e:
-            print(f"[StateEngine] init failed, plain path: {type(e).__name__}: {e}")
+            print(f"[StateEngine] INIT FAILED: {type(e).__name__}: {e} — "
+                  f"turns will speak a deterministic filler (legacy brain disabled)")
             engine = None
 
     agent_source = rtc.AudioSource(48000, 1)
@@ -309,6 +314,7 @@ async def entrypoint(ctx: JobContext):
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
+            turn["engine_path"] = "fused"
             sess = engine["sess"]
             lcm = engine.get("lcm")
             if user_text and turn.get("turn_type", "speech") == "speech":
@@ -330,7 +336,28 @@ async def entrypoint(ctx: JobContext):
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
             )
+        elif state_engine_on:
+            # INCIDENT GUARD 2026-08-29: the state engine is expected to be
+            # live but the session brain never bound (init failure or binding
+            # bug). The legacy assistant prompt (session.py) is FORBIDDEN here:
+            # it has no persona (C2), no memory (C5), no perception head (C1),
+            # and its canned line 'Mujhe is baare mein pata nahi, kuch aur
+            # poochh sakte ho?' dominated an entire live session (evidence:
+            # session_20260829_083519, 6 verbatim repeats). Contract C7
+            # behavior instead: deterministic filler + loud telemetry.
+            turn["engine_path"] = "unbound_filler"
+            print(f"[StateEngine] CRITICAL: engine on but sess unbound — "
+                  f"D4 filler instead of legacy brain (turn {turn.get('turn')})")
+            log_event("ENGINE_UNBOUND", turn_id=turn.get("turn"), response_id=response_id)
+            tmark("ENGINE_UNBOUND", turn=turn.get("turn"))
+
+            async def _deterministic_filler():
+                yield pick_line(FILLER_LINES, int(turn.get("turn", 0)))
+            text_stream = _deterministic_filler()
         else:
+            # Legacy brain only when the state engine is EXPLICITLY disabled
+            # (AIVA_STATE_ENGINE=0) — a dev mode, never a silent fallback.
+            turn["engine_path"] = "legacy"
             text_stream = llm_provider.generate_response_stream(messages)
         
         spoken_text = []   # what is actually spoken (post length-guard)
@@ -644,13 +671,22 @@ async def entrypoint(ctx: JobContext):
         print("Listening for user speech...")
 
         # C5: bind memory ownership to the participant identity (device-scoped UUID)
+        # INCIDENT FIX 2026-08-29: this block previously only PRINTED the owner —
+        # SessionState was never constructed, engine["sess"] stayed None forever,
+        # and every session silently ran the legacy assistant brain (no persona,
+        # no memory, no perception head). The binding below is THE fix.
         if engine and engine.get("sess") is None:
             try:
                 from agent.session_state import SessionState
                 owner = (getattr(participant, "identity", None) or "ephemeral-unknown")
-                print(f"[StateEngine] session bound to owner={owner}")
+                engine["sess"] = SessionState(owner_id=owner, store=engine["store"])
+                n_mem = len(engine["sess"].memory_view())
+                print(f"[StateEngine] SESSION BOUND owner={owner} memory_items={n_mem}")
+                log_event("SESSION_BOUND", details={"owner": owner, "memory_items": n_mem})
             except Exception as e:
-                print(f"[StateEngine] session init failed: {type(e).__name__}: {e}")
+                # Deliberately NOT swallowed: without sess the turn layer must
+                # refuse the legacy brain (see run_agent_response unbound guard).
+                print(f"[StateEngine] BIND FAILED: {type(e).__name__}: {e}")
 
         print(f"AudioStream started, track muted: {track.muted}")
         frame_count = 0
@@ -829,6 +865,8 @@ async def entrypoint(ctx: JobContext):
                                 raw_chunks = raw_chunks or []
                                 if raw_chunks and hasattr(stt_router, 'primary'):
                                     transcript = await stt_router.transcribe(audio_data, raw_chunks=raw_chunks)
+                                    turn["stt_provider"] = getattr(stt_router, "last_provider", "unknown")
+                                    turn["stt_provider_reason"] = getattr(stt_router, "last_provider_reason", None)
                                 else:
                                     gstt = engine.get("gemini_stt") if engine else None
                                     if gstt and gstt._final_text:
@@ -837,10 +875,12 @@ async def entrypoint(ctx: JobContext):
                                                         no_speech_prob=0.0, avg_logprob=-0.2,
                                                         compression_ratio=1.0)
                                         gstt._final_text = None
+                                        turn["stt_provider"] = "gemini_live_session"
                                         m = gstt._last_metrics or {}
                                         print(f"[GeminiSTT] {m.get('duration_s','?')}s | {m.get('word_count','?')}w | {m.get('words_per_second','?')} w/s")
                                     else:
                                         transcript = await asyncio.to_thread(stt_provider.transcribe, audio_data)
+                                        turn["stt_provider"] = "groq_batch"
                                 turn["stt_latency_s"] = round(time.time() - stt_start, 3)
                                 log_event("STT_COMPLETED", turn_id=turn.get("turn"))
                                 tmark("STT_COMPLETED", turn=turn.get("turn"),
@@ -911,6 +951,21 @@ async def entrypoint(ctx: JobContext):
                                     # Other invalid reasons (punctuation_only, high_no_speech):
                                     # let LLM attempt semantic recovery from context
                                     # don't blanket-return
+                                else:
+                                    # Deterministic capture of relationship facts the USER
+                                    # stated ('नीतु बहन एक टीचर है...' -> Neetu/behen).
+                                    # Evidence 2026-08-29: relations told in-session were
+                                    # lost because capture only ran on Aiva's replies.
+                                    # Zero LLM calls; store dedups by content.
+                                    try:
+                                        from agent.entity_extractor import extract_entities_from_user_text
+                                        for ent in extract_entities_from_user_text(transcript.text):
+                                            if ent.get("relation") and ent.get("name"):
+                                                asyncio.create_task(_promote_relationship(
+                                                    engine, turn.get("turn"), ent["name"], ent["relation"]))
+                                                turn.setdefault("user_relations", []).append(ent)
+                                    except Exception as ee:
+                                        print(f"[EntityCapture] user-text extraction failed: {ee}")
                                     
                                 if prev_task and not prev_task.done():
                                     tmark("BARGE_IN_DETECTED", turn=turn.get("turn"))

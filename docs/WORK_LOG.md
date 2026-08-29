@@ -112,3 +112,27 @@ No provider swaps (STT stayed Groq; LLM stayed Gemini flash-lite after an eviden
 **Also:** stage diagnostic rewritten (turns sorted — the TURN 5 before TURN 4 in session 2 was concurrent-task log interleaving, not a bug; now shows context summary, head, degradation, reply size, TRIMMED/GENDER/SERVICE flags, pipeline errors, session aggregates); duplicate TurnTrace print removed; dead `_e in dir()` head-fail class fixed.
 
 **Deliberately NOT done (owner decisions needed):** Fish Audio TTFA itself (0.6–2.4s after text arrives) is provider-tier bound — faster tiers or ElevenLabs Flash (~75ms) would need owner approval + voice re-clone evaluation. Barge-in stop latency (2–3s) stays Phase 7.
+
+---
+
+## Session log (2026-08-29, morning): INCIDENT — the fused brain never ran
+
+Owner report: "does not remember facts from yesterday, could not recognise Neetu
+behen, not good on experience and intelligence." Session 20260829_083519:
+heads=0/23, ctx=0/23, canned reply ×6, feminine "sakti hoon", errors=0.
+
+**Root cause:** `engine["sess"]` was never assigned (binding block printed the
+owner but never constructed SessionState) → every session since the Aug-28-evening
+STT-router wiring ran `session.py`'s legacy assistant prompt. Second latent bug:
+`stt_router.py` used asyncio without importing it → Gemini Live never transcribed
+a single turn (silent NameError → Groq every time).
+
+**Shipped (see docs/INCIDENT_FUSED_UNBOUND.md for full postmortem):**
+- SessionState binding at participant join + `SESSION BOUND` console proof
+- Legacy brain forbidden: unbound engine → D4 filler + ENGINE_UNBOUND event
+- STT router: asyncio import, honest logprob (None, not fake -0.2), hi pin on
+  Live provider, per-turn `stt_provider` attribution
+- `extract_entities_from_user_text`: user-stated relations ("नीतु बहन एक टीचर है")
+  commit immediately (deterministic, no LLM call) — closes the Neetu hole
+- Gender detector v2 (sakti/chahti), persona V1.4, LEGACY-BRAIN flag in diagnostic
+- .env.example + LIVE_TEST.md pre-flight checklist (STT primary recommendation: groq)

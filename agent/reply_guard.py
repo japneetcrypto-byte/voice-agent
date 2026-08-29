@@ -64,11 +64,17 @@ def trim_reply(text: str, max_chars: int = REPLY_MAX_CHARS) -> tuple[str, bool]:
 FEMININE_FIRST_RE = re.compile(
     r"\brahi\s+(?:hoon|hun|hain|hein)\b"
     r"|\b(?:gayi|aayi)\s+(?:hoon|hun)\b"
-    r"|\brahi\s+hui\b",
+    r"|\brahi\s+hui\b"
+    # 'sakna' constructions: 'main kar sakta hoon' (M) vs 'sakti' (F)
+    r"|\bsakti\s+(?:hoon|hun|hain|thi)\b"
+    r"|\b(?:jaanti|maanti|pehchaanti|chahti)\s+(?:hoon|hun)\b",
     re.IGNORECASE,
 )
 FEMININE_FUT_RE = re.compile(r"\b[a-z]{2,}ungi\b", re.IGNORECASE)
-FEMININE_PAST_RE = re.compile(r"\brahi\s+thi\b", re.IGNORECASE)
+# Ambiguous forms: feminine ONLY in a first-person sentence without a
+# third-person subject ("main ... kar sakti" = flag; "woh kar sakti hai" /
+# "Rimmi so rahi thi" = correct speech, no flag).
+FEMININE_AMBIG_RE = re.compile(r"\brahi\s+thi\b|\bsakti\b|\bchahti\b", re.IGNORECASE)
 FIRST_PERSON_CUE = re.compile(r"\b(?:main|mein|i)\b|मैं", re.IGNORECASE)
 THIRD_PERSON_CUE = re.compile(
     r"\b(?:woh|wo|vo|wah|usne|usko|uska|uski|unhone|unka|unki|behen|bahen|maa|mummy|"
@@ -90,7 +96,8 @@ def feminine_self_reference(text: str) -> str | None:
     if m:
         return m.group(0)
     for sent in re.split(r"[.!?।\n]+", t):
-        if not FEMININE_PAST_RE.search(sent):
+        m = FEMININE_AMBIG_RE.search(sent)
+        if not m:
             continue
         if not FIRST_PERSON_CUE.search(sent):
             continue
@@ -101,5 +108,5 @@ def feminine_self_reference(text: str) -> str | None:
         body = sent.split(None, 1)[1] if len(sent.split(None, 1)) > 1 else sent
         if PROPER_NOUN.search(body):
             continue
-        return FEMININE_PAST_RE.search(sent).group(0)
+        return m.group(0)
     return None

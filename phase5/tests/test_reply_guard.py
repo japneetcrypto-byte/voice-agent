@@ -47,12 +47,19 @@ gender_cases = [
     ("main tumhe bataungi", True),
     ("main kal aa jaungi", True),
     ("main ghar ja rahi hoon", True),
-    # correct masculine self-reference -> no flag
+    # observed violation (session 20260829_083519 T1) — 'sakna' feminine
+    ("Main aapki kya help kar sakti hoon?", True),
+    ("main tumse yeh nahi kar sakti", True),
+    ("main chahti hoon tum jaldi aao", True),
+    # correct masculine forms -> no flag
+    ("Main aapki kya madad kar sakta hoon?", False),
     ("Main sun raha hoon, bolo.", False),
     ("bas aapka hi intezaar kar raha tha.", False),
+    ("main chahta hoon tum jaldi aao", False),
     # third-person female reference is CORRECT speech -> no flag
     ("Rimmi so rahi thi kya?", False),
     ("woh ghar gayi hai", False),
+    ("Neetu behen teacher hain", False),
 ]
 for text, expect in gender_cases:
     got = feminine_self_reference(text)

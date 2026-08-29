@@ -30,13 +30,17 @@ for line in open(p):
 # Tasks complete concurrently (barge-in), so lines can land out of order.
 turns.sort(key=lambda t: (t.get("turn", 0)))
 
-FEM_RE = __import__("re").compile(
-    r"\b(?:rahi|gayi|aayi)\s+(?:hoon|hun|hain|thi)\b|\b[a-z]{2,}ungi\b", re.IGNORECASE)
-SERVICE_PHRASES = ["help chahiye", "how can i help", "madad kar", "madad ke liye",
+FEM_RE = re.compile(
+    r"\b(?:rahi|gayi|aayi|sakti)\s+(?:hoon|hun|hain|thi)\b|\b[a-z]{2,}ungi\b", re.IGNORECASE)
+SERVICE_PHRASES = ["help chahiye", "how can i help", "help kar", "madad kar", "madad ke liye",
                    "sawaalon ke jawaab", "jawab dene"]
+# The legacy fallback prompt's canned ignorance line (session.py rule 4).
+# If this appears, the state engine was NOT the brain for that turn.
+LEGACY_CANNED = ["kuch aur poochh sakte", "pata nahi, kuch aur"]
 
 agg = {"turns": 0, "replies": 0, "s2a": [], "trimmed": 0, "gender": 0,
-       "service": 0, "errors": 0, "ctx_ok": 0, "head_ok": 0}
+       "service": 0, "errors": 0, "ctx_ok": 0, "head_ok": 0, "legacy": 0,
+       "paths": {}, "stt_providers": {}}
 
 for t in turns:
     turn = t["turn"]
@@ -90,16 +94,25 @@ for t in turns:
         if any(w in rl for w in SERVICE_PHRASES):
             flags.append("⚙ SERVICE-SPEAK")
             agg["service"] += 1
+        if any(w in rl for w in LEGACY_CANNED):
+            flags.append("☠ LEGACY-BRAIN")
+            agg["legacy"] += 1
         if len(reply) > 150:
             flags.append(f"LONG({len(reply)}c)")
     if t.get("reply_trimmed"):
         flags.append(f"TRIMMED({t.get('reply_chars')}c/{len(t.get('llm_response_full') or '')}c)")
         agg["trimmed"] += 1
+    epath = t.get("engine_path") or "?"
+    agg["paths"][epath] = agg["paths"].get(epath, 0) + 1
+    sp = t.get("stt_provider")
+    if sp:
+        agg["stt_providers"][sp] = agg["stt_providers"].get(sp, 0) + 1
 
     print(f"TURN {turn}" + ("  [idle]" if t.get("turn_type") == "idle" else ""))
-    print(f"  STT     : {stt[:60]!r} | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')}")
-    print(f"  valid   : {t.get('stt_valid')} ({t.get('stt_rejection_reason','')}) | relation: {t.get('turn_relation')}")
-    print(f"  decision: {t.get('turn_end_decision')} ({t.get('suppression_reason','')}) | because: {t.get('spoke_because') or t.get('response_trigger_reason')}")
+    print(f"  STT     : {stt[:60]!r} | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')} | prov={t.get('stt_provider') or '?'}")
+    print(f"  valid   : {t.get('stt_valid')} ({t.get('stt_rejection_reason','')}) | relation: {t.get('turn_relation')}" +
+          (f" | user_rels: {t.get('user_relations')}" if t.get("user_relations") else ""))
+    print(f"  engine  : {epath} | decision: {t.get('turn_end_decision')} ({t.get('suppression_reason','')}) | because: {t.get('spoke_because') or t.get('response_trigger_reason')}")
     print(f"  head    : {head_s} | degrade: {t.get('degradation') or '-'}")
     print(f"  reply   : {reply[:70]!r}" + (f" | {t.get('reply_words')}w/{t.get('reply_chars')}c" if reply else ""))
     print(f"  TTS     : {tts.get('provider')} audio={tts.get('audio_duration_s')}s playback={tts.get('playback_duration_s')}s")
@@ -120,4 +133,7 @@ print(f"turns={agg['turns']} replies={agg['replies']} ctx_captured={agg['ctx_ok'
       f"heads={agg['head_ok']} errors={agg['errors']}")
 print(f"reply audio: avg={round(sum(durs)/len(durs),2) if durs else '-'}s max={max(durs) if durs else '-'}s | "
       f"speech->audio avg={round(sum(lat)/len(lat),2) if lat else '-'}s max={max(lat) if lat else '-'}s")
-print(f"flags: trimmed={agg['trimmed']} gender={agg['gender']} service-speak={agg['service']}")
+print(f"flags: trimmed={agg['trimmed']} gender={agg['gender']} service-speak={agg['service']} legacy-brain={agg['legacy']}")
+print(f"engine paths: {agg['paths']}")
+if agg["stt_providers"]:
+    print(f"stt providers: {agg['stt_providers']}")

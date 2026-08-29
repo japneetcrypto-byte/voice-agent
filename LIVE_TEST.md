@@ -65,3 +65,19 @@ python3 phase5/baseline_report.py
 L=$(ls -t logs/state_*.jsonl | head -1); S=$(ls -t logs/session_*.log | head -1); T=$(ls -t logs/turn_lifecycle_*.jsonl | head -1)
 { echo "=== TURN LIFECYCLE: $T ==="; cat "$T"; echo; echo "=== STATE: $L ==="; cat "$L"; echo; echo "=== SESSION: $S ==="; cat "$S"; } > run_export.txt
 ```
+
+---
+
+## Pre-flight checklist (added 2026-08-29 — after the unbound-brain incident)
+
+1. `git pull` and confirm `git log --oneline -1` shows the incident fix.
+2. `.env`: set `AIVA_STT_PRIMARY=groq` (recommended — see .env.example).
+3. Start a session and watch the console for EXACTLY these lines:
+   - `[StateEngine] on (persona TRANSPORT_V1.4) — components: ...`
+   - `[StateEngine] SESSION BOUND owner=<uuid> memory_items=N`  ← **the brain is in**
+   - `[STT Router] primary: Groq`
+   If `SESSION BOUND` never appears, STOP — the session will only speak
+   filler lines ([StateEngine] CRITICAL … ENGINE_UNBOUND) by design.
+4. After the call: `python3 phase5/stage_diagnostic.py` — check
+   `engine paths: {'fused': N}` (NOT 'legacy'/'unbound_filler'),
+   `heads=N`, `ctx_captured=N`, and the flags line.

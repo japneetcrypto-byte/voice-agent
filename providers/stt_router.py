@@ -9,6 +9,7 @@ The router normalizes the interface: callers always get a Transcript.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from typing import AsyncGenerator
 
@@ -33,6 +34,9 @@ class GeminiLiveStreamingSTT(StreamingSTTProvider):
         if not self.api_key or self.api_key.startswith(("your_", "<<<")):
             raise ValueError("GEMINI_API_KEY required for GeminiLiveSTT")
         self.model = "gemini-3.5-transcribe-live"
+        # Same locked language pin as GroqSTT (owner ruling: hi default,
+        # AIVA_STT_LANGUAGE env override — one policy across STT providers).
+        self.language = os.getenv("AIVA_STT_LANGUAGE", "hi").strip().lower()
 
     async def transcribe_stream(self, chunks: list[bytes]) -> Transcript:
         from google import genai
@@ -44,7 +48,7 @@ class GeminiLiveStreamingSTT(StreamingSTTProvider):
         config = types.LiveConnectConfig(
             response_modalities=["TEXT"],
             input_audio_transcription=types.AudioTranscriptionConfig(
-                language_codes=[],
+                language_codes=[self.language] if self.language else [],
             ),
         )
 
@@ -71,10 +75,12 @@ class GeminiLiveStreamingSTT(StreamingSTTProvider):
 
         return Transcript(
             text=full_text,
-            language="auto",
+            language=self.language or "auto",
             no_speech_prob=0.0,
-            avg_logprob=-0.2,
-            compression_ratio=1.0,
+            # Honest None — a fake value (e.g. -0.2) would blind the
+            # catastrophic_low_confidence gate for every Live turn.
+            avg_logprob=None,
+            compression_ratio=None,
         )
 
 
@@ -90,6 +96,8 @@ class STTRouter:
         self.fallback_name = os.getenv("AIVA_STT_FALLBACK", "groq")
         self.primary = None
         self.fallback = None
+        self.last_provider = None   # per-turn attribution for the session log
+        self.last_provider_reason = None
         self._init_providers()
 
     def _init_providers(self):
@@ -114,6 +122,7 @@ class STTRouter:
 
         audio_data: float32 numpy array (16kHz mono) — for batch providers
         raw_chunks: list of raw PCM byte chunks — for streaming providers
+        Sets self.last_provider / last_provider_reason for turn telemetry.
         """
         errors = []
 
@@ -121,6 +130,8 @@ class STTRouter:
         if isinstance(self.primary, StreamingSTTProvider) and raw_chunks:
             try:
                 result = await self.primary.transcribe_stream(raw_chunks)
+                self.last_provider = "gemini_live"
+                self.last_provider_reason = None
                 return result
             except Exception as e:
                 errors.append(f"{type(self.primary).__name__}: {str(e)[:100]}")
@@ -129,20 +140,28 @@ class STTRouter:
         # Try batch primary (if it's batch-type)
         if isinstance(self.primary, GroqSTT):
             try:
-                return self.primary.transcribe(audio_data)
+                result = self.primary.transcribe(audio_data)
+                self.last_provider = "groq"
+                self.last_provider_reason = None
+                return result
             except Exception as e:
                 errors.append(f"Groq: {str(e)[:100]}")
 
         # Fallback
         if self.fallback:
             try:
-                return self.fallback.transcribe(audio_data)
+                result = self.fallback.transcribe(audio_data)
+                self.last_provider = "groq_fallback"
+                self.last_provider_reason = "; ".join(errors)[-150:] or None
+                return result
             except Exception as e:
                 errors.append(f"Fallback {type(self.fallback).__name__}: {str(e)[:100]}")
 
         # All failed
         for err in errors:
             print(f"[STT Router] {err}")
+        self.last_provider = "none"
+        self.last_provider_reason = "; ".join(errors)[-150:]
         return Transcript(text="", language="auto", no_speech_prob=1.0)
 
     def transcribe_sync(self, audio_data: np.ndarray) -> Transcript:
