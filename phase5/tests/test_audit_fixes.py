@@ -145,6 +145,15 @@ if m8:
 c8b, s8b = strip_tag_leak('</s:perception>\nHimachal ya Uttarakhand chale ja')
 check("t8: sanitizer kills stray closer in prose path", s8b and c8b.strip() == "Himachal ya Uttarakhand chale ja")
 
+# merged-word fix (session 103824 t2/t3: 'aaram sebaithne', 'saathchalna'
+# were SPOKEN — API chunk boundaries lost the space between words)
+from agent.reply_guard import smart_join
+check("join: restores lost space", smart_join("aaram se", "baithne wali") == "aaram se baithne wali")
+check("join: sentence boundary untouched", smart_join("achha.", "bol na") == "achha.bol na")
+check("join: empty buf", smart_join("", "hello") == "hello")
+check("join: chunk starts with space", smart_join("se", " baithne") == "se baithne")
+check("join: devanagari boundary", smart_join("क्या", "चल रहा है") == "क्या चल रहा है")
+
 # t11 (session 094645): underscore variant '</s_perception>' spoken aloud
 leak11, stripped11 = strip_tag_leak('</s_perception>\nneetu ki baat kar raha tha na?')
 check("t11: </s_perception> stripped", stripped11 and leak11.strip() == "neetu ki baat kar raha tha na?",

@@ -148,3 +148,21 @@ def strip_tag_leak(piece: str) -> tuple[str, bool]:
     clean = TAG_OPEN_TAIL_RE.sub("", clean)
     clean = TAG_LEAK_RE.sub("", clean)
     return clean, clean != piece
+
+def _word_char(ch: str) -> bool:
+    # str.isalnum() is False for Devanagari MATRAS (category Mn: ा ी ें ...),
+    # and most Hindi words end in one — treat the whole Devanagari block as
+    # word characters so Hindi boundaries are protected too.
+    return ch.isalnum() or ("\u0900" <= ch <= "\u097F")
+
+
+def smart_join(buf: str, chunk: str) -> str:
+    """Join streaming text chunks, restoring spaces lost at API chunk
+    boundaries. Evidence (session 103824 t2/t3): 'aaram sebaithne wali',
+    'saathchalna hai' — Gemini splits mid-word and the whitespace belongs to
+    neither chunk; TTS then pronounces the merged token and the voice sounds
+    broken. Inserts a space ONLY when both sides are word characters (no
+    space existed in the source), so normal punctuation is untouched."""
+    if buf and chunk and _word_char(buf[-1]) and _word_char(chunk[0]):
+        return buf + " " + chunk
+    return buf + chunk

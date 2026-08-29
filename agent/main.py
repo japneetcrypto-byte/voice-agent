@@ -27,7 +27,8 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
-from agent.reply_guard import feminine_self_reference, strip_tag_leak, REPLY_MAX_CHARS, SENT_END_RE
+from agent.reply_guard import (feminine_self_reference, strip_tag_leak, smart_join,
+                               REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -415,7 +416,7 @@ async def entrypoint(ctx: JobContext):
                     full_text.append(chunk)
                     if trim["done"]:
                         continue  # keep consuming so head/meta finalize, but speak no more
-                    trim["pending"] += chunk
+                    trim["pending"] = smart_join(trim["pending"], chunk)
                     # Release complete sentences that fit under the cap.
                     piece = ""
                     while True:
@@ -500,6 +501,7 @@ async def entrypoint(ctx: JobContext):
         ttfa_logged = False
         tts_audio_start = None
         tts_total_samples = 0
+        tts_capture = []  # raw PCM frames, for AIVA_TTS_DUMP=1 voice auditing
         turn["tts_text"] = ""  # final text spoken to TTS (spoken_text snapshot at end)
         log_event("TTS_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         tmark("TTS_STARTED", turn=turn.get("turn"))
@@ -509,6 +511,9 @@ async def entrypoint(ctx: JobContext):
                 if tts_audio_start is None:
                     tts_audio_start = time.time()
                 tts_total_samples += getattr(audio_chunk.frame, "samples_per_channel", 0)
+                if tts_capture is not None:
+                    tts_capture.append(np.frombuffer(audio_chunk.frame.data,
+                                                      dtype=np.int16).copy())
                 if not ttfa_logged:
                     ttfa_s = time.time() - tts_start
                     turn["tts_first_audio_s"] = round(ttfa_s, 3)
@@ -547,6 +552,36 @@ async def entrypoint(ctx: JobContext):
                   f"tts_ttfa={turn.get('tts_first_audio_s')}s "
                   f"speech->audio={turn.get('speech_end_to_first_audio_s')}s "
                   f"provider={turn['tts']['provider']} audio={turn['tts']['audio_duration_s']}s")
+
+            # Voice-audit dump (AIVA_TTS_DUMP=1): WAV per turn + manifest line.
+            # Enables: listening drills, chars/sec outlier scan, ASR round-trip
+            # (phase5/tts_audit.py) — the way to analyze SPOKEN quality.
+            if os.getenv("AIVA_TTS_DUMP") == "1" and tts_capture:
+                try:
+                    import wave
+                    dump_dir = os.path.join(log_dir, "tts")
+                    os.makedirs(dump_dir, exist_ok=True)
+                    wav_path = os.path.join(
+                        dump_dir, f"turn_{turn.get('turn')}_{session_start.strftime('%Y%m%d_%H%M%S')}.wav")
+                    with wave.open(wav_path, "wb") as w:
+                        w.setnchannels(1)
+                        w.setsampwidth(2)
+                        w.setframerate(48000)
+                        w.writeframes(np.concatenate(tts_capture).tobytes())
+                    turn["tts_audio_path"] = wav_path
+                    manifest = {"ts": datetime.now(timezone.utc).isoformat(),
+                                "turn": turn.get("turn"),
+                                "owner": turn.get("owner"),
+                                "provider": turn["tts"]["provider"],
+                                "text": turn.get("tts_text"),
+                                "chars": len(turn.get("tts_text") or ""),
+                                "duration_s": turn["tts"]["audio_duration_s"],
+                                "ttfa_s": turn.get("tts_first_audio_s"),
+                                "path": wav_path}
+                    with open(os.path.join(dump_dir, "manifest.jsonl"), "a") as mf:
+                        mf.write(json.dumps(manifest, ensure_ascii=False) + "\n")
+                except Exception as e:
+                    print(f"[TTSDump] failed: {e}")
 
             print("Agent finished speaking.")
             turn["response_trigger_reason"] = "completed"

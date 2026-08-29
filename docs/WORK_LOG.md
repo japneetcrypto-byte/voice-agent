@@ -247,3 +247,29 @@ Noted, not coded: merged words in long Hinglish replies ('sebaithne',
 'saathchalna') = flash-lite model-tier ceiling (feeds the model-tier decision);
 avg reply 3.29s is info-heavy-session effect, bounded now by V1.6; barge-in
 immediate-cancel decision still pending with owner.
+
+---
+
+## Session 103824: voice-quality root cause + spoken-output toolkit + sales gap analysis
+
+Best session yet (first non-venting domain — travel planning — handled well: cross-turn
+self-recall t21, suppress recovery t20, register match t23, 0.78s clarify t5, errors 0).
+Owner asked: (1) how to analyze SPOKEN quality — voice is cloned but sometimes sounds
+unreal; (2) SquadStack-style sales agent gap analysis.
+
+Root cause found for "doesn't sound real": MERGED WORDS in generated text
+(t2 'aaram sebaithne', t3 'saathchalna') — Gemini streaming splits mid-word and the
+space belongs to neither chunk; TTS pronounces the garbage token. Fix: smart_join()
+(matra-aware for Devanagari — isalnum() misses combining marks) applied at the fused
+buf join (post-head only, JSON-safe) and the tee. Tests incl. Devanagari boundary.
+
+Note: parallel Arena session's Round-6 (0255a5e) landed first with class-level tag
+fix + cap 180 + persona V1.6; built on top of it.
+
+Shipped:
+- smart_join + wiring + tests (the merged-word fix)
+- AIVA_TTS_DUMP=1: per-turn WAV + manifest.jsonl (text, provider, duration, ttfa)
+- phase5/tts_audit.py: chars/sec outliers, clipping, optional ASR round-trip (--asr),
+  optional SpeechMOS (--mos)
+- docs/SALES_AGENT_GAP_ANALYSIS.md: full SquadStack-style gap matrix (~35-40% there;
+  telephony = biggest net-new; 6-10 week phased path; 5 owner decisions)
