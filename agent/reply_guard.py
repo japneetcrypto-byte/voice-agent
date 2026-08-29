@@ -149,23 +149,13 @@ def strip_tag_leak(piece: str) -> tuple[str, bool]:
     clean = TAG_LEAK_RE.sub("", clean)
     return clean, clean != piece
 
-def _word_char(ch: str) -> bool:
-    # str.isalnum() is False for Devanagari MATRAS (category Mn: ा ी ें ...),
-    # and most Hindi words end in one — treat the whole Devanagari block as
-    # word characters so Hindi boundaries are protected too.
-    return ch.isalnum() or ("\u0900" <= ch <= "\u097F")
-
-
-def smart_join(buf: str, chunk: str) -> str:
-    """Join streaming text chunks, restoring spaces lost at API chunk
-    boundaries. Evidence (session 103824 t2/t3): 'aaram sebaithne wali',
-    'saathchalna hai' — Gemini splits mid-word and the whitespace belongs to
-    neither chunk; TTS then pronounces the merged token and the voice sounds
-    broken. Inserts a space ONLY when both sides are word characters (no
-    space existed in the source), so normal punctuation is untouched."""
-    if buf and chunk and _word_char(buf[-1]) and _word_char(chunk[0]):
-        return buf + " " + chunk
-    return buf + chunk
+def clean_specials(text: str) -> str:
+    """Scrub characters that are never legitimate in spoken Hinglish prose
+    (persona bans special characters). Evidence 141753 t65: 'j}}\n\njuis...'
+    was SPOKEN — braces and raw newlines reached TTS."""
+    import re as _re
+    out = _re.sub(r"[{}<>\\^~|`*_#@]", "", text or "")
+    return _re.sub(r"\s{2,}", " ", out)
 
 # Model-EMITTED merged words (distinct from the chunk-boundary loss that
 # smart_join fixes — evidence session 133659 t13 'sahikaam', t17 'baaremein'
@@ -173,6 +163,15 @@ def smart_join(buf: str, chunk: str) -> str:
 # Hinglish). Deterministic lexicon: ONLY exact listed merges are split, so
 # valid words can never be damaged. Extend as new cases are observed.
 MERGE_SPLIT_LEXICON = {
+    # smart_join-era splits observed in session 141753 (the join heuristic is
+    # gone; these repair any text that still carries the damage)
+    "th ik": "theek",
+    "nah in": "nahin",
+    "k ela": "kela",
+    # model-emitted merges (103824 / 133659 / 141753)
+    "sebaithne": "se baithne",
+    "saathchalna": "saath chalna",
+    "juis ": "juice ",
     "baaremein": "baare mein",
     "baremein": "bare mein",
     "sahikaam": "sahi kaam",

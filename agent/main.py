@@ -28,8 +28,8 @@ from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
-from agent.reply_guard import (feminine_self_reference, strip_tag_leak, smart_join,
-                               fix_merged_words, REPLY_MAX_CHARS, SENT_END_RE)
+from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
+                               clean_specials, REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -427,7 +427,7 @@ async def entrypoint(ctx: JobContext):
                     full_text.append(chunk)
                     if trim["done"]:
                         continue  # keep consuming so head/meta finalize, but speak no more
-                    trim["pending"] = smart_join(trim["pending"], chunk)
+                    trim["pending"] += chunk
                     # Release complete sentences that fit under the cap.
                     piece = ""
                     while True:
@@ -454,6 +454,7 @@ async def entrypoint(ctx: JobContext):
                         turn["reply_trimmed"] = True
                     if piece:
                         piece, leaked = strip_tag_leak(piece)
+                        piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
                         if leaked:
                             turn["tag_leak_stripped"] = True
@@ -475,6 +476,7 @@ async def entrypoint(ctx: JobContext):
                     trim["pending"] = ""
                     if piece.strip():
                         piece, leaked = strip_tag_leak(piece)
+                        piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
                         if leaked:
                             turn["tag_leak_stripped"] = True
@@ -985,6 +987,20 @@ async def entrypoint(ctx: JobContext):
                                 echo_text = devanagari_to_roman(transcript.text)
                                 turn["turn_relation"] = classify_turn_relation(transcript.text)
                                 is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
+                                # Late-echo guard: room echo decays in well
+                                # under 1.5s. If the user's speech began >1.5s
+                                # after Aiva's audio ended, an "echo" match is
+                                # almost certainly the USER REPEATING Aiva's
+                                # words (evidence 141753 t47 'kharbuja' repeat
+                                # was eaten). Real speech wins.
+                                late_real_speech = (
+                                    ms_since_agent_audio_end is not None
+                                    and ms_since_agent_audio_end > 1500)
+                                if is_echo_detected and late_real_speech:
+                                    turn["echo_overridden"] = True
+                                    is_echo_detected = False
+                                    print(f"[EchoGuard] late repeat kept as real speech "
+                                          f"(+{ms_since_agent_audio_end}ms, sim={similarity:.2f})")
                                 if is_echo_detected:
                                     turn["echo_dropped"] = True
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")

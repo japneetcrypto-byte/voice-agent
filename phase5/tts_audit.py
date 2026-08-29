@@ -85,8 +85,8 @@ for r in rows:
         peak = float(np.max(np.abs(data))) / 32767.0 * 100 if len(data) else 0.0
 
     flags = []
-    if rate and rate > 20:
-        flags.append("FAST?")
+    if rate and rate > 20 and dur >= 1.5:
+        flags.append("FAST?")  # short (<1.5s) questions are naturally fast — skip
     if rate and rate < 7:
         flags.append("SLOW?")
     if peak > 99:

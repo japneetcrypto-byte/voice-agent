@@ -18,7 +18,6 @@ import re
 import time
 from typing import AsyncGenerator
 
-from agent.reply_guard import smart_join
 from agent.prompt_fragments import (
     SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11, PROMPT_VERSION,
     FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, SUPERVISOR_LINES, pick_line,
@@ -199,14 +198,12 @@ class FusedLLM:
                     txt = chunk.text or ""
                     if not txt:
                         continue
-                    # Restore spaces lost at API chunk boundaries (only after
-                    # the head closed — inserting inside the head JSON would
-                    # corrupt values). Evidence 103824 t2/t3: 'aaram sebaithne',
-                    # 'saathchalna' were SPOKEN as merged tokens.
-                    if prose_started:
-                        buf = smart_join(buf, txt)
-                    else:
-                        buf += txt
+                    # NOTE: no space-insertion at chunk boundaries. CORRECTION
+                    # 2026-08-29 (session 141753): smart_join CREATED splits
+                    # ('th ik', 'nah in', 'k ela') — the API does not drop
+                    # inter-chunk whitespace; the merges are MODEL-emitted and
+                    # are repaired by the deterministic lexicon instead.
+                    buf += txt
                     self.meta.setdefault("ttft_s", round(time.perf_counter() - t0, 3))
                     m = TAG_RE.search(buf)
                     if m and not prose_started:

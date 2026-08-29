@@ -145,18 +145,21 @@ if m8:
 c8b, s8b = strip_tag_leak('</s:perception>\nHimachal ya Uttarakhand chale ja')
 check("t8: sanitizer kills stray closer in prose path", s8b and c8b.strip() == "Himachal ya Uttarakhand chale ja")
 
-# merged-word fix (session 103824 t2/t3: 'aaram sebaithne', 'saathchalna'
-# were SPOKEN — API chunk boundaries lost the space between words)
-from agent.reply_guard import smart_join
-from agent.reply_guard import fix_merged_words
-check("merge t13: sahikaam", fix_merged_words("kafi sahikaam kar rahe hain") == "kafi sahi kaam kar rahe hain")
-check("merge t17: baaremein", fix_merged_words("uske baaremein kya lagta hai?") == "uske baare mein kya lagta hai?")
-check("merge: unlisted words untouched", fix_merged_words("kaisa hai bhai") == "kaisa hai bhai")
-check("join: restores lost space", smart_join("aaram se", "baithne wali") == "aaram se baithne wali")
-check("join: sentence boundary untouched", smart_join("achha.", "bol na") == "achha.bol na")
-check("join: empty buf", smart_join("", "hello") == "hello")
-check("join: chunk starts with space", smart_join("se", " baithne") == "se baithne")
-check("join: devanagari boundary", smart_join("क्या", "चल रहा है") == "क्या चल रहा है")
+# CORRECTION (session 141753): smart_join was a misdiagnosis — the API does
+# NOT drop inter-chunk whitespace; merges are MODEL-emitted and the splits
+# ('th ik','nah in','k ela') were CAUSED by the join heuristic. Reverted;
+# the deterministic lexicon + specials scrub own this class now.
+from agent.reply_guard import fix_merged_words, clean_specials
+check("CORRECTION: smart_join removed", not hasattr(__import__("agent.reply_guard", fromlist=["x"]), "smart_join"))
+check("merge legacy: th ik", fix_merged_words("th ik hai, hindi mein") == "theek hai, hindi mein")
+check("merge legacy: nah in", fix_merged_words("nah in, yahin hoon") == "nahin, yahin hoon")
+check("merge legacy: k ela", fix_merged_words("k ela aur banana toh ek hi hai") == "kela aur banana toh ek hi hai")
+check("merge model: sebaithne", fix_merged_words("aaram sebaithne wali") == "aaram se baithne wali")
+check("merge model: saathchalna", fix_merged_words("saathchalna hai") == "saath chalna hai")
+check("merge model: juis", fix_merged_words("juis zyada fresh") == "juice zyada fresh")
+check("merge: valid words untouched", fix_merged_words("seb achha hai kaisa hai") == "seb achha hai kaisa hai")
+check("scrub t65: braces+junk", clean_specials("j}}\n\njuis zyada") == "j juis zyada")
+check("scrub: normal text untouched", clean_specials("haan bolo, yahin hoon.") == "haan bolo, yahin hoon.")
 
 # t11 (session 094645): underscore variant '</s_perception>' spoken aloud
 leak11, stripped11 = strip_tag_leak('</s_perception>\nneetu ki baat kar raha tha na?')

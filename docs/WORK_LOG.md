@@ -326,3 +326,34 @@ Shipped (agent/call_supervisor.py + wiring):
   turns excluded, deliberate WAITs excluded (controller owns that silence)
 Tests: test_call_supervisor.py (13) incl. the exact hello-twice incident and
 determinism. All suites green.
+
+---
+
+## Self-diagnosis engine + honest correction (2026-08-29, session 141753)
+
+Owner: "can there be a self-healing system that catches WHY it did not work?"
+
+**Correction:** smart_join (the merged-words fix) was a MISDIAGNOSIS — session
+141753 showed splits ('th ik', 'nah in', 'k ela') that the heuristic itself
+CREATED. The API never drops inter-chunk whitespace; merges are MODEL-emitted.
+smart_join reverted everywhere; ownership moved to the deterministic lexicon
+(extended: th ik/nah in/k ela/sebaithne/saathchalna/juis) + new clean_specials
+scrub (t65 'j}}' junk spoken -> stripped). Audit tests rewritten around the
+correction.
+
+**Session findings -> shipped:**
+1. 6 turns: Fish 'succeeded' with ZERO audio (reply text, no error) ->
+   FallbackTTSProvider now counts chunks; near-zero => automatic EdgeTTS
+   replay (failover), provider/reason recorded. Self-healing failover.
+2. Echo filter ate user word-repeats ('kharbuja' repeat dropped) -> late-echo
+   guard: speech starting >1.5s after agent audio end is REAL speech (echo
+   decays faster); kept + logged (echo_overridden).
+3. Supervisor PROVED live: turn 1001 'haan bolo, yahin hoon' = SUPERVISOR_LINES
+   engagement recorded in the TTS audit.
+4. phase5/self_diagnose.py: deterministic post-mortem per session — per failure
+   class: count -> WHY -> what auto-handled it -> prescription (owner decision
+   vs auto). Saves logs/diagnosis_<session>.md. The 'catches why' layer.
+5. tts_audit: FAST flag now duration-aware (short questions are naturally fast).
+
+All suites green (audit-fixes 46, supervisor 13, controller 18, gender, entity,
+state, layered). Compile clean.
