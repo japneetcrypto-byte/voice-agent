@@ -28,7 +28,8 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
-from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
+from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
+     continues_or_asks
 from agent.transcript_router import route_transcript
 from agent.response_state import classify as response_state_classify, \
      reconcile_payload as response_reconcile_payload, \
@@ -374,6 +375,13 @@ async def entrypoint(ctx: JobContext):
             # policy.delivery drives persona V1.11 rule 1b.
             if user_text and is_detail_request(user_text):
                 detail_mode["turns_left"] = 6
+            elif (detail_mode["turns_left"] > 0 and user_text
+                  and continues_or_asks(user_text)):
+                # RENEWAL (evidence session 203226: latch expired at t10 mid-
+                # explanation; 11-14s monologues returned). A continuation cue
+                # or a question during a detail conversation extends it — the
+                # user is still walking through the detail.
+                detail_mode["turns_left"] = max(detail_mode["turns_left"], 4)
             if detail_mode["turns_left"] > 0 and isinstance(turn["policy"], dict):
                 detail_mode["turns_left"] -= 1
                 turn["detail_mode"] = True
@@ -732,6 +740,14 @@ async def entrypoint(ctx: JobContext):
             
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
+            # Chunk-boundary audit (directive: chunks must end at sentence
+            # level — 'it stops while speaking a sentence' was observed in
+            # 203226 t17). Measurement only; persona V1.13 is the fix.
+            _final = "".join(spoken_text).rstrip()
+            if _final and _final[-1] not in ".!?।?":
+                turn["chunk_mid_sentence"] = True
+                log_event("CHUNK_MID_SENTENCE", turn_id=turn.get("turn"))
+                print("[ChunkGuard] chunk ended MID-SENTENCE — persona drift")
             # Parrot-streak tracking: if >=3 of last 4 replies were echo-back
             # confirmations, nudge the NEXT fused call's policy 'avoid' list.
             # Deterministic, application-layer (updater untouched); turn-logged.

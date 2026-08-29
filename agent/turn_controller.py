@@ -65,6 +65,31 @@ GREETING_MARKERS = {"hello", "helo", "hallo", "halo", "hey", "hi",
 WAIT_STREAK_CAP = 2
 
 
+# Cues that should EXTEND an ongoing detail conversation (directive
+# 192439-synthesis session 203226: the 6-turn latch expired mid-explanation
+# and 11-14s monologues returned). 'haan/aage' means "next chunk";
+# a question means "more depth on this thread".
+CONTINUATION_CUES = {"haan", "han", "aage", "aagay", "phir", "aur", "और",
+                     "हाँ", "हां", "आगे", "फिर", "ok", "okay", "achha",
+                     "अच्छा", "बताओ", "batao", "next"}
+
+
+def continues_or_asks(text: str) -> bool:
+    """True when a user turn should EXTEND an ongoing detail conversation:
+    any question (marker or question-word) or a continuation cue."""
+    t = (text or "").strip()
+    if not t:
+        return False
+    if "?" in t or "？" in t:
+        return True
+    words = re.findall(r"[\w\u0900-\u097F]+", t, re.UNICODE)
+    if any(w.lower() in QUESTION_STARTERS for w in words):
+        return True
+    if any(w.lower() in CONTINUATION_CUES for w in words):
+        return True
+    return False
+
+
 def decide(user_text: str, previous_turn_was_wait=False) -> tuple[str, str]:
     """Returns (action, reason). action ∈ {"respond", "suppress"}.
 

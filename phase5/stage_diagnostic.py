@@ -114,8 +114,18 @@ for t in turns:
 
     flags = []
 
+    if t.get("head_plan"):
+        hp = t["head_plan"]
+        flags.append(f"🗓 PLAN({hp.get('current')}/{hp.get('total')}: {str(hp.get('topic'))[:18]})")
     if t.get("detail_mode"):
         flags.append("📋 DETAIL")
+    if t.get("chunk_mid_sentence"):
+        flags.append("✂ MID-SENTENCE")
+        agg["mid_sentence"] = agg.get("mid_sentence", 0) + 1
+    # route/head contradiction guard: clarify never produces a head
+    if t.get("route_action") in ("clarify", "acoustic_only") and t.get("perception_head"):
+        flags.append("⚠ ROUTE/HEAD MISMATCH")
+        agg["route_anomaly"] = agg.get("route_anomaly", 0) + 1
     if t.get("route_action"):
         flags.append(f"route={t['route_action']}")
     if t.get("repeat_detected"):
@@ -194,6 +204,10 @@ if agg.get("cancel_pre"):
           "first-audio; root fix = lower TTFA (voice provider decision)")
 if agg.get("states"):
     print(f"response states: {agg['states']}")
+if agg.get("mid_sentence"):
+    print(f"⚠ mid-sentence chunk ends: {agg['mid_sentence']}")
+if agg.get("route_anomaly"):
+    print(f"⚠ route/head anomalies: {agg['route_anomaly']} — investigate turn records")
 corrs = [t.get("echo_corr_score") for t in turns if t.get("echo_corr_score") is not None]
 if corrs:
     corrs.sort()

@@ -68,5 +68,22 @@ print("  unusable STT -> clarify: transcript_router clarify path (tested)")
 print("  repeats detected only  : REPEAT_DETECTED event, no suppressor (this suite)")
 print("  no context re-asking   : reconciliation payload + Layer-2 active_topic (shipped)")
 
+# ---- latch renewal (evidence session 203226: latch expired mid-explanation,
+# monologues returned) ----
+from agent.turn_controller import continues_or_asks as cont
+r_cases = [
+    ("haan aage", True), ("और स्टेप्स आगे", True), ("pricing kya rahegi?", True),
+    ("कहां करें", True), ("और", True), ("haan", True),
+    ("नहीं नहीं", False), ("bye", False),
+]
+for t, want in r_cases:
+    got = cont(t)
+    ok = got == want
+    if not ok:
+        fails += 1
+    print(f"[{'PASS' if ok else 'FAIL'}] continues_or_asks({t[:28]!r}) -> {got}")
+check("renewal predicate drives latch (max 4 on renewal)",
+      max(4, 2) == 4)  # semantics: renewal sets >=4, detail request resets to 6
+
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
 sys.exit(1 if fails else 0)

@@ -808,3 +808,38 @@ TTS clarity investigation (owner: occasional stutter/blur):
 Tests: A-P1 plan head parse + previous_plan threading (audit suite; a
 _json/json NameError caught during test authoring — the test file imports
 json as _json). All 13 suites green.
+
+---
+
+## Session 203226 review: A-P1 validated + latch renewal + mid-sentence chunks (2026-08-29 night)
+
+A-P1 VALIDATED: chunk continuation worked through t4-t9 ('haan/aage' → next
+thought each time; STT→LLM→TTS→cost→infra progression coherent). Plan heads
+logged (head_plan). The detail conversation survived barge-ins.
+
+Issues found & fixed:
+1. LATCH EXPIRY: 6-turn detail budget expired at t10 mid-conversation →
+   11-14s monologues returned (t21/t22/t28) at normal cap. FIX: renewal —
+   continuation cues ('haan/aage/और') or any question during detail extends
+   the latch (max 4); explicit detail request resets to 6.
+     continues_or_asks() in turn_controller (pure, tested).
+2. MID-SENTENCE CHUNK ENDS: t17 ended '...same data ke pa' (mid-sentence).
+   Persona V1.13: chunks end EXACTLY at sentence boundary; long thought →
+   finish the sentence, stop, let user say 'aage'. Code: CHUNK_MID_SENTENCE
+   audit event + diagnostic counter (measurement; persona is the fix).
+3. ROUTE/HEAD MISMATCH (t23 'route=clarify' but head present + LLM reply):
+   impossible under current code → stale worker strongly suspected (t6
+   'कहां करें' also suppressed despite the question-word fix). Worker
+   restart required; WORKER_BUILD stamp + aiva_health mismatch warning will
+   confirm. Diagnostic now flags ROUTE/HEAD MISMATCH automatically.
+4. Head-plan surfaced in diagnostic (🗓 PLAN(current/total: topic)).
+5. Extractor: 'जो' (relative pronoun) guard added earlier this session held
+   (t11 'जो बेटा' not captured — MemoryGate quarantined pre-gate-era rows).
+
+WHAT WENT WELL (measured): anti-flip-flop WORKED (t11: 'dono hisaab se sahi:
+1-2 sirf LLM tokens ka, baaki infra...' — the reconciliation from V1.10);
+echo-shadow n=20 (2/3 of exit bar); TTS clarity: ZERO clicks detected, length
+vs rate correlation CLEAN (long clips stdev 1.8 < short 3.6 — Fish handles
+long synthesis fine; stutter reports are not assembly glitches); barge-in
+stop latency avg 1.86s (n=9); latency 2.56s stable; 429 ×8 = quota pressure
+elevated.
