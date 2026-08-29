@@ -24,7 +24,32 @@ from agent.prompt_fragments import (
     BACKCHANNEL_LINES, LISTEN_LINES, CLARIFY_LINES,
 )
 
-TAG_RE = re.compile(r"<perception>(.*?)</perception>", re.DOTALL)
+# Evidence 2026-08-29 (session 091548 t30/t33): flash-lite sometimes closes
+# the head with '</p>' (HTML habit) or never closes it at all. Accept both;
+# the unclosed case is salvaged by salvage_unclosed_head() below.
+TAG_RE = re.compile(r"<perception>(.*?)</(?:perception|p)>", re.DOTALL)
+OPEN_TAG = "<perception>"
+
+
+def salvage_unclosed_head(buf: str) -> tuple[dict | None, str]:
+    """Recover from '<perception>{...}prose...' that never got closed.
+
+    Returns (head, speakable_tail). The raw tag region is NEVER speakable:
+    if the JSON parses, the head is recovered and the tail after it is spoken;
+    if it does not parse, the whole region is dropped (nothing before the tag
+    is lost)."""
+    idx = buf.find(OPEN_TAG)
+    if idx == -1:
+        return None, buf
+    before = buf[:idx]
+    rest = buf[idx + len(OPEN_TAG):].strip()
+    try:
+        obj, end = json.JSONDecoder().raw_decode(rest)
+        if isinstance(obj, dict):
+            return obj, (before + rest[end:]).strip()
+    except json.JSONDecodeError:
+        pass
+    return None, before.strip()
 
 
 MODEL_POOL = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
@@ -194,13 +219,22 @@ class FusedLLM:
                             yield piece
                         emitted = len(buf)
                 if not prose_started and buf.strip():
-                    # D2 missing head: full stream is prose; keep the raw for diagnosis
+                    # D2 missing head: keep the raw for diagnosis. AUDIT-FIX
+                    # 2026-08-29: the raw tag region must NEVER reach TTS
+                    # (session 091548 t30/t33 spoke '<perception>{...}' aloud).
                     self.meta["head_raw_snippet"] = buf.strip()[:400]
-                    if "<perception>" in buf and "</perception>" not in buf:
+                    if OPEN_TAG in buf:
                         self.meta["head_fail_class"] = "unclosed_tags"
-                    elif "<perception>" not in buf:
+                        head2, tail = salvage_unclosed_head(buf)
+                        if head2 is not None:
+                            if self.head is None:
+                                self.head = head2
+                            self.meta["head_fail_class"] = "unclosed_recovered"
+                        piece = tail[emitted:] if len(tail) > emitted else tail.strip()
+                        piece = piece.strip()
+                    else:
                         self.meta["head_fail_class"] = "missing_tags"
-                    piece = buf[emitted:].strip()
+                        piece = buf[emitted:].strip()
                     if piece:
                         spoken_any = True
                         yield piece

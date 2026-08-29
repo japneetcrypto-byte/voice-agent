@@ -110,3 +110,21 @@ def feminine_self_reference(text: str) -> str | None:
             continue
         return m.group(0)
     return None
+
+# Stray transport-tag fragments that must never be spoken (belt-and-braces on
+# top of fused_turn's head handling — evidence: session 091548 t30/t33 spoke
+# '<perception>{...}' and '</p>' aloud when the model mis-closed the tag).
+TAG_LEAK_RE = re.compile(r"</?(?:perception|p|per)>", re.IGNORECASE)
+TAG_BLOCK_RE = re.compile(r"<perception>.*?(?:</perception>|</p>)",
+                          re.DOTALL | re.IGNORECASE)
+TAG_OPEN_TAIL_RE = re.compile(r"<perception>.*$", re.DOTALL | re.IGNORECASE)
+
+
+def strip_tag_leak(piece: str) -> tuple[str, bool]:
+    """Remove any transport-tag residue from a prose piece: a complete head
+    block, an unclosed '<perception>...' tail, or stray tag tokens.
+    Returns (clean, stripped?)."""
+    clean = TAG_BLOCK_RE.sub("", piece)
+    clean = TAG_OPEN_TAIL_RE.sub("", clean)
+    clean = TAG_LEAK_RE.sub("", clean)
+    return clean, clean != piece

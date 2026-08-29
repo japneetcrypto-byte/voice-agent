@@ -27,7 +27,7 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
-from agent.reply_guard import feminine_self_reference, REPLY_MAX_CHARS, SENT_END_RE
+from agent.reply_guard import feminine_self_reference, strip_tag_leak, REPLY_MAX_CHARS, SENT_END_RE
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -300,6 +300,12 @@ async def entrypoint(ctx: JobContext):
         print("[Telemetry] summary: " + json.dumps(summary))
         return path
 
+    def sess_owner_id() -> str | None:
+        try:
+            return engine["sess"].owner_id if engine and engine.get("sess") else None
+        except Exception:
+            return None
+
     async def run_agent_response(user_text: str, turn: dict):
         if agent_task and not agent_task.done() and agent_task != asyncio.current_task():
             return  # newer task already running, don't double-respond
@@ -323,6 +329,7 @@ async def entrypoint(ctx: JobContext):
         tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
             turn["engine_path"] = "fused"
+            turn["owner"] = (sess_owner_id() or "")[:8]
             sess = engine["sess"]
             lcm = engine.get("lcm")
             if user_text and turn.get("turn_type", "speech") == "speech":
@@ -434,6 +441,10 @@ async def entrypoint(ctx: JobContext):
                     if trim["done"] and trim["pending"].strip():
                         turn["reply_trimmed"] = True
                     if piece:
+                        piece, leaked = strip_tag_leak(piece)
+                        if leaked:
+                            turn["tag_leak_stripped"] = True
+                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -450,6 +461,10 @@ async def entrypoint(ctx: JobContext):
                         turn["reply_trimmed"] = True
                     trim["pending"] = ""
                     if piece.strip():
+                        piece, leaked = strip_tag_leak(piece)
+                        if leaked:
+                            turn["tag_leak_stripped"] = True
+                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -1129,7 +1144,10 @@ async def entrypoint(ctx: JobContext):
         ctx.add_shutdown_callback(_commit_session_memory)
         ctx.add_shutdown_callback(_dump_telemetry)
         if engine and engine.get("lcm"):
-            ctx.add_shutdown_callback(lambda: engine["lcm"].save_checkpoint())
+            # Clean end -> DISCARD (checkpoint is for crash recovery only).
+            # Saving at clean shutdown leaked the prior session's raw turns
+            # into the next session's Layer-1 context (hist=106 at turn 1).
+            ctx.add_shutdown_callback(lambda: engine["lcm"].discard_checkpoint())
         print("[Telemetry] shutdown hooks registered (summary written at session end)")
 
     # ---- Startup quota check ----

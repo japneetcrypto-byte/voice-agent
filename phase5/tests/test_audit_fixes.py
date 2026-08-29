@@ -101,5 +101,46 @@ async def epoch_check():
           getattr(llm, "epoch", None) == turn_fused_epoch)
 asyncio.run(epoch_check())
 
+
+# ---------- 4. tag robustness (evidence: session 091548 t30/t33) ----------
+from agent.fused_turn import TAG_RE, salvage_unclosed_head
+from agent.reply_guard import strip_tag_leak
+
+# t30: model closed the head with '</p>' — must parse AND strip cleanly
+buf30 = '<perception>{"m":"R","c":0.5,"s":"SAFE"}</p>\nmahine ke naam poochna chahta hai'
+m30 = TAG_RE.search(buf30)
+check("t30: </p> close matches TAG_RE", m30 is not None)
+if m30:
+    import json as _j
+    head30 = _j.loads(m30.group(1))
+    check("t30: head parsed", head30 == {"m": "R", "c": 0.5, "s": "SAFE"})
+    prose30 = buf30[m30.end():].strip()
+    check("t30: prose clean after close", prose30 == "mahine ke naam poochna chahta hai", prose30[:40])
+
+# t33: head never closed — salvage must recover the head and speak only the tail
+buf33 = '<perception>{"m":"R","c":0.6,"s":"SAFE"}yahan se shuru karein fir'
+h33, tail33 = salvage_unclosed_head(buf33)
+check("t33: unclosed head recovered", h33 == {"m": "R", "c": 0.6, "s": "SAFE"})
+check("t33: tail speakable, no tag", "<perception>" not in tail33 and "SAFE" not in tail33, tail33[:40])
+
+# unrecoverable JSON: nothing from the head region may be spoken
+buf_bad = '<perception>{"m":"R","c":0.'
+h_bad, tail_bad = salvage_unclosed_head(buf_bad)
+check("t33b: unrecoverable -> head None", h_bad is None)
+check("t33b: nothing leaked", tail_bad.strip() == "")
+
+# missing tags entirely: normal prose passthrough unaffected
+check("no tags: TAG_RE no match", TAG_RE.search("haan, Sunday hai") is None)
+
+# belt-and-braces tee sanitizer
+cases_leak = [
+    ('</p> kya haal', ' kya haal'),
+    ('<perception>{"m":"C"}</perception> hello', ' hello'),
+    ('achha sun raha hoon</perception>', 'achha sun raha hoon'),
+]
+for raw, want in cases_leak:
+    got, stripped = strip_tag_leak(raw)
+    check(f"strip_tag_leak({raw[:24]!r})", got == want and stripped, f"-> {got!r}")
+
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
 sys.exit(1 if fails else 0)

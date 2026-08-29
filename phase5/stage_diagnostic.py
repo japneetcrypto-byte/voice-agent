@@ -9,6 +9,8 @@ STT -> validity -> turn decision -> LLM (context, head, latency) -> reply
 (length, trims, persona flags) -> TTS. Also prints session-level aggregates.
 """
 import json, glob, os, sys, re
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from agent.reply_guard import feminine_self_reference
 
 if len(sys.argv) > 1:
     p = sys.argv[1]
@@ -30,8 +32,6 @@ for line in open(p):
 # Tasks complete concurrently (barge-in), so lines can land out of order.
 turns.sort(key=lambda t: (t.get("turn", 0)))
 
-FEM_RE = re.compile(
-    r"\b(?:rahi|gayi|aayi|sakti)\s+(?:hoon|hun|hain|thi)\b|\b[a-z]{2,}ungi\b", re.IGNORECASE)
 SERVICE_PHRASES = ["help chahiye", "how can i help", "help kar", "madad kar", "madad ke liye",
                    "sawaalon ke jawaab", "jawab dene"]
 # The legacy fallback prompt's canned ignorance line (session.py rule 4).
@@ -87,7 +87,7 @@ for t in turns:
     flags = []
     if reply:
         agg["replies"] += 1
-        if FEM_RE.search(reply.lower()):
+        if feminine_self_reference(reply):
             flags.append("♀ GENDER")
             agg["gender"] += 1
         rl = reply.lower()
@@ -104,6 +104,10 @@ for t in turns:
         agg["trimmed"] += 1
     epath = t.get("engine_path") or "?"
     agg["paths"][epath] = agg["paths"].get(epath, 0) + 1
+    if t.get("owner"):
+        agg.setdefault("owners", set()).add(t["owner"])
+    if t.get("tag_leak_stripped"):
+        agg["tag_leaks"] = agg.get("tag_leaks", 0) + 1
     sp = t.get("stt_provider")
     if sp:
         agg["stt_providers"][sp] = agg["stt_providers"].get(sp, 0) + 1
@@ -118,6 +122,8 @@ for t in turns:
     print(f"  TTS     : {tts.get('provider')} audio={tts.get('audio_duration_s')}s playback={tts.get('playback_duration_s')}s")
     print(f"  latency : stt={t.get('stt_latency_s')}s llm_ttft={t.get('llm_ttft_s')}s tts_ttfa={t.get('tts_first_audio_s')}s speech->audio={t.get('speech_end_to_first_audio_s')}s")
     print(f"  context : {ctx_summary}")
+    if ctx_summary.startswith("mem=0"):
+        agg["mem_zero"] = agg.get("mem_zero", 0) + 1
     if issues:
         print(f"  ⚠️ ISSUES: {'; '.join(issues)}")
     if flags:
@@ -135,5 +141,20 @@ print(f"reply audio: avg={round(sum(durs)/len(durs),2) if durs else '-'}s max={m
       f"speech->audio avg={round(sum(lat)/len(lat),2) if lat else '-'}s max={max(lat) if lat else '-'}s")
 print(f"flags: trimmed={agg['trimmed']} gender={agg['gender']} service-speak={agg['service']} legacy-brain={agg['legacy']}")
 print(f"engine paths: {agg['paths']}")
+if agg.get("owners"):
+    print(f"owner(s): {sorted(agg['owners'])}")
+if agg.get("tag_leaks"):
+    print(f"tag-leaks stripped: {agg['tag_leaks']}")
+if agg["turns"] and agg["ctx_ok"] == 0 and agg["replies"] == 0:
+    pass
+owners = sorted(agg.get("owners", set()))
+if agg["turns"] and not owners:
+    print("note: no owner recorded (pre-upgrade log)")
+
 if agg["stt_providers"]:
     print(f"stt providers: {agg['stt_providers']}")
+if agg.get("mem_zero"):
+    print(f"⚠ mem=0 on {agg['mem_zero']} turns — memory view EMPTY. If relationships "
+          "should be known, the session likely bound to a DIFFERENT device owner "
+          "(check console 'SESSION BOUND owner=' vs: sqlite3 logs/aiva_memory.db "
+          '\"SELECT DISTINCT owner_id FROM memory;\")')

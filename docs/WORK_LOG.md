@@ -148,3 +148,27 @@ Method: pyflakes over all modules + full cross-module read + regression tests.
 - A3 double STT streaming eliminated; A4 dir() hack removed; A5 fake logprobs (x2) -> None
 - A6 session STT language pin; A7 Layer 2 finally reaches the fused call (approved 3-layer design)
 5 findings documented-not-changed (owner decisions / dead paths). All suites green.
+
+---
+
+## First healthy fused session (2026-08-29, 091548) + round-3 fixes
+
+Session 091548 (audit code): engine fused x45, ctx 45/45, heads 41, stt groq x49,
+avg reply 2.42s (length fix works), 0 service-speak, 0 legacy, latency ~2.3s.
+The pre-audit session (state log t43-71) shows the OLD death-spiral signature
+(every turn PARSE-FAIL in degraded mode) — AND the first live cross-session
+memory recall: "mere bete ka naam kya hai?" -> "Gaggu hai na, jaise bataya tha."
+
+Round-3 fixes from this evidence:
+- Model mis-closes the head tag ('</p>' or never closes; t30/t33) -> head parse
+  fail AND the raw tag was SPOKEN. TAG_RE now accepts </p>; unclosed heads are
+  salvaged (JSON recovered, tail spoken); tee sanitizer (strip_tag_leak) as
+  belt-and-braces; TAG_LEAK_STRIPPED event.
+- Checkpoint saved at clean shutdown leaked the prior session's Layer-1 into
+  the next session (hist=106 at turn 1). discard_checkpoint() on clean end —
+  checkpoint is crash-recovery-only now.
+- Diagnostic gender false positive ('khabar aayi thi') -> now uses the real
+  reply_guard detector; owner shown per session; mem=0 warning with owner-check
+  hint; tag-leak counter.
+- User-entity extractor: oblique relation forms (बेटे/bete).
+Tests: 27 audit-fix cases incl. t30/t33 byte-exact regressions. All suites green.

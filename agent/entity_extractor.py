@@ -51,7 +51,7 @@ USER_REL_WORDS = {
     "behen": ["behen", "bhen", "behena", "bahen", "ben", "bain",
               "बहन", "बहिन", "बहेन", "बेन", "भैन", "भाइन", "भाइनों"],
     "bhai": ["bhai", "bhaiya", "bhaiyya", "भाई", "भैया", "भइया"],
-    "beta": ["beta", "बेटा", "बेटा"],
+    "beta": ["beta", "बेटा", "बेटे", "bete", "बेटा को"],
     "beti": ["beti", "बेटी"],
     "wife": ["wife", "biwi", "वाइफ", "बीवी", "पत्नी", "patni"],
     "pati": ["pati", "पति", "पती"],

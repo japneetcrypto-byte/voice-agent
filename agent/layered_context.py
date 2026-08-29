@@ -166,6 +166,24 @@ class LayeredContextManager:
             print(f"[Checkpoint] save failed: {e}")
             return False
 
+    def discard_checkpoint(self) -> bool:
+        """Remove the checkpoint after a CLEAN session end.
+
+        The checkpoint exists for CRASH recovery only. Saving it at clean
+        shutdown made the next session resume with the previous session's raw
+        Layer-1 turns (evidence 2026-08-29: session 091548 started with
+        hist=106 — the prior session's turns leaked into its context)."""
+        try:
+            path = os.path.join(self.checkpoint_dir, "latest_checkpoint.json")
+            if os.path.exists(path):
+                os.remove(path)
+            self.checkpoint = None
+            print("[Checkpoint] discarded (clean session end)")
+            return True
+        except Exception as e:
+            print(f"[Checkpoint] discard failed: {e}")
+            return False
+
     def recover_from_checkpoint(self) -> bool:
         """Attempts to recover from the latest checkpoint."""
         path = os.path.join(self.checkpoint_dir, "latest_checkpoint.json")
