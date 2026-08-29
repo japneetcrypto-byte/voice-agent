@@ -76,6 +76,16 @@ class MemoryStore:
             self.db.execute(
                 "UPDATE memory SET occurrences=occurrences+1, last_seen=? WHERE id=?",
                 (now, existing[0]))
+            if immediate:
+                # Promotion guard (bug 3 of 182736, caught by
+                # test_memory_promotion_guard): a REPEAT sighting with
+                # immediate=True must promote a still-pending row to
+                # committed. Previously the existing-row branch only bumped
+                # occurrences and ignored `immediate`, so repeated facts
+                # stayed pending forever (until session end).
+                self.db.execute(
+                    "UPDATE memory SET status='committed' WHERE id=? AND status='pending'",
+                    (existing[0],))
         elif criterion == "explicit" or immediate:
             self.db.execute(
                 "INSERT INTO memory (owner_id, type, content, criterion, status, created_at, last_seen)"

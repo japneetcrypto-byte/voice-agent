@@ -634,3 +634,25 @@ Healthy telemetry (2.19s avg, 0 errors) but two real bugs caught:
    max 2295.7ms (n=2) — new diagnostic surface working.
 
 All suites green (controller 25, entity 24, audit 48, reply_guard 34...).
+
+---
+
+## Memory bug deep-dive: THREE bugs, not one (2026-08-29 night, continued)
+
+Owner asked for the full explanation of the memory issue. Writing the regression
+test exposed bug #3 hiding behind #2:
+
+1. BUG 1 (extraction): verb 'गए' captured as a person name ('कहां गए भाई').
+   Fix: verb-form blocklist (Devanagari+roman).
+2. BUG 2 (promotion policy): _promote_relationship passed criterion='explicit'
+   which SHORT-CIRCUITS commit()'s pending branch -> pending-until-confirmed
+   never engaged; garble committed live. Fix: salient (pending) on first
+   sighting, explicit only on repeats.
+3. BUG 3 (promotion mechanics, FOUND BY THE NEW TEST): commit()'s existing-row
+   branch ignored immediate=True — a repeated fact only bumped occurrences on
+   its still-PENDING row; never promoted mid-session. Fix: immediate=True now
+   promotes pending->committed.
+
+Net invariant now TESTED (test_memory_promotion_guard.py, 6 cases): first
+sighting pending + invisible; repeat -> committed + visible; one-off garble
+stays out of live context until session-end evaluation.
