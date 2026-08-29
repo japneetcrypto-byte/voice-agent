@@ -165,11 +165,16 @@ if trims:
         "Model exceeded the length cap; guard cut at a sentence boundary.",
         "AUTO (by design).", "If trims >20% of replies, revisit persona examples.")
 if sup_engaged:
-    add("Supervisor engagements", len(sup_engaged),
-        "User turn(s) ended with no agent audio; the supervisor spoke the recovery "
-        f"line (turns {[e.get('turn_id') for e in sup_engaged][:8]}).",
-        "AUTO (by design): rescue line + incident snapshot.",
-        "Escalations fire on repeat incidents; attach AIVA_ALERT_WEBHOOK for paging.")
+    snaps = [(e.get("details", {}) or {}) for e in sup_engaged]
+    failed_turns = [s.get("turn") for s in snaps if s.get("turn") is not None]
+    reasons = Counter(s.get("reason", "?") for s in snaps)
+    reason_str = ", ".join(f"{k} x{v}" for k, v in reasons.items())
+    add("Supervisor engagements (unanswered user turns)", len(sup_engaged),
+        f"User turn(s) ended with no agent audio; supervisor spoke the recovery line. "
+        f"Failed turns {failed_turns[:8]}; causes: {reason_str}.",
+        f"AUTO (by design): rescue line + incident snapshot; escalations x{len(sup_esc)}.",
+        "Attach AIVA_ALERT_WEBHOOK for paging. Failed-turn reasons map to the other "
+        "classes above (TTS silent / echo / skips) - fix those, rescues drop.")
 if quota_429:
     add("Quota/429 fingerprints", len(quota_429),
         "Gemini free-tier exhaustion on one or more keys.",
@@ -178,6 +183,47 @@ if quota_429:
 
 slow.sort(reverse=True)
 lat_avg = round(sum(s for s, *_ in slow) / len(slow), 2) if slow else None
+
+# ---- cross-session trend: answers "earlier it was faster - are we degrading?" ----
+def _avg(xs):
+    return round(sum(xs) / len(xs), 2) if xs else None
+
+def _pct(xs, p):
+    if not xs:
+        return None
+    s = sorted(xs)
+    return s[min(len(s) - 1, int(len(s) * p))]
+
+trend = []
+for lp in sorted(glob.glob("logs/session_*.log")):
+    lsess = os.path.basename(lp).replace("session_", "").replace(".log", "")
+    lt = []
+    for line in open(lp):
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("turn"):
+            lt.append(e)
+    if not lt:
+        continue
+    s2a = [t["speech_end_to_first_audio_s"] for t in lt if t.get("speech_end_to_first_audio_s")]
+    ttfa = [t["tts_first_audio_s"] for t in lt if t.get("tts_first_audio_s")]
+    silent_n = sum(1 for t in lt if (t.get("llm_response") and
+                                     not (t.get("tts") or {}).get("audio_duration_s")
+                                     and not t.get("interrupted")))
+    sup_n, n429 = 0, 0
+    el = f"logs/events_{lsess}.log"
+    if os.path.exists(el):
+        for line in open(el):
+            if "SUPERVISOR_ENGAGED" in line:
+                sup_n += 1
+            if "429" in line:
+                n429 += 1
+    n429 += sum(1 for t in lt if "429" in str(t.get("llm_error", "")))
+    trend.append({"sess": lsess, "turns": len(lt), "s2a": _avg(s2a), "p95": _pct(s2a, 0.95),
+                  "ttfa": _avg(ttfa), "silent": silent_n, "sup": sup_n, "n429": n429})
+trend = trend[-8:]
 
 # TTS first-audio degradation (provider-side slowness, evidence 155556:
 # tts_ttfa 2.9-4.05s vs the 1.5-1.9s baseline while LLM TTFT stayed normal)
@@ -211,6 +257,15 @@ if slow:
     worst = slow[0]
     L.append(f"Slowest turn: {worst[1]} ({worst[0]}s; llm_ttft={worst[2]}s, tts_ttfa={worst[3]}s) "
              "— attributes the slowness to its stage.")
+if len(trend) >= 2:
+    L.append("## Cross-session trend (deterioration check)\n")
+    L.append("| session | turns | speech->audio avg | p95 | tts ttfa avg | silent | supervisor | 429 |")
+    L.append("|---|---|---|---|---|---|---|---|")
+    for r in trend:
+        mark = " <- this" if r["sess"] == sess else ""
+        L.append(f"| {r['sess']} | {r['turns']} | {r['s2a']}s | {r['p95']}s | "
+                 f"{r['ttfa']}s | {r['silent']} | {r['sup']} | {r['n429']}{mark and mark} |")
+    L.append("")
 L.append("---")
 L.append("_Deterministic post-mortem (no LLM). Containment already ran live; "
          "prescriptions marked 'owner decision' need a human ruling._")

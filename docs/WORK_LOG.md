@@ -432,3 +432,15 @@ Each section is the existing tool's own output (single source of truth),
 captured verbatim; per-section failure isolation (one broken tool can't kill
 the report). `--all` mode for multi-session + full shadow aggregation.
 Console prints a 1-line quick verdict (brain bound? supervisor? skips? 429?).
+
+---
+
+## Self-diagnose upgrades (2026-08-29 evening): failed-turn attribution + cross-session trend
+
+Owner shared their real diagnosis file (161510): 24 turns, 9 failures / 6 classes,
+3 supervisor engagements, 2 429s — asked about deterioration. Upgrades:
+- Supervisor section now attributes failures: failed turn numbers + per-reason
+  counts (from event snapshots) + escalation count — no more opaque "1001, 1002".
+- New cross-session trend table (last 8 sessions): turns, speech->audio avg/p95,
+  TTFA avg, silent count, supervisor count, 429 count — the objective
+  "are we degrading vs earlier" answer, included in every diagnosis + aiva_health.
