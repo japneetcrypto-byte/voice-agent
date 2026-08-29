@@ -128,7 +128,9 @@ for t in turns:
         agg["stt_providers"][sp] = agg["stt_providers"].get(sp, 0) + 1
 
     print(f"TURN {turn}" + ("  [idle]" if t.get("turn_type") == "idle" else ""))
-    print(f"  STT     : {stt[:60]!r} | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')} | prov={t.get('stt_provider') or '?'}")
+    corr = t.get("echo_corr_score")
+    corr_s = f" | corr={corr}" if corr is not None else ""
+    print(f"  STT     : {stt[:60]!r} | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')} | prov={t.get('stt_provider') or '?'}{corr_s}")
     print(f"  valid   : {t.get('stt_valid')} ({t.get('stt_rejection_reason','')}) | relation: {t.get('turn_relation')}" +
           (f" | user_rels: {t.get('user_relations')}" if t.get("user_relations") else ""))
     print(f"  engine  : {epath} | decision: {t.get('turn_end_decision')} ({t.get('suppression_reason','')}) | because: {t.get('spoke_because') or t.get('response_trigger_reason')}")
@@ -162,6 +164,11 @@ if agg.get("tag_leaks"):
     print(f"tag-leaks stripped: {agg['tag_leaks']}")
 if agg.get("skipped"):
     print(f"⚠ response skips: {agg['skipped']} — see RESPONSE SKIPPED turns")
+corrs = [t.get("echo_corr_score") for t in turns if t.get("echo_corr_score") is not None]
+if corrs:
+    corrs.sort()
+    print(f"echo corr (voice key): n={len(corrs)} min={corrs[0]} med={corrs[len(corrs)//2]} max={corrs[-1]} "
+          f"→ python3 phase5/echo_shadow_report.py")
 if agg["turns"] and agg["ctx_ok"] == 0 and agg["replies"] == 0:
     pass
 owners = sorted(agg.get("owners", set()))

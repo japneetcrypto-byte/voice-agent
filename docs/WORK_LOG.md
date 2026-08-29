@@ -405,3 +405,16 @@ Shipped:
 - self_diagnose: new TTS-TTFA-degradation class with owner-decision prescription
 Note: supervisor rescue lines ride the same TTS — the zero-audio failover
 (b3065ee) is what makes the supervisor audible during TTS incidents.
+
+---
+
+## Voice-key (speaker attribution Stage 1) observability shipped (2026-08-29)
+
+Owner asked how to check the parallel voice-keys infra. Gap found: stage_diagnostic
+never printed the shadow corr scores. Shipped:
+- stage_diagnostic: per-turn corr= on the STT line + session summary line
+  (n/min/med/max) pointing at the new report
+- phase5/echo_shadow_report.py: the Stage-2 gate check — aggregates
+  echo_corr_score across sessions split by text-filter verdict, prints speech
+  floor (p95) vs echo band (p25), proposes T_low/T_high/ambiguous zone, verdict
+  KEEP-SHADOWING vs SEPARABLE. Locked calibration rule; deterministic.
