@@ -26,7 +26,8 @@ from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
-from agent.turn_controller import decide as turn_controller_decide
+from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
+from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, smart_join,
                                fix_merged_words, REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
@@ -338,7 +339,8 @@ async def entrypoint(ctx: JobContext):
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
-            turn["engine_path"] = "fused"
+            turn["engine_path"] = ("supervisor" if turn.get("turn_type") == "supervisor_rescue"
+                                    else "fused")
             turn["owner"] = (sess_owner_id() or "")[:8]
             sess = engine["sess"]
             lcm = engine.get("lcm")
@@ -984,6 +986,7 @@ async def entrypoint(ctx: JobContext):
                                 turn["turn_relation"] = classify_turn_relation(transcript.text)
                                 is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
                                 if is_echo_detected:
+                                    turn["echo_dropped"] = True
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")
                                     tmark("TURN_DROPPED", turn=turn.get("turn"), reason="echo", similarity=round(similarity, 2))
                                     log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
@@ -1112,6 +1115,10 @@ async def entrypoint(ctx: JobContext):
                                 if turn.get("dropped_reason") or turn.get("stt_valid") is False:
                                     tmark("TURN_DROPPED", turn=turn.get("turn"),
                                           reason=turn.get("dropped_reason") or turn.get("stt_rejection_reason"))
+                                try:
+                                    supervisor_check_after_turn(turn, transcript.text or "")
+                                except Exception as e:
+                                    print(f"[Supervisor] check failed: {e}")
                                 log_turn(turn)
                                 
                         agent_was_speaking = agent_speaking_event.is_set()
@@ -1133,6 +1140,92 @@ async def entrypoint(ctx: JobContext):
 
     # ---- C7/D8 idle watcher: 45s without speech or agent audio -> one open-door line ----
     idle_state = {"last_activity": time.monotonic(), "line_sent": False, "seq": 1000}
+
+    # ---- Call Supervisor (owner brief: the "senior jumping in") ----
+    # Dormant watcher: when a user turn ends with NO agent audio (skipped /
+    # errored / unanswered / user calling out), it waits RESCUE_GRACE_S and —
+    # if Aiva still isn't audible — speaks one deterministic recovery line and
+    # writes a SUPERVISOR_ENGAGED snapshot. Repeat engagements escalate.
+    supervisor = CallSupervisor()
+    _last_engine_path = {"v": None}
+
+    async def _send_supervisor_alert(snapshot: dict):
+        """Prod hook: POST the snapshot to the paging/webhook endpoint.
+        With no AIVA_ALERT_WEBHOOK set, the event log IS the report."""
+        url = os.getenv("AIVA_ALERT_WEBHOOK", "")
+        if not url:
+            return
+        try:
+            import aiohttp
+            async with aiohttp.ClientSession() as sess:
+                async with sess.post(url, json=snapshot, timeout=aiohttp.ClientTimeout(total=5)):
+                    pass
+            print("[Supervisor] alert delivered")
+        except Exception as e:
+            print(f"[Supervisor] alert delivery failed: {type(e).__name__}: {e}")
+
+    def schedule_supervisor_rescue(outcome: dict):
+        async def _rescue():
+            await asyncio.sleep(RESCUE_GRACE_S)
+            # Stand down if the primary pipeline became audible meanwhile OR
+            # a newer user turn is already being processed (its reply will
+            # answer the user — never race it).
+            if agent_speaking_event.is_set() or (agent_task and not agent_task.done()):
+                supervisor.stand_down()
+                return
+            decision = supervisor.evaluate(outcome)
+            if not decision:
+                return
+            idle_state["seq"] += 1
+            rescue_turn = {"turn": idle_state["seq"],
+                            "turn_type": "supervisor_rescue",
+                            "response_trigger_reason": f"supervisor_{decision['reason']}",
+                            "engine_path": "supervisor"}
+            snapshot = build_snapshot(decision["reason"], outcome, {
+                "engine_bound": bool(engine and engine.get("sess")),
+                "last_engine_path": _last_engine_path["v"],
+                "last_tts_provider": getattr(tts_provider, "last_provider", None),
+                "last_llm_ttft_s": None,
+                "wait_streak": engine.get("wait_streak") if engine else None,
+            })
+            snapshot["engagement_no"] = decision["engagement_no"]
+            print(f"[Supervisor] ENGAGED (#{decision['engagement_no']}) reason={decision['reason']} "
+                  f"— speaking recovery line, snapshot logged")
+            log_event("SUPERVISOR_ENGAGED", turn_id=rescue_turn["turn"], details=snapshot)
+            tmark("SUPERVISOR_ENGAGED", turn=rescue_turn["turn"])
+            if decision.get("escalate"):
+                esc = {**snapshot, "note": "repeat engagement — systemic issue, page a human"}
+                log_event("SUPERVISOR_ESCALATE", turn_id=rescue_turn["turn"], details=esc)
+                print("[Supervisor] ESCALATED — repeat engagement, paging channel fired")
+                asyncio.create_task(_send_supervisor_alert(esc))
+            await run_agent_response("", rescue_turn)
+        asyncio.create_task(_rescue())
+
+    def supervisor_check_after_turn(turn: dict, user_text: str):
+        """Called at user-turn completion. Decides whether THIS turn left the
+        user without an answer and schedules the rescue grace timer."""
+        if engine is None or turn.get("turn_type") in ("idle", "supervisor_rescue"):
+            return
+        if turn.get("response_suppressed"):
+            return  # deliberate WAIT — the controller owns that silence
+        if turn.get("echo_dropped"):
+            return  # Aiva hearing itself — no user question was left hanging
+        replied = bool(turn.get("llm_response")) and             (turn.get("tts") or {}).get("audio_duration_s") not in (None, 0)
+        if replied:
+            supervisor.stand_down()
+            return
+        first = user_text.split()[0].lower() if user_text.split() else ""
+        if turn.get("response_skipped"):
+            reason = "skipped"
+        elif turn.get("pipeline_error"):
+            reason = "pipeline_error"
+        elif first in GREETING_MARKERS:
+            reason = "reachout_unanswered"
+        else:
+            reason = "unanswered"
+        _last_engine_path["v"] = turn.get("engine_path")
+        schedule_supervisor_rescue({"reason": reason, "turn": turn.get("turn"),
+                                     "user_text": user_text})
 
     async def idle_watcher():
         while True:

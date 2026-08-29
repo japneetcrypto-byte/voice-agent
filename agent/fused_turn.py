@@ -21,7 +21,7 @@ from typing import AsyncGenerator
 from agent.reply_guard import smart_join
 from agent.prompt_fragments import (
     SYSTEM_FUSED_V11, SYSTEM_PLAIN_V11, PROMPT_VERSION,
-    FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, pick_line,
+    FILLER_LINES, PRESENCE_LINES_D7, OPENDOOR_LINES_D8, SUPERVISOR_LINES, pick_line,
     BACKCHANNEL_LINES, LISTEN_LINES, CLARIFY_LINES,
 )
 
@@ -140,6 +140,15 @@ class FusedLLM:
         if goal == "listen_quietly":
             line = pick_line(LISTEN_LINES, turn_no)
             self.meta.update({"degradation": None, "llm_called": False, "spoke_because": "listen_request"})
+            yield line
+            return
+
+        # Supervisor rescue: deterministic line, no LLM (must work even when
+        # the LLM path is what failed — that is precisely when it engages).
+        if turn_type == "supervisor_rescue":
+            line = pick_line(SUPERVISOR_LINES, turn_no)
+            self.meta.update({"degradation": None, "llm_called": False,
+                               "spoke_because": "supervisor_rescue"})
             yield line
             return
 

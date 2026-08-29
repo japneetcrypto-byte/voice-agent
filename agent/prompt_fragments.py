@@ -166,6 +166,15 @@ CLARIFY_LINES = ["haan? ek baar phir bol.", "yeh wala part miss ho gaya — phir
 BACKCHANNEL_LINES = ["haan?", "hmm.", "achha.", "haan bol.", "phir?"]
 LISTEN_LINES = ["achha, main sun raha hoon. bolo.", "haan, bolo — main sun raha hoon."]
 
+# Call Supervisor recovery lines (owner brief 2026-08-29: the "senior jumping
+# in"). Short, warm, persona-consistent, deterministic — spoken only when the
+# supervisor engages after the pipeline failed to answer.
+SUPERVISOR_LINES = [
+    "haan, main yahin hoon. sun raha hoon, bolo.",
+    "main hoon yahin — thoda sa glitch tha. bolo, main sun raha hoon.",
+    "haan bolo, yahin hoon.",
+]
+
 PRESENCE_LINES_D7 = [
     "Main yahin hoon, tumhare saath. Jab mann kare, bolo.",
     "Main sun raha hoon. Jo bhi feel ho raha hai, sab theek hai.",

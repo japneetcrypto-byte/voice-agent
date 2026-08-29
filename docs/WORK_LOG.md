@@ -302,3 +302,27 @@ Root causes found & fixed:
 Voice audit verdict: avg 15.4 c/s (healthy), 1 soft FAST flag (short question clip —
 threshold noise), no clipping. TTS itself is performing; the LLM-side text glitches
 were the "unreal" driver + now both causes are covered.
+
+---
+
+## Call Supervisor shipped (2026-08-29): the "senior jumping in"
+
+Owner: "can't we have an orchestrator/fallback that gets activated like a senior
+jumping in to avoid the deal slipping through — which knows the state of the talk,
+manages it, and raises an alarm / a way to check what happened?"
+
+Shipped (agent/call_supervisor.py + wiring):
+- DORMANT watcher outside the hot path; engages ONLY when a user turn ends with
+  no agent audio: skipped (task race) / pipeline_error / unanswered /
+  reachout_unanswered (hello-into-silence — the t21 incident class)
+- On engage: 4s grace, stand-down if the pipeline became audible OR a newer turn
+  is in-flight, then speaks a deterministic persona line (SUPERVISOR_LINES, no
+  LLM — the lifeline cannot share the failing brain) as turn_type
+  supervisor_rescue (updater: TURN-SUPERVISOR-RESCUE, never PARSE-FAIL)
+- Transparent: SUPERVISOR_ENGAGED event with state snapshot (cause, user text,
+  engine path, TTS provider, wait streak); 2nd engagement = SUPERVISOR_ESCALATE
+  + POST to AIVA_ALERT_WEBHOOK if set (the human-paging hook)
+- Safety: dedupe per turn, 15s cooldown (one rescue per incident), echo-dropped
+  turns excluded, deliberate WAITs excluded (controller owns that silence)
+Tests: test_call_supervisor.py (13) incl. the exact hello-twice incident and
+determinism. All suites green.

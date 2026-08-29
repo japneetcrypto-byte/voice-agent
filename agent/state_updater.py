@@ -154,6 +154,14 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
         policy = _derive_policy(state, turn_record, head=None, degradation="clarify")
         return state, policy, log
 
+    if turn_type == "supervisor_rescue":
+        # Call-supervisor recovery line: never counts as a perception failure
+        # (it has no head BY DESIGN — treating it as PARSE-FAIL would poison
+        # the degraded-mode streak the supervisor is rescuing us FROM).
+        _log(log, "TURN-SUPERVISOR-RESCUE")
+        policy = _derive_policy(state, turn_record, head=None, degradation="D7")
+        return state, policy, log
+
     if turn_type == "acoustic_only":
         _log(log, "TURN-ACOUSTIC-ONLY")
         e = state["emotion"]
