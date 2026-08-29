@@ -94,6 +94,9 @@ for t in turns:
     if reply and devanagari_present(reply):
         flags.append("देवनागरी SCRIPT")
         agg["devi"] = agg.get("devi", 0) + 1
+    if t.get("response_state"):
+        agg.setdefault("states", {})
+        agg["states"][t["response_state"]] = agg["states"].get(t["response_state"], 0) + 1
     if reply and t.get("cancel_pre_audio"):
         issues.append("REPLY CANCELLED BEFORE AUDIO — user spoke again before first "
                       "sound (TTS TTFA slower than user's pace); reply text was never heard")
@@ -182,6 +185,8 @@ if agg.get("skipped"):
 if agg.get("cancel_pre"):
     print(f"⚠ replies cancelled BEFORE audio: {agg['cancel_pre']} — user outpaced TTS "
           "first-audio; root fix = lower TTFA (voice provider decision)")
+if agg.get("states"):
+    print(f"response states: {agg['states']}")
 corrs = [t.get("echo_corr_score") for t in turns if t.get("echo_corr_score") is not None]
 if corrs:
     corrs.sort()

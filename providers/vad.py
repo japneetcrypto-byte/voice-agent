@@ -3,6 +3,7 @@ import time
 import numpy as np
 from enum import Enum
 import ten_vad
+from providers.endpointing import HangoverTracker, GRADUAL
 
 class VADEvent(Enum):
     SPEECH_STARTED = "SPEECH_STARTED"
@@ -75,6 +76,11 @@ class TenVADProvider(VADProvider):
         self.last_endpoint = None            # evidence dict, refreshed per endpoint
         self.last_resume_gap_ms = None       # consumed by main.py instrumentation
 
+        # Hangover (directive 2026-08-29 fix 1): hard energy cuts extend the
+        # silence window once; natural decays end at the normal window.
+        self.hangover = HangoverTracker(
+            hangover_ms=int(os.getenv("AIVA_HANGOVER_MS", "250")))
+
     # ---- adaptive threshold state machine (deterministic) ----
     def _effective_silence_ms(self) -> float:
         eff = self.base_silence_ms + self.endpoint_penalty_ms
@@ -111,8 +117,11 @@ class TenVADProvider(VADProvider):
                 self.speech_frames += 1
                 self.silence_frames = 0
                 self.stretch_speech_ms += self.hop_ms
+                if self.is_speaking:
+                    self.hangover.note_speech_frame(int(np.max(np.abs(frame))))
                 if not self.is_speaking and self.speech_frames >= self.speech_frames_threshold:
                     self.is_speaking = True
+                    self.hangover.reset()
                     # premature-resume detection: endpoint recently declared?
                     if self.last_endpoint_monotonic is not None:
                         gap_ms = (time.monotonic() - self.last_endpoint_monotonic) * 1000.0
@@ -133,7 +142,17 @@ class TenVADProvider(VADProvider):
                     self.endpoint_penalty_ms = 0
                     self.stretch_speech_ms = 0.0
                 if self.is_speaking:
-                    eff = self._effective_silence_ms()
+                    # Classify the transition once, at the first silence frame:
+                    # was speech energy still near its peak (hard cut) or
+                    # already decayed (natural)? Hard cut extends this
+                    # endpoint's window by the hangover.
+                    if self.silence_frames == 1:
+                        profile, hangover_ms = self.hangover.evaluate()
+                        self._hangover_extra_frames = (
+                            self._frames_for(hangover_ms) if profile == "hard_cut" else 0)
+                        self._energy_profile = profile
+                    eff = self._effective_silence_ms() + getattr(
+                        self, "_hangover_extra_frames", 0) * self.hop_ms
                     if self.silence_frames >= self._frames_for(eff):
                         self.is_speaking = False
                         self.last_endpoint = {
@@ -141,6 +160,8 @@ class TenVADProvider(VADProvider):
                             "trailing_silence_ms": round(self.silence_frames * self.hop_ms, 1),
                             "threshold_ms": round(eff, 1),
                             "penalty_ms": self.endpoint_penalty_ms,
+                            "energy_profile": getattr(self, "_energy_profile", GRADUAL),
+                            "hangover_ms": round(getattr(self, "_hangover_extra_frames", 0) * self.hop_ms, 1),
                         }
                         self.last_endpoint_monotonic = time.monotonic()
                         self.pending_stretch_speech_ms = self.stretch_speech_ms

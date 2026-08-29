@@ -656,3 +656,30 @@ test exposed bug #3 hiding behind #2:
 Net invariant now TESTED (test_memory_promotion_guard.py, 6 cases): first
 sighting pending + invisible; repeat -> committed + visible; one-off garble
 stays out of live context until session-end evaluation.
+
+---
+
+## Conversation-quality fixes (2026-08-29 night): endpointing hangover + response playback state
+
+Directive: two fixes, no pipeline redesign, 7 validation scenarios.
+
+FIX 1 — endpointing hangover (providers/endpointing.py + vad.py): at the
+speech→silence transition, classify energy profile: recent speech peak >= 60%
+of utterance peak = HARD CUT (mic/codec truncation) -> extend that endpoint's
+window +250ms once; natural decay -> normal window (latency unchanged).
+Resume during hangover = same utterance continues (no event emitted, no
+premature-resume penalty). Endpoint evidence gains energy_profile/hangover_ms.
+Pure module (numpy-free) + wired into TenVADProvider.
+
+FIX 2 — response playback state (agent/response_state.py + main.py +
+fused_turn.py + persona V1.9): every response classified FULLY_PLAYED /
+PARTIALLY_PLAYED / UNHEARD (Generated ≠ Spoken ≠ Heard). Interrupted replies
+store reconciliation payload; the NEXT fused call receives previous_response
+(status + heard_text only for PARTIAL; UNHEARD withholds full text so the
+model cannot resurrect it; popped after one turn). Persona rule 7e instructs:
+UNHEARD -> respond fresh, never reference; PARTIAL -> continue from heard
+portion, never replay. stage_diagnostic prints response-state distribution.
+
+Directive's 7 validation scenarios mapped to 14 unit tests (all green).
+Latency: hangover applies only to hard-cut profile (natural speech unchanged);
+reconciliation is context-only (no LLM call added).

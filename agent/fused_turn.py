@@ -96,7 +96,8 @@ class FusedLLM:
         return SYSTEM_PLAIN_V11
 
     def build_contents(self, user_text: str, policy: dict, memory_view: list,
-                       threads: list, history: list, layer2: dict | None = None) -> str:
+                       threads: list, history: list, layer2: dict | None = None,
+                       previous_response: dict | None = None) -> str:
         payload = {
             "policy": policy,
             "memory": memory_view,
@@ -109,11 +110,17 @@ class FusedLLM:
         if layer2 and (layer2.get("people") or layer2.get("open_items")
                        or layer2.get("emotional_context")):
             payload["session_state"] = layer2
+        # Response reconciliation (directive fix 2: Generated ≠ Spoken ≠ Heard):
+        # only present when the previous reply was interrupted before/while
+        # playing — the model must know what the user actually heard.
+        if previous_response:
+            payload["previous_response"] = previous_response
         return json.dumps(payload, ensure_ascii=False)
 
     async def stream_prose(self, *, user_text: str, turn_type: str, policy: dict,
                             memory_view: list, threads: list, history: list,
                             turn_no: int, degraded: bool, layer2: dict | None = None,
+                            previous_response: dict | None = None,
                             key: str) -> AsyncGenerator[str, None]:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
@@ -172,7 +179,7 @@ class FusedLLM:
         self.meta["prompt_version"] = PROMPT_VERSION
         self.meta["system_sha1"] = hashlib.sha1(system.encode()).hexdigest()[:10]
         contents = self.build_contents(user_text, policy, memory_view, threads, history,
-                                       layer2=layer2)
+                                       layer2=layer2, previous_response=previous_response)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
 

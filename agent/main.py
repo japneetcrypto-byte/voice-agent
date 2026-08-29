@@ -30,6 +30,9 @@ from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
 from agent.transcript_router import route_transcript
+from agent.response_state import classify as response_state_classify, \
+     reconcile_payload as response_reconcile_payload, \
+     FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
                                clean_specials, is_confirm_echo, devanagari_present,
@@ -370,6 +373,15 @@ async def entrypoint(ctx: JobContext):
             if int(turn.get("turn", 0)) < _stuck_nudged["until_turn"] and isinstance(turn["policy"], dict):
                 turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["echo_confirm_parroting"]
                 turn["policy"]["response_goal"] = "substantive_reaction"
+            # Response reconciliation (directive fix 2): if the PREVIOUS reply
+            # was interrupted (unheard / partially heard), tell this call —
+            # popped, so it applies only to the immediately-following turn.
+            _prev_response = None
+            if engine is not None:
+                _prev_response = response_reconcile_payload(
+                    engine.pop("last_response", None))
+                if _prev_response:
+                    turn["reconciles_previous"] = _prev_response
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
                 turn_type=turn.get("turn_type", "speech"),
@@ -378,6 +390,7 @@ async def entrypoint(ctx: JobContext):
                 threads=sess.thread_summaries(),
                 history=lcm.get_layer1() if lcm else [m for m in messages if m.get("role") != "system"][-6:],
                 layer2=lcm.get_layer2() if lcm else None,
+                previous_response=_prev_response,
                 turn_no=int(turn.get("turn", 0)),
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
@@ -623,6 +636,11 @@ async def entrypoint(ctx: JobContext):
                     print(f"[TTSDump] failed: {e}")
 
             print("Agent finished speaking.")
+            turn["response_state"] = FULLY_PLAYED
+            if engine is not None:
+                engine["last_response"] = {"status": FULLY_PLAYED,
+                                            "turn": turn.get("turn"),
+                                            "heard_text": "".join(spoken_text)}
             turn["response_trigger_reason"] = "completed"
             log_event("PLAYBACK_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
             tmark("TURN_COMPLETED", turn=turn.get("turn"))
@@ -701,6 +719,15 @@ async def entrypoint(ctx: JobContext):
                 # These were invisible (interrupted=True, no interrupted_at_ms),
                 # reading as 'silent TTS mysteries'. Now explicit.
                 turn["cancel_pre_audio"] = True
+            # Directive fix 2: Generated ≠ Spoken ≠ Heard. Explicit playback
+            # state + reconciliation payload for the NEXT fused call.
+            _state = response_state_classify(True, ttfa_logged, len("".join(spoken_text)))
+            turn["response_state"] = _state
+            turn["heard_text"] = "".join(spoken_text)[:200]
+            if engine is not None:
+                engine["last_response"] = {"status": _state,
+                                            "turn": turn.get("turn"),
+                                            "heard_text": "".join(spoken_text)}
             turn["tts_text"] = "".join(spoken_text)[:600]
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
