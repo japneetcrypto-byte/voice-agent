@@ -779,3 +779,32 @@ Implemented:
 
 Tests: test_detail_and_repeats.py (21) — acceptance trace included. All 13
 suites green.
+
+---
+
+## A-P1 IMPLEMENTED (2026-08-29 night): head-carried chunk planning + TTS clarity instrumentation
+
+Owner approved A-P1 (C1 amendment). PROMPT_VERSION -> TRANSPORT_V1.12.
+
+A-P1: PERCEPTION_SPEC gains plan field (detail mode only):
+'{"m":..,"c":..,"s":..,"plan":{"total":N,"current":K,"topic":..}}' — model
+plans the whole answer, narrates one chunk per turn, advances current+1 on
+continuation. fused_turn exposes meta.head_plan + previous_plan threading
+(build_contents/stream_prose). main.py: last_head_plan store/advance
+(popped per turn like last_response); turn["head_plan"] logged per turn.
+Gate: parse >=90% AND plan >=70% before head-plan becomes primary chunking;
+cap stays as fallback.
+
+TTS clarity investigation (owner: occasional stutter/blur):
+- tts_audit per-clip CLICKS(n) count (sample-discontinuity heuristic —
+  resampler/queue artifacts read as clicks), FMT! flag (48k/16k/mono header
+  check), LENGTH vs speech-rate correlation (does degradation correlate with
+  longer synthesis?) — directive's four axes covered (Fish output via
+  manifest provider + rate + clicks + header; chunk boundaries via turn
+  sequence; assembly via discontinuity count; sample rate via header).
+- Fixes pending data: if CLICKS correlates with long clips -> resampler/
+  streaming assembly; if uniform -> Fish tier.
+
+Tests: A-P1 plan head parse + previous_plan threading (audit suite; a
+_json/json NameError caught during test authoring — the test file imports
+json as _json). All 13 suites green.

@@ -79,10 +79,20 @@ for r in rows:
     rate = (chars / dur) if dur > 0.2 else 0
 
     peak = 0.0
+    clicks = 0
+    rate_ok = True
     if path and os.path.exists(path):
         with wave.open(path, "rb") as w:
+            rate_ok = (w.getframerate() == 48000 and w.getsampwidth() == 2
+                       and w.getnchannels() == 1)
             data = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
         peak = float(np.max(np.abs(data))) / 32767.0 * 100 if len(data) else 0.0
+        # assembly-glitch heuristic: a discontinuity far beyond the local
+        # slope (streaming resampler/queue artifacts read as clicks/stutters)
+        if len(data) > 480:
+            d = np.abs(np.diff(data.astype(np.int32)))
+            local = np.convolve(d, np.ones(48) / 48, mode="same") + 50
+            clicks = int(np.sum(d > np.maximum(local * 12, 800)))
 
     flags = []
     if rate and rate > 20 and dur >= 1.5:
@@ -93,6 +103,10 @@ for r in rows:
         flags.append("CLIP!")
     elif peak >= 95:
         flags.append("HOT?")  # near-clipping — listen for harshness
+    if clicks > 0:
+        flags.append(f"CLICKS({clicks})")  # assembly/resampler artifacts
+    if not rate_ok:
+        flags.append("FMT!")  # not 48k/16-bit/mono
 
     wer_s, mos_s = "", ""
     if do_asr and path:
@@ -115,10 +129,29 @@ for r in rows:
             mos_s = "  err"
 
     line = (f"{r.get('turn', 0):>4} {dur:5.2f} {rate:5.1f} {peak:5.1f}"
+            + (f" c{clicks:>2}" if clicks else "   ")
             + wer_s + mos_s + "  " + (r.get("text") or "")[:52])
     print(line + ("   " + " ".join(flags) if flags else ""))
     if flags:
         fails.append((r.get("turn"), flags))
+
+# correlation: does quality degrade with length? (directive 2026-08-29)
+buckets = {"short(<2s)": [], "mid(2-5s)": [], "long(>5s)": []}
+for r in rows:
+    dur = r["duration_s"] or 0
+    if dur <= 0:
+        continue
+    rate = (r.get("chars") or 0) / dur
+    b = "short(<2s)" if dur < 2 else ("mid(2-5s)" if dur <= 5 else "long(>5s)")
+    buckets[b].append(rate)
+print("\n--- LENGTH vs SPEECH RATE (clarity proxy) ---")
+for b, rs in buckets.items():
+    if rs:
+        import statistics
+        print(f"{b}: n={len(rs)} avg_c/s={statistics.mean(rs):.1f} "
+              f"stdev={statistics.pstdev(rs):.1f}")
+print("reading: long clips whose c/s DEVIATES from short clips indicate "
+      "rate/assembly degradation on longer synthesis.")
 
 print(f"\n--- SUMMARY ---")
 rates = [(r.get("chars") or 0) / (r["duration_s"] or 1) for r in rows if (r["duration_s"] or 0) > 0.2]

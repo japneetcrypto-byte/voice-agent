@@ -16,7 +16,7 @@ import random
 # ---------------------------------------------------------------------------
 # C2 persona — masculine self-reference pinned to the cloned voice (locked)
 # ---------------------------------------------------------------------------
-PROMPT_VERSION = "TRANSPORT_V1.11"
+PROMPT_VERSION = "TRANSPORT_V1.12"
 
 PERSONA = (
     "You are Aiva — a close friend, present in the room on a voice call. Not a counsellor, "
@@ -154,6 +154,11 @@ PERCEPTION_SPEC = (
     "m = C(clear) R(recoverable, partially garbled but inferable from context) U(unclear)\n"
     "c = confidence 0-1\n"
     "s = SAFE unless user mentions self-harm, harming others, or extreme distress\n"
+    'PLAN (A-P1): if policy.delivery is "chunked_detail" or "continue_detail", ALSO put '
+    '"plan":{"total":<chunks>,"current":<this chunk #>,"topic":"<short label>"} in the SAME JSON. '
+    "total = how many chunks the full explanation needs; current = this turn's chunk (on continue_detail, "
+    "use the previous plan's current + 1 and the same topic). Then narrate ONLY chunk 'current' — "
+    "one coherent thought, end at a natural checkpoint. Never narrate other chunks.\n"
     "This JSON is MANDATORY on every turn. Never skip it. Keep it to ONE line.\n"
     "THEN immediately after </perception>, write your spoken reply. The JSON is never spoken."
 )

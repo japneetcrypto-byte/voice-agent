@@ -97,7 +97,8 @@ class FusedLLM:
 
     def build_contents(self, user_text: str, policy: dict, memory_view: list,
                        threads: list, history: list, layer2: dict | None = None,
-                       previous_response: dict | None = None) -> str:
+                       previous_response: dict | None = None,
+                       previous_plan: dict | None = None) -> str:
         payload = {
             "policy": policy,
             "memory": memory_view,
@@ -115,12 +116,17 @@ class FusedLLM:
         # playing — the model must know what the user actually heard.
         if previous_response:
             payload["previous_response"] = previous_response
+        # A-P1 chunk-plan continuation: the prior head's plan lets the model
+        # advance current + 1 instead of re-planning.
+        if previous_plan:
+            payload["previous_plan"] = previous_plan
         return json.dumps(payload, ensure_ascii=False)
 
     async def stream_prose(self, *, user_text: str, turn_type: str, policy: dict,
                             memory_view: list, threads: list, history: list,
                             turn_no: int, degraded: bool, layer2: dict | None = None,
                             previous_response: dict | None = None,
+                            previous_plan: dict | None = None,
                             key: str) -> AsyncGenerator[str, None]:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
@@ -179,7 +185,8 @@ class FusedLLM:
         self.meta["prompt_version"] = PROMPT_VERSION
         self.meta["system_sha1"] = hashlib.sha1(system.encode()).hexdigest()[:10]
         contents = self.build_contents(user_text, policy, memory_view, threads, history,
-                                       layer2=layer2, previous_response=previous_response)
+                                       layer2=layer2, previous_response=previous_response,
+                                       previous_plan=previous_plan)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
 
@@ -219,6 +226,8 @@ class FusedLLM:
                         self.meta["head_complete_s"] = round(time.perf_counter() - t0, 3)
                         try:
                             self.head = json.loads(m.group(1).strip())
+                            if isinstance(self.head.get("plan"), dict):
+                                self.meta["head_plan"] = self.head["plan"]
                         except json.JSONDecodeError:
                             try:
                                 obj, _ = json.JSONDecoder().raw_decode(m.group(1).strip())

@@ -161,6 +161,25 @@ check("merge: valid words untouched", fix_merged_words("seb achha hai kaisa hai"
 check("scrub t65: braces+junk", clean_specials("j}}\n\njuis zyada") == "j juis zyada")
 check("scrub: normal text untouched", clean_specials("haan bolo, yahin hoon.") == "haan bolo, yahin hoon.")
 
+# A-P1: head plan parses + previous_plan threading
+from agent.fused_turn import FusedLLM as _FL
+_plan_head = '{"m":"C","c":0.9,"s":"SAFE","plan":{"total":4,"current":1,"topic":"voice agent"}}'
+_m = TAG_RE.search('<perception>' + _plan_head + '</perception>haan bol, pehla point:')
+_plan_ok = False
+if _m:
+    try:
+        _h = _json.loads(_m.group(1))
+        _plan_ok = isinstance(_h.get("plan"), dict) and _h["plan"]["total"] == 4
+    except Exception as _e:
+        print(f"  [A-P1 debug] {_e}")
+check("A-P1: plan head parses", _plan_ok)
+_llm = _FL()
+_pp = {"total": 4, "current": 1, "topic": "voice agent"}
+_contents = _llm.build_contents("aage", {"delivery": "continue_detail"}, [], [], [],
+                                previous_plan=_pp)
+check("A-P1: previous_plan in contents",
+      _json.loads(_contents).get("previous_plan") == _pp)
+
 # t11 (session 094645): underscore variant '</s_perception>' spoken aloud
 leak11, stripped11 = strip_tag_leak('</s_perception>\nneetu ki baat kar raha tha na?')
 check("t11: </s_perception> stripped", stripped11 and leak11.strip() == "neetu ki baat kar raha tha na?",

@@ -412,11 +412,16 @@ async def entrypoint(ctx: JobContext):
             # was interrupted (unheard / partially heard), tell this call —
             # popped, so it applies only to the immediately-following turn.
             _prev_response = None
+            _prev_plan = None
             if engine is not None:
                 _prev_response = response_reconcile_payload(
                     engine.pop("last_response", None))
                 if _prev_response:
                     turn["reconciles_previous"] = _prev_response
+                # A-P1: prior chunk plan -> model advances current+1
+                _prev_plan = engine.pop("last_head_plan", None)
+                if _prev_plan:
+                    turn["previous_plan"] = _prev_plan
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
                 turn_type=turn.get("turn_type", "speech"),
@@ -426,6 +431,7 @@ async def entrypoint(ctx: JobContext):
                 history=lcm.get_layer1() if lcm else [m for m in messages if m.get("role") != "system"][-6:],
                 layer2=lcm.get_layer2() if lcm else None,
                 previous_response=_prev_response,
+                previous_plan=_prev_plan,
                 turn_no=int(turn.get("turn", 0)),
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
@@ -491,6 +497,10 @@ async def entrypoint(ctx: JobContext):
                             turn["llm_called"] = fused_ref.meta.get("llm_called", True)
                             turn["spoke_because"] = fused_ref.meta.get("spoke_because", "llm")
                             turn["degradation"] = fused_ref.meta.get("degradation")
+                            # A-P1: chunk plan (when the model emits one)
+                            plan = fused_ref.meta.get("head_plan")
+                            if plan:
+                                turn["head_plan"] = plan
                             # AUDIT FIX 2026-08-29: the epoch snapshot MUST be
                             # taken here, after stream_prose's body has run
                             # (generators only execute on first consume — a
@@ -714,6 +724,7 @@ async def entrypoint(ctx: JobContext):
                 engine["last_response"] = {"status": FULLY_PLAYED,
                                             "turn": turn.get("turn"),
                                             "heard_text": "".join(spoken_text)}
+                turn.get("head_plan") and engine.__setitem__("last_head_plan", turn["head_plan"])
             turn["response_trigger_reason"] = "completed"
             log_event("PLAYBACK_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
             tmark("TURN_COMPLETED", turn=turn.get("turn"))
