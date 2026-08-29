@@ -31,6 +31,7 @@ from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
      continues_or_asks
 from agent.transcript_router import route_transcript
+from agent.response_contract import build_contract, check_violations
 from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
      reconcile_payload as response_reconcile_payload, \
@@ -370,6 +371,22 @@ async def entrypoint(ctx: JobContext):
                     prompt = lcm.get_compression_prompt(overflow)
                     asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
             turn["policy"] = sess.policy_for_turn()
+            # Response Contract (boundaries in code, LLM inside them):
+            # compact MUST_NOT/GOAL/TOPIC/MODE injected into the policy
+            # object the LLM sees. Deterministic, no LLM call.
+            try:
+                _contract = build_contract(
+                    policy=turn["policy"],
+                    active_topic=(lcm.get_layer2() or {}).get("active_topic") if lcm else None,
+                    last_reply=(recent_reply_texts[-1] if recent_reply_texts else None),
+                    detail_mode=detail_mode["turns_left"] > 0,
+                    is_recovery=turn.get("route_action") == "contextual_recovery",
+                    memory_count=len(sess.memory_view()) if sess else 0,
+                    route_action=turn.get("route_action"),
+                )
+                turn["policy"]["contract"] = _contract
+            except Exception as e:
+                print(f"[Contract] build failed: {e}")
             # DETAILED MODE (directive synthesis): explicit detail request
             # latches chunked delivery for the next N turns; continuation
             # cues ('haan/aage/phir') keep it alive. Policy marker
@@ -568,6 +585,13 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
+                        _gv = check_violations(piece)
+                        if _gv:
+                            turn.setdefault("contract_violations", []).extend(
+                                [{"type": v["type"], "detail": v["detail"]} for v in _gv])
+                            for v in _gv:
+                                log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
+                                          details={"type": v["type"], "detail": v["detail"]})
                         # GUARDRAIL: script enforcement — persona says Roman;
                         # code enforces it (transliterate instead of trust).
                         if devanagari_present(piece):
@@ -599,6 +623,13 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
+                        _gv = check_violations(piece)
+                        if _gv:
+                            turn.setdefault("contract_violations", []).extend(
+                                [{"type": v["type"], "detail": v["detail"]} for v in _gv])
+                            for v in _gv:
+                                log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
+                                          details={"type": v["type"], "detail": v["detail"]})
                         # GUARDRAIL: script enforcement — persona says Roman;
                         # code enforces it (transliterate instead of trust).
                         if devanagari_present(piece):

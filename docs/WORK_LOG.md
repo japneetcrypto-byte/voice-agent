@@ -940,3 +940,36 @@ Owner: four complaints after detail-mode session.
 
 Also: TTS TTFA 429s + rotation delays (6.3s, 6.4s TTFT) = quota pressure.
 All suites green.
+
+---
+
+## Response Contract IMPLEMENTED (2026-08-29 night) — boundaries in code, LLM inside them
+
+Owner directive: "Do NOT build a heavy validate-regenerate loop. Code defines
+the boundaries. LLM chooses the best path inside them." Owner approved the
+synthesis after counter-arguments (P3 hard gate rejected, meaningfulness gate
+kept).
+
+agent/response_contract.py:
+- build_contract(): compact dynamic contract (~40-80 tokens) injected into
+  the policy object the LLM sees per turn. GOAL + TOPIC + MODE + MUST_NOT
+  (3-5 deterministic prohibitions derived from state). No LLM calls.
+- derive_constraints(): deterministic MUST_NOT derivation — base constraints
+  (no external topics, no system exposure) + conditional (no contradict
+  previous claim when exists, no repeat when exists, short-only on recovery,
+  no proactive memory when memory exists).
+- check_violations(): narrow hard-violation gate (post-LLM, pre-TTS) —
+  memory_proactive / system_exposure / action_fabrication patterns.
+  Currently flag-only (CONTRACT_VIOLATION event); blocking is Phase-2.
+- gate_reply(): passthrough wrapper for future blocking.
+
+main.py: contract built per turn (deterministic, no LLM), injected into
+policy object (same object flows to LLM + turn log); violations checked on
+every spoken piece; CONTRACT_VIOLATION events logged.
+
+NOT BUILT (per directive): regeneration loop, full conversation state
+machine, speaker embeddings, heavy validation — all deferred until the
+contract proves its value via A/B measurement.
+
+Tests: test_response_contract.py (20 cases: shape, mode, constraints,
+determinism, violations, gate). All 14 suites green (~255 cases total).
