@@ -204,3 +204,34 @@ def fix_merged_words(text: str) -> str:
         if merged in out.lower():
             out = re.sub(re.escape(merged), split, out, flags=re.IGNORECASE)
     return out
+
+# ---- response-quality detectors (telemetry + variety guard) ----
+# Evidence: sessions drifted into echo-confirm mode — 36% of one session's
+# replies were 'X ki baat kar raha hai na?' style parrots.
+CONFIRM_ECHO_RE = re.compile(
+    r"\b(?:raha|rahe|rahi|hua|ho)\s+(?:hai|hain|he|ho)\s*(?:na|kya|toh)\s*\?*$"
+    r"|\b\w+\s+(?:mangwane|mangvana|mangwana)\s+hain?\s*kya\s*\?*$", re.IGNORECASE)
+DEVANAGARI_RE = re.compile(r"[\u0900-\u097F]")
+
+
+def is_confirm_echo(reply: str) -> bool:
+    """True when a reply is mostly a parroted-back confirmation question."""
+    r = (reply or "").strip()
+    return bool(r) and len(r) < 70 and bool(CONFIRM_ECHO_RE.search(r))
+
+
+def devanagari_present(reply: str) -> bool:
+    return bool(DEVANAGARI_RE.search(reply or ""))
+
+
+def shape_signature(reply: str) -> str:
+    """Coarse shape of a reply (word-count bucket + ending), for repetition
+    tracking across consecutive replies."""
+    r = (reply or "").strip()
+    n = len(r.split())
+    bucket = "s" if n <= 4 else ("m" if n <= 9 else "l")
+    if is_confirm_echo(r):
+        bucket += "+confirm"
+    elif r.endswith("?"):
+        bucket += "+q"
+    return bucket

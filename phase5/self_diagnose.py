@@ -62,6 +62,7 @@ def add(cls, n, why, done, rx):
 # ---------- per-turn classification ----------
 tts_silent, echo_drops, echo_saved, cancelled, merges = [], [], [], [], []
 cancel_pre = []
+confirm_echo, devi_replies = [], []
 clarify_streak, tag_leaks, trims, slow = [], 0, 0, []
 reply_texts = []
 
@@ -90,6 +91,16 @@ for t in turns:
         echo_drops.append(t)
     if t.get("echo_overridden"):
         echo_saved.append(t)
+    if t.get("llm_response") and t.get("llm_called") is not False:
+        try:
+            sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            from agent.reply_guard import is_confirm_echo, devanagari_present
+            if is_confirm_echo(t["llm_response"]):
+                confirm_echo.append(t)
+            if devanagari_present(t["llm_response"]):
+                devi_replies.append(t)
+        except Exception:
+            pass
     if t.get("cancel_pre_audio") or (t.get("interrupted") and t.get("llm_response")
             and not (t.get("tts") or {}).get("audio_duration_s")
             and not (t.get("tts") or {}).get("interrupted_at_ms")
@@ -124,6 +135,21 @@ for i in range(len(reply_texts) - 2):
             clarify_streak.append((window[0][0], txt[:36], n))
 
 # ---------- WHY / DONE / PRESCRIPTION per class ----------
+if len(confirm_echo) >= 4:
+    add("Echo-confirm parroting (response substance low)", len(confirm_echo),
+        f"{len(confirm_echo)}/{sum(1 for t in turns if t.get('llm_response'))} replies were "
+        f"parroted-back confirmations ('X ki baat kar raha hai na?') instead of substantive "
+        f"reactions (turns {[t.get('turn') for t in confirm_echo][:8]}). The recovery pattern "
+        "became a reply strategy.",
+        "AUTO: RESPONSE_PATTERN_STUCK detector fires at >=3/4 and nudges the next calls' "
+        "policy avoid-list; persona V1.7 bans the loop with session examples.",
+        "If it persists across sessions: flash-lite tier ceiling — model A/B proposal "
+        "(owner decision).")
+if devi_replies:
+    add("Devanagari script in replies (persona says Roman)", len(devi_replies),
+        f"Replies in Devanagari on turns {[t.get('turn') for t in devi_replies][:6]}.",
+        "Flagged (persona rule exists); no auto-transliteration by design.",
+        "If frequent: deterministic transliteration pass or stronger prompt weight (owner call).")
 if cancel_pre:
     pct = round(len(cancel_pre) / max(len(turns), 1) * 100)
     add("Replies cancelled BEFORE any audio (stale-reply race)", len(cancel_pre),

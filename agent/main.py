@@ -31,7 +31,8 @@ from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
-                               clean_specials, REPLY_MAX_CHARS, SENT_END_RE)
+                               clean_specials, is_confirm_echo, devanagari_present,
+                               shape_signature, REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -362,10 +363,16 @@ async def entrypoint(ctx: JobContext):
                     prompt = lcm.get_compression_prompt(overflow)
                     asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
             turn["policy"] = sess.policy_for_turn()
+            # Anti-parrot nudge (application layer, deterministic): when the
+            # parrot-streak detector fired, extend the avoid list for this call.
+            # The mutated object goes to the LLM AND the turn log — one truth.
+            if int(turn.get("turn", 0)) < _stuck_nudged["until_turn"] and isinstance(turn["policy"], dict):
+                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["echo_confirm_parroting"]
+                turn["policy"]["response_goal"] = "substantive_reaction"
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
                 turn_type=turn.get("turn_type", "speech"),
-                policy=sess.policy_for_turn(),
+                policy=turn["policy"],
                 memory_view=sess.memory_view(),
                 threads=sess.thread_summaries(),
                 history=lcm.get_layer1() if lcm else [m for m in messages if m.get("role") != "system"][-6:],
@@ -622,6 +629,21 @@ async def entrypoint(ctx: JobContext):
             
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
+            # Parrot-streak tracking: if >=3 of last 4 replies were echo-back
+            # confirmations, nudge the NEXT fused call's policy 'avoid' list.
+            # Deterministic, application-layer (updater untouched); turn-logged.
+            try:
+                reply_shapes.append(shape_signature("".join(spoken_text)))
+                confirms = sum(1 for s in reply_shapes if "confirm" in s)
+                if confirms >= 3 and int(turn.get("turn", 0)) >= _stuck_nudged["until_turn"]:
+                    _stuck_nudged["until_turn"] = int(turn.get("turn", 0)) + 4
+                    log_event("RESPONSE_PATTERN_STUCK", turn_id=turn.get("turn"),
+                              details={"confirm_ratio": confirms / len(reply_shapes)})
+                    tmark("RESPONSE_PATTERN_STUCK", turn=turn.get("turn"))
+                    print(f"[ReplyGuard] pattern stuck ({confirms}/{len(reply_shapes)} "
+                          f"echo-confirms) — anti-parrot nudge for next turns")
+            except Exception as e:
+                print(f"[ReplyGuard] shape tracking failed: {e}")
             if engine and engine.get("lcm") and spoken_text:
                 engine["lcm"].add_turn("assistant", "".join(spoken_text))
             if engine and engine.get("sess"):
@@ -1219,6 +1241,10 @@ async def entrypoint(ctx: JobContext):
     # if Aiva still isn't audible — speaks one deterministic recovery line and
     # writes a SUPERVISOR_ENGAGED snapshot. Repeat engagements escalate.
     supervisor = CallSupervisor()
+    # Response-variety guard (owner brief 2026-08-29: 'quality of response gone
+    # bad' — sessions drifted into echo-confirm parroting, 36% of one session).
+    reply_shapes = collections.deque(maxlen=4)
+    _stuck_nudged = {"until_turn": 0}
     _last_engine_path = {"v": None}
 
     async def _send_supervisor_alert(snapshot: dict):

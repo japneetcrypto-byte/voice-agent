@@ -79,5 +79,32 @@ for text, expect in gender_cases:
         fails += 1
     print(f"[{status}] gender({text[:45]!r}) -> {got!r}")
 
+# --- response-quality detectors (owner brief 2026-08-29: echo-confirm drift) ---
+from agent.reply_guard import is_confirm_echo as ice, devanagari_present as dev
+qcases = [
+    ("Nepal flood ki baat kar raha hai na?", True),
+    ("PayPal mein kuch hua hai kya?", True),
+    ("jamun mangwane hain kya?", True),
+    ("kharbuja keh rahi ho na?", True),
+    ("seb mangwane hain kya?", True),
+    ("ludo khelne ki baat kar raha hai na?", True),
+    ("likh ke bhej de, sun raha hoon main.", False),
+    ("biryani ya pizza?", False),
+    ("bas baatein karna aur yahan rehna. tu bata, abhi kya", False),
+    ("main theek hoon. tum batao?", False),
+]
+for text, want in qcases:
+    got = ice(text)
+    ok = got == want
+    if not ok:
+        fails += 1
+    print(f"[{'PASS' if ok else 'FAIL'}] confirm_echo({text[:44]!r}) -> {got}")
+for text, want in [("मौसम साफ है?", True), ("mausam saaf hai?", False), ("", False)]:
+    got = dev(text)
+    ok = got == want
+    if not ok:
+        fails += 1
+    print(f"[{'PASS' if ok else 'FAIL'}] devanagari({text[:30]!r}) -> {got}")
+
 print(f"\n{'ALL PASS' if fails == 0 else f'{fails} FAILURES'}")
 sys.exit(1 if fails else 0)

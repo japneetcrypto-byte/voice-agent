@@ -504,3 +504,36 @@ Standing report: docs/STATUS_REPORT.md — system snapshot with live numbers,
 audit results, voice-keys exact standing (Stage 1 shipped/shadowed, Stage 2
 blocked on shadow data n=3, Stage 3 owner decisions), ranked open items,
 day's evidence arc, check commands.
+
+---
+
+## Response-quality regression: echo-confirm parroting (2026-08-29 night)
+
+Owner: "quality of understanding and response has gone bad." Evidence from the
+owner's own TTS audit: 4/11 replies in the latest session were echo-back
+confirmations ('X ki baat kar raha hai na?' x3 variants) + a Devanagari reply
+('मौसम साफ है?' — persona says Roman) + identical clarify lines x3 in a row.
+
+Root cause: the recoverable-unclear pattern (rule 12: confirm your
+interpretation) became a reply STRATEGY — flash-lite defaults to parroting back
+instead of reacting with substance. Confirmed with detector: 36% echo-confirm
+ratio.
+
+Shipped:
+- Persona V1.7: NO PARROTING rule (confirm ONLY for genuinely unclear input,
+  max occasionally; react with substance otherwise) with the session's exact
+  banned BAD loop + 7c script rule (never Devanagari)
+- reply_guard: is_confirm_echo + devanagari_present + shape_signature detectors
+- main.py: parrot-streak tracker (>=3/4 echo-confirms -> RESPONSE_PATTERN_STUCK
+  event + anti-parrot avoid-list injected into the next fused calls' policy;
+  application-layer, updater untouched, one policy object flows to LLM + log)
+- stage_diagnostic: CONFIRM-ECHO / Devanagari flags + substance-ratio summary
+- self_diagnose: echo-confirm class + Devanagari class (with model-tier
+  escalation prescription)
+
+Also flagged honestly: recent sessions show high STT garble rates (mic?),
+and garbled input naturally drives clarify/confirm loops — ask owner about
+mic setup. Model-tier ceiling (flash-lite understanding of garbled Hinglish)
+remains the deep lever: A/B harness proposal stands ready.
+
+All suites green (reply_guard 34, others unchanged).

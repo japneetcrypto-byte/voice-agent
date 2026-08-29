@@ -10,7 +10,7 @@ STT -> validity -> turn decision -> LLM (context, head, latency) -> reply
 """
 import json, glob, os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agent.reply_guard import feminine_self_reference
+from agent.reply_guard import feminine_self_reference, is_confirm_echo, devanagari_present
 
 if len(sys.argv) > 1:
     p = sys.argv[1]
@@ -88,6 +88,12 @@ for t in turns:
         issues.append(f"INTERRUPTED at {tts['interrupted_at_ms']}ms")
     if reply and not tts.get("provider"):
         issues.append("TTS: no provider — audio not synthesized")
+    if reply and is_confirm_echo(reply):
+        flags.append("↩ CONFIRM-ECHO")
+        agg["confirm_echo"] = agg.get("confirm_echo", 0) + 1
+    if reply and devanagari_present(reply):
+        flags.append("देवनागरी SCRIPT")
+        agg["devi"] = agg.get("devi", 0) + 1
     if reply and t.get("cancel_pre_audio"):
         issues.append("REPLY CANCELLED BEFORE AUDIO — user spoke again before first "
                       "sound (TTS TTFA slower than user's pace); reply text was never heard")
@@ -161,6 +167,11 @@ print(f"turns={agg['turns']} replies={agg['replies']} ctx_captured={agg['ctx_ok'
 print(f"reply audio: avg={round(sum(durs)/len(durs),2) if durs else '-'}s max={max(durs) if durs else '-'}s | "
       f"speech->audio avg={round(sum(lat)/len(lat),2) if lat else '-'}s max={max(lat) if lat else '-'}s")
 print(f"flags: trimmed={agg['trimmed']} gender={agg['gender']} service-speak={agg['service']} legacy-brain={agg['legacy']}")
+if agg.get("confirm_echo"):
+    print(f"⚠ echo-confirm parrots: {agg['confirm_echo']}/{agg['replies']} replies "
+          f"(quality: substance ratio low if >25%)")
+if agg.get("devi"):
+    print(f"⚠ Devanagari-script replies: {agg['devi']} (persona says Roman)")
 print(f"engine paths: {agg['paths']}")
 if agg.get("owners"):
     print(f"owner(s): {sorted(agg['owners'])}")
