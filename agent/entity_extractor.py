@@ -80,6 +80,13 @@ USER_STOPWORDS = {
     "yeh", "ye", "yah", "kisi", "kisi", "kiska", "kiski", "mera",
     "ka", "ki", "ke", "ko", "se", "ne", "mein", "me", "bhi", "to", "toh",
     "hai", "hain", "thi", "tha", "the", "hu", "hoon", "hun", "na", "nahi",
+    # common VERB forms — a verb before/after a relation word is grammar,
+    # not a name (evidence session 182736 t7: 'कहां गए भाई' captured गए='went'
+    # as a person). Extend as observed.
+    "गए", "गया", "गई", "गये", "आए", "आया", "आई", "कर", "करें", "करो", "करना",
+    "देख", "देखो", "जा", "जाओ", "आ", "आओ", "रहा", "रहे", "रही", "हो", "होगा",
+    "gaya", "gayi", "gayo", "gae", "aaya", "aayi", "karo", "karen", "karna",
+    "dekho", "jao", "aao", "raha", "rahe", "rahi", "hoga",
     "एक", "वो", "वह", "यह", "उसका", "उसकी", "उसके", "उसने", "उसको", "उनका",
     "उनकी", "उन्होंने", "किसी", "किसका", "किसकी", "मेरा", "मेरी", "मेरे",
     "तेरा", "तेरी", "तुम्हारा", "तुम्हारी", "अपना", "अपनी", "अपने",

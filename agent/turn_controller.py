@@ -44,6 +44,13 @@ HANDOFF_MARKERS = {"bol", "bolo", "bata", "batao", "sun", "suno", "बोल",
                     "बोलो", "बता", "बताओ", "बताए", "सुन", "सुनो", "सुनों",
                     "बताओं", "सुनाओ"}
 
+# Leading question words ("कहां करें?" without the '?') — a question is a
+# handoff even when STT drops the '?' marker. Checked FIRST word only.
+# Evidence session 182736 t6: 'कहां करें' suppressed as fragment; user then
+# complained about the silence ('कहां गए भाई').
+QUESTION_STARTERS = {"कहां", "कहाँ", "kahan", "क्या", "kya", "कब", "kab",
+                     "कौन", "kaun", "क्यों", "kyon", "kyun", "कैसे", "kaise",
+                     "कहाँ"}
 # Reaching-out tokens ("hello?" after silence) — ALWAYS respond. Never a
 # continuation. (Evidence t21: "हेलो" was suppressed as a fragment while the
 # user was visibly calling Aiva back.)
@@ -81,6 +88,9 @@ def decide(user_text: str, previous_turn_was_wait=False) -> tuple[str, str]:
 
     words = re.findall(r"[\w\u0900-\u097F]+", text, re.UNICODE)
     last = words[-1].lower() if words else ""
+
+    if words and words[0].lower() in QUESTION_STARTERS:
+        return "respond", "question_word"
 
     if words and words[0].lower() in GREETING_MARKERS:
         return "respond", "greeting_or_reachout"

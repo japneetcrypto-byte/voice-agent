@@ -185,6 +185,9 @@ MERGE_SPLIT_LEXICON = {
     "nahiyaar": "nahi yaar",
     "yaarkya": "yaar kya",
     "chaltahai": "chalta hai",
+    # session 182736 evidence
+    "rahahai": "raha hai",
+    "kyakar": "kya kar",
     "haidost": "hai dost",
     "sunraha": "sun raha",
     "dekhraha": "dekh raha",

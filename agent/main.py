@@ -1416,8 +1416,15 @@ async def entrypoint(ctx: JobContext):
             # repeated fact is real, a one-off garble waits and stays out of
             # the live context.
             already = any(content in line for line in store.view(owner))
+            # BUGFIX 182736: criterion="explicit" made commit() treat EVERY
+            # sighting as immediate-commit (explicit short-circuits the
+            # pending branch), so the pending-until-confirmed rule never
+            # engaged and 'गए — user's bhai' went live mid-session.
+            # First sighting -> pending (promoted at session end); repeat ->
+            # explicit + immediate (a repeated fact is real).
             store.commit(owner,
-                {"type": "relationship", "content": content, "criterion": "explicit"},
+                {"type": "relationship", "content": content,
+                 "criterion": ("explicit" if already else "salient")},
                 immediate=bool(already))
             print(f"[Relationship] {'committed' if already else 'pending'}: {name} ({relation})")
         except Exception as e:

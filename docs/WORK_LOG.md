@@ -610,3 +610,27 @@ P2 echo — NO ACTION (per directive): shadow continues; session added n=4 corr
 samples (incl. first negative: -0.1434 = no relation, good sign; 0.5163 on a
 m=U garble turn = interesting candidate). 26 total still below >=30 kept-turn
 bar. No threshold tuning from single sessions.
+
+---
+
+## Session 182736: memory-pollution bug + controller question rule (2026-08-29 night)
+
+Healthy telemetry (2.19s avg, 0 errors) but two real bugs caught:
+
+1. MEMORY POLLUTION (live): 'कहां गए भाई' extracted 'गए' (verb 'went') as a
+   person, AND _promote_relationship passed criterion='explicit' which
+   short-circuits MemoryStore.commit's pending branch -> the
+   pending-until-confirmed rule NEVER engaged; junk committed mid-session
+   (mem 23->24). Fixes: verb-form blocklist in extractor (गए/गया/आए/करो... +
+   roman), promotion now passes salient (pending) on first sighting / explicit
+   only on repeats. Cleanup SQL given to owner.
+2. SUPPRESSED QUESTION (t6): 'कहां करें' (real question, no '?') suppressed as
+   fragment; user complained next turn ('कहां गए भाई'). Fix: leading question
+   word (कहां/kya/कब/कौन...) -> respond. Placement bug (check before words
+   defined) caught by first test run, fixed.
+
+3. Model merges continue: 'rahahai', 'kyakar' spoken -> lexicon extended.
+4. Barge-in stop latency MEASURED live for the first time: avg 1791.9ms
+   max 2295.7ms (n=2) — new diagnostic surface working.
+
+All suites green (controller 25, entity 24, audit 48, reply_guard 34...).

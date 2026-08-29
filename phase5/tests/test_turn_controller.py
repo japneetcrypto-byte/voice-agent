@@ -25,6 +25,9 @@ cases = [
     ("हाँ", 2, "respond"),                      # streak cap: never a 3rd wait
     ("अच्छा अच्छा और", False, "suppress"),      # t16: genuine trail-off
     ("aur uske baad", False, "suppress"),       # baad = trail-off
+    # question-word rule (evidence session 182736 t6: suppressed question)
+    ("कहां करें", True, "respond"),
+    ("kya scene hai", True, "respond"),
 ]
 ok = True
 for text, was_wait, want in cases:
