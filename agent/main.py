@@ -17,6 +17,7 @@ else:
 
 import time
 import asyncio
+import collections
 import numpy as np
 from livekit import rtc
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
@@ -25,6 +26,7 @@ from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
+from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
@@ -526,9 +528,15 @@ async def entrypoint(ctx: JobContext):
                 if tts_audio_start is None:
                     tts_audio_start = time.time()
                 tts_total_samples += getattr(audio_chunk.frame, "samples_per_channel", 0)
+                _frame_pcm = np.frombuffer(audio_chunk.frame.data, dtype=np.int16)
                 if tts_capture is not None:
-                    tts_capture.append(np.frombuffer(audio_chunk.frame.data,
-                                                      dtype=np.int16).copy())
+                    tts_capture.append(_frame_pcm.copy())
+                try:
+                    # 48k -> 16k for the echo-correlation ring (group mean)
+                    played_ring.extend(
+                        _frame_pcm.reshape(-1, 3).mean(axis=1).astype(np.int16).tolist())
+                except Exception:
+                    pass
                 if not ttfa_logged:
                     ttfa_s = time.time() - tts_start
                     turn["tts_first_audio_s"] = round(ttfa_s, 3)
@@ -987,6 +995,29 @@ async def entrypoint(ctx: JobContext):
                                 echo_text = devanagari_to_roman(transcript.text)
                                 turn["turn_relation"] = classify_turn_relation(transcript.text)
                                 is_echo_detected, similarity = is_echo(echo_text, session.recent_agent_text)
+                                # SHADOW: acoustic echo correlation (never decides yet)
+                                corr_score = None
+                                try:
+                                    if len(played_ring) >= 16000:
+                                        corr_score = echo_score(
+                                            audio_data, np.asarray(list(played_ring), dtype=np.float32))
+                                except Exception as ee:
+                                    print(f"[EchoCorr] failed: {ee}")
+                                turn["echo_corr_score"] = corr_score
+                                if corr_score is not None:
+                                    if is_echo_detected and corr_score >= ECHO_SHADOW_AGREE:
+                                        log_event("ECHO_MULTI_AGREE", turn_id=turn.get("turn"),
+                                                  details={"corr": corr_score, "text_sim": round(similarity, 2)})
+                                    elif is_echo_detected and corr_score < ECHO_SHADOW_FLOOR:
+                                        log_event("ECHO_TEXT_ONLY", turn_id=turn.get("turn"),
+                                                  details={"corr": corr_score, "text_sim": round(similarity, 2),
+                                                           "note": "possible eaten user turn"})
+                                        print(f"[EchoShadow] TEXT-ONLY echo (corr={corr_score}) — "
+                                              f"possible eaten user turn")
+                                    elif not is_echo_detected and corr_score >= ECHO_SHADOW_MISS:
+                                        log_event("ECHO_CORR_ONLY", turn_id=turn.get("turn"),
+                                                  details={"corr": corr_score,
+                                                           "note": "echo the text filter missed"})
                                 # Late-echo guard: room echo decays in well
                                 # under 1.5s. If the user's speech began >1.5s
                                 # after Aiva's audio ended, an "echo" match is
@@ -1156,6 +1187,17 @@ async def entrypoint(ctx: JobContext):
 
     # ---- C7/D8 idle watcher: 45s without speech or agent audio -> one open-door line ----
     idle_state = {"last_activity": time.monotonic(), "line_sent": False, "seq": 1000}
+
+    # ---- Stage-1 speaker attribution (SHADOW MODE, owner brief 2026-08-29) ----
+    # Rolling buffer of what Aiva actually PLAYED (48k->16k), used to score each
+    # captured utterance against recent playback (multi-band echo correlation).
+    # Telemetry-only: turn["echo_corr_score"] + shadow events. It does NOT drop
+    # anything yet — the text-level filter still owns decisions until live data
+    # proves the acoustic gate (docs/SPEAKER_ATTRIBUTION_DESIGN.md).
+    played_ring = collections.deque(maxlen=12 * 16000)
+    ECHO_SHADOW_AGREE = 0.45   # corr confirms text-filter echo
+    ECHO_SHADOW_MISS = 0.55    # corr strongly flags echo the text filter passed
+    ECHO_SHADOW_FLOOR = 0.30   # below this, text-only "echo" is suspect (eaten user)
 
     # ---- Call Supervisor (owner brief: the "senior jumping in") ----
     # Dormant watcher: when a user turn ends with NO agent audio (skipped /

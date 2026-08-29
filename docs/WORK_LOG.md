@@ -357,3 +357,34 @@ correction.
 
 All suites green (audit-fixes 46, supervisor 13, controller 18, gender, entity,
 state, layered). Compile clean.
+
+---
+
+## Speaker attribution Stage 1 (2026-08-29): acoustic echo correlation, shadow mode
+
+Owner: "can we not avoid [echo] at ASR — we have the voice attributes; if different,
+it is another speaker; capture speaker_2 attributes, create a key, check across turns."
+
+Verdict: direction agreed (with similarity+confidence+temporal-consistency
+refinements). Two stack-specific insights added:
+1. For ECHO we have the exact played PCM — multi-band envelope correlation
+   against our own played audio beats embeddings (no enrollment problem, no deps).
+2. Clean-TTS enrollment would NOT match room-captured agent voice (speaker+room
+   distortion) — any agent voice-print must be enrolled from room captures.
+
+Shipped (Stage 1, SHADOW — telemetry only, zero behavior change):
+- providers/speaker_signature.py: multi-band (4-band) joint normalized envelope
+  correlation, FFT, per-lag energy norm. Synthetic separation: echo 0.43-0.69
+  (mild->heavy degradation) vs unrelated speech <=0.30; 68ms worst case.
+  Bug found in test: single-band NCC floor was 0.83 (chance alignment) —
+  the multi-band joint constraint is what makes it usable.
+- main.py: 12s rolling ring of played audio (48k->16k), per-turn
+  turn["echo_corr_score"], events ECHO_MULTI_AGREE / ECHO_TEXT_ONLY (possible
+  eaten user — our 141753 bug class) / ECHO_CORR_ONLY (missed echo).
+- Closure race fixed: score uses the task's audio_data snapshot, not the
+  mutable outer float_audio.
+- docs/SPEAKER_ATTRIBUTION_DESIGN.md: 4-stage plan + owner decision points
+  (embedding dependency, speaker_2 UX, privacy).
+
+Stage gates: 3 live sessions of shadow data -> calibrate -> Stage 2 gate
+activation. Tests: test_speaker_signature.py (8). All suites green.
