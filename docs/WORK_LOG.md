@@ -888,3 +888,26 @@ written DIRECTLY to AudioSource — zero latency, no TTS call. User hears:
 instead of: user stops → 2.5s DEAD SILENCE → full reply
 
 The ack makes the gap feel like "thinking" rather than "system latency."
+
+---
+
+## CRITICAL FIX: 429 exhaustion caused total silence (2026-08-29 night, session 212641)
+
+Owner: "initially it was good — then it did not speak out."
+
+Root cause: when all 6 Gemini key×model combos hit 429, the code did
+`await asyncio.sleep(65)` (cooldown). But the user speaks again during those
+65s → task cancelled mid-sleep → CancelledError kills everything → ZERO
+output. The D4 filler in the except block never fires because the
+cancellation kills the generator before it reaches the filler yield.
+
+Result: turns 1, 4, 8, 10 = total silence. Turns 9, 11, 12 = TTFT 4-6s
+(rotation delay). The user experienced the system just... stopping.
+
+FIX: all-combos-exhausted now yields the D4 filler IMMEDIATELY (no sleep,
+no retry) and returns. Next turn retries from scratch. The user hears:
+"Main yahin hoon, thodi technical dikkat aa gayi thi" instead of silence.
+
+This is the structural difference between:
+  OLD: 429 → 65s block → user cancels → silence → user calls out → silence
+  NEW: 429 → filler spoken → user hears response → next turn tries fresh

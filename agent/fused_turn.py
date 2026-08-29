@@ -299,10 +299,16 @@ class FusedLLM:
                         print(f"[LLM] 429 — rotating to key/model #{rot_idx+1}: {am}")
                         continue
                     else:
-                        print(f"[LLM] all {len(rotations)} combos exhausted — cooling 65s")
-                        await asyncio.sleep(65)
-                        rot_idx, attempt = 0, 0
-                        continue
+                        # BUGFIX 212641: the 65s cooldown BLOCKED the task; user
+                        # spoke again → task cancelled mid-sleep → SILENCE.
+                        # Fix: immediate filler + return. Next turn retries
+                        # from scratch (fresh 429 attempts).
+                        print(f"[LLM] all {len(rotations)} combos exhausted (429)")
+                        self.meta["llm_failed"] = True
+                        self.meta["llm_error"] = "429: all key×model combos exhausted"
+                        self.meta["degradation"] = "D4"
+                        yield pick_line(FILLER_LINES, turn_no)
+                        return
                 self.meta["llm_failed"] = True
                 self.meta["llm_error"] = f"{type(e).__name__}: {str(e)[:150]}"
                 if not prose_started:
