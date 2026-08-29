@@ -171,7 +171,7 @@ MERGE_SPLIT_LEXICON = {
     # model-emitted merges (103824 / 133659 / 141753)
     "sebaithne": "se baithne",
     "saathchalna": "saath chalna",
-    "juis ": "juice ",
+    "juis": "juice",
     "baaremein": "baare mein",
     "baremein": "bare mein",
     "sahikaam": "sahi kaam",

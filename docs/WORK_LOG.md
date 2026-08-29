@@ -537,3 +537,24 @@ mic setup. Model-tier ceiling (flash-lite understanding of garbled Hinglish)
 remains the deep lever: A/B harness proposal stands ready.
 
 All suites green (reply_guard 34, others unchanged).
+
+---
+
+## Word-parser reconstruction + review packet (2026-08-29 night)
+
+Owner: "issue is in the parser that separates words — write down the issues,
+open ones, fixes done; I shall get it reviewed."
+
+Word-separation ground truth reconstructed: mid-word chunk splits are a
+tokenizer artifact (plain concatenation restores them — proven by smart_join
+having CREATED the splits); merged words are emitted merged (undecidable at
+text level whether model-merge or dropped-space). Current stack: concatenation
++ exact-match lexicon + persona V1.8 spelling discipline. Fundamental
+ambiguity documented honestly in the review packet.
+
+Shipped: persona V1.8 spelling discipline; lexicon hygiene ('juis ' key);
+docs/OPEN_ISSUES_REVIEW.md — the external-review packet: 8 open issues
+(symptom/mechanism/contained/options), 10 fixed-with-evidence classes, verified
+non-issues, contested areas (smart_join episode, merge attribution, anti-parrot
+layer choice, TTFA thresholds, model tier, Devanagari option) with explicit
+questions for the reviewer.
