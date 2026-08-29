@@ -1040,6 +1040,16 @@ async def entrypoint(ctx: JobContext):
                                 except Exception as ee:
                                     print(f"[EchoCorr] failed: {ee}")
                                 turn["echo_corr_score"] = corr_score
+                                turn["echo_shadow"] = {
+                                    "corr": corr_score,
+                                    "text_sim": round(similarity, 3),
+                                    "text_echo": bool(is_echo_detected),
+                                    "speech_ms": round(duration_ms, 1),
+                                    "ms_since_playback_end": ms_since_agent_audio_end,
+                                    "played_ring_s": round(len(played_ring) / 16000, 2),
+                                    "decision": ("dropped_echo" if is_echo_detected
+                                                 else "kept"),
+                                }
                                 if corr_score is not None:
                                     if is_echo_detected and corr_score >= ECHO_SHADOW_AGREE:
                                         log_event("ECHO_MULTI_AGREE", turn_id=turn.get("turn"),
@@ -1231,9 +1241,12 @@ async def entrypoint(ctx: JobContext):
     # anything yet — the text-level filter still owns decisions until live data
     # proves the acoustic gate (docs/SPEAKER_ATTRIBUTION_DESIGN.md).
     played_ring = collections.deque(maxlen=12 * 16000)
-    ECHO_SHADOW_AGREE = 0.45   # corr confirms text-filter echo
-    ECHO_SHADOW_MISS = 0.55    # corr strongly flags echo the text filter passed
-    ECHO_SHADOW_FLOOR = 0.30   # below this, text-only "echo" is suspect (eaten user)
+    # Review-directive D: thresholds configurable — current values are
+    # SYNTHETIC-VALIDATED ONLY (fixtures), pending real-session calibration
+    # via phase5/echo_shadow_report.py (Stage 1 exit criterion).
+    ECHO_SHADOW_AGREE = float(os.getenv("AIVA_ECHO_AGREE", "0.45"))
+    ECHO_SHADOW_MISS = float(os.getenv("AIVA_ECHO_MISS", "0.55"))
+    ECHO_SHADOW_FLOOR = float(os.getenv("AIVA_ECHO_FLOOR", "0.30"))
 
     # ---- Call Supervisor (owner brief: the "senior jumping in") ----
     # Dormant watcher: when a user turn ends with NO agent audio (skipped /

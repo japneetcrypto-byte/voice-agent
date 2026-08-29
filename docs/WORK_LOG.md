@@ -558,3 +558,20 @@ docs/OPEN_ISSUES_REVIEW.md — the external-review packet: 8 open issues
 non-issues, contested areas (smart_join episode, merge attribution, anti-parrot
 layer choice, TTFA thresholds, model tier, Devanagari option) with explicit
 questions for the reviewer.
+
+---
+
+## Speaker-attribution review report (2026-08-29 night): directive A-J answered
+
+External directive: inspect first, report A-J, no speculative implementation.
+
+Verified against working tree; report at docs/SPEAKER_ATTRIBUTION_REVIEW.md.
+Key findings: implementation already matches directive principles (playback
+correlation, shadow-first, text filter retained, conservative evidence); gaps
+found and FIXED (Stage-1 scope only): shadow records were missing context
+fields (speech_ms, ms_since_playback_end, played_ring_s, final decision ->
+turn["echo_shadow"]) and thresholds hardcoded -> env (AIVA_ECHO_AGREE/MISS/
+FLOOR). Honest fragilities documented: synthetic-only validation, scoring at
+speech-end not continuous, short utterances return None, BT scenarios untested.
+Rollout plan with explicit per-stage exit criteria; final rec: no more code —
+Stage-1 exit is DATA (>=3 sessions, >=30 kept-turns, >=8 echo candidates).
