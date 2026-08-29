@@ -488,3 +488,19 @@ Fixes:
 Also noted: one Devanagari-script reply (161510 t6 'mausam saaf hai?') — persona
 says Roman Hinglish; watch. Old-session artifacts (th ik / j}}) in the audit are
 pre-fix sessions; 163907 text is clean → lexicon/corrections holding.
+
+---
+
+## Reconciliation + regression audit + standing report (2026-08-29 night)
+
+Owner: "reconcile and audit once to ensure no regression, then create/update a
+report on where we stand — including voice keys infra."
+
+Audit result: NO REGRESSIONS. 9/9 suites green; pyflakes clean; all 12 wiring
+assertions verified present (initial 5 "failures" were grep-pattern artifacts,
+each verified by direct inspection); persona TRANSPORT_V1.6 confirmed.
+
+Standing report: docs/STATUS_REPORT.md — system snapshot with live numbers,
+audit results, voice-keys exact standing (Stage 1 shipped/shadowed, Stage 2
+blocked on shadow data n=3, Stage 3 owner decisions), ranked open items,
+day's evidence arc, check commands.
