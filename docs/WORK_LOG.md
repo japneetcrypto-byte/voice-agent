@@ -273,3 +273,32 @@ Shipped:
   optional SpeechMOS (--mos)
 - docs/SALES_AGENT_GAP_ANALYSIS.md: full SquadStack-style gap matrix (~35-40% there;
   telephony = biggest net-new; 6-10 week phased path; 5 owner decisions)
+
+---
+
+## Session 133659: the silence chain + merged-words round 2 (2026-08-29)
+
+Owner: "took a lot more time in responses — quota or other issue?" Answer: NOT quota
+(TTFT ~1.0-1.5s on most turns, no 429 storms/66s stalls; ONE 3.1s spike = rotation/
+transient). The felt slowness = a SILENCE CHAIN: 6 turns with no reply.
+
+Root causes found & fixed:
+1. Controller suppression chain (t16-t21): final-word pronouns वो/वह/ये/यह treated as
+   trail-off connectors (removed); handoff checked only on LAST word ("बोलो भाई" missed
+   — now any-word + Devanagari बोलो/बता variants added); greetings ("हेलो") not in any
+   set (added, FIRST-word rule to avoid 'aise hi' collision with English 'hi'); no cap
+   on consecutive WAITs (now: after 2, respond — WAIT_STREAK_CAP).
+2. Silent-skip race (t2/t3/t22 'no reply generated'): prev_task.cancel() is async — the
+   response guard saw the dying task as active and returned silently. Now: await the
+   cancelled task (1.5s timeout) before responding + RESPONSE_SKIPPED event/diagnostic
+   flag so a skip can never again be invisible.
+3. Model-emitted merged words (t13 'sahikaam', t17 'baaremein' — distinct from the
+   chunk-boundary loss smart_join fixes): deterministic lexicon splitter
+   fix_merged_words() applied per spoken piece; exact-match only (zero risk to
+   unlisted words). Extends as new cases are observed.
+4. tts_audit: HOT? band for peaks >=95% (t12 95.7, t17 95.1 — listen for harshness;
+   true clipping >99).
+
+Voice audit verdict: avg 15.4 c/s (healthy), 1 soft FAST flag (short question clip —
+threshold noise), no clipping. TTS itself is performing; the LLM-side text glitches
+were the "unreal" driver + now both causes are covered.

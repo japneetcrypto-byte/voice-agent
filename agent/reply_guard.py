@@ -166,3 +166,42 @@ def smart_join(buf: str, chunk: str) -> str:
     if buf and chunk and _word_char(buf[-1]) and _word_char(chunk[0]):
         return buf + " " + chunk
     return buf + chunk
+
+# Model-EMITTED merged words (distinct from the chunk-boundary loss that
+# smart_join fixes — evidence session 133659 t13 'sahikaam', t17 'baaremein'
+# came out of the LLM already merged; flash-lite does this in romanized
+# Hinglish). Deterministic lexicon: ONLY exact listed merges are split, so
+# valid words can never be damaged. Extend as new cases are observed.
+MERGE_SPLIT_LEXICON = {
+    "baaremein": "baare mein",
+    "baremein": "bare mein",
+    "sahikaam": "sahi kaam",
+    "kartahoon": "karta hoon",
+    "kartihu": "karti hoon",
+    "rahahoon": "raha hoon",
+    "rahihu": "rahi hoon",
+    "kaisahai": "kaisa hai",
+    "kyahal": "kya haal",
+    "kyahaal": "kya haal",
+    "nahiyaar": "nahi yaar",
+    "yaarkya": "yaar kya",
+    "chaltahai": "chalta hai",
+    "haidost": "hai dost",
+    "sunraha": "sun raha",
+    "dekhraha": "dekh raha",
+    "batana": "bata na",  # only when intended; 'batana' is also valid ('tell me later')
+}
+# 'batana' is ambiguous — drop it to stay safe.
+MERGE_SPLIT_LEXICON.pop("batana", None)
+
+
+def fix_merged_words(text: str) -> str:
+    """Split known merged Hinglish tokens (exact, word-boundary, case-insensitive).
+    Lexicon-only: zero risk to unlisted words."""
+    if not text:
+        return text
+    out = text
+    for merged, split in MERGE_SPLIT_LEXICON.items():
+        if merged in out.lower():
+            out = re.sub(re.escape(merged), split, out, flags=re.IGNORECASE)
+    return out

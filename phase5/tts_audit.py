@@ -91,6 +91,8 @@ for r in rows:
         flags.append("SLOW?")
     if peak > 99:
         flags.append("CLIP!")
+    elif peak >= 95:
+        flags.append("HOT?")  # near-clipping — listen for harshness
 
     wer_s, mos_s = "", ""
     if do_asr and path:

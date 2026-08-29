@@ -76,6 +76,9 @@ for t in turns:
     if t.get("pipeline_error"):
         issues.append(f"ERROR: {t['pipeline_error'][:90]}")
         agg["errors"] += 1
+    if t.get("response_skipped"):
+        issues.append(f"RESPONSE SKIPPED ({t['response_skipped']}) — user left hanging")
+        agg["skipped"] = agg.get("skipped", 0) + 1
     if not reply and t.get("stt_valid") and not t.get("response_suppressed") \
             and t.get("turn_type") != "idle":
         issues.append("no reply generated")
@@ -153,6 +156,8 @@ if agg.get("owners"):
     print(f"owner(s): {sorted(agg['owners'])}")
 if agg.get("tag_leaks"):
     print(f"tag-leaks stripped: {agg['tag_leaks']}")
+if agg.get("skipped"):
+    print(f"⚠ response skips: {agg['skipped']} — see RESPONSE SKIPPED turns")
 if agg["turns"] and agg["ctx_ok"] == 0 and agg["replies"] == 0:
     pass
 owners = sorted(agg.get("owners", set()))

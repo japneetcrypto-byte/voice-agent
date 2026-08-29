@@ -148,6 +148,10 @@ check("t8: sanitizer kills stray closer in prose path", s8b and c8b.strip() == "
 # merged-word fix (session 103824 t2/t3: 'aaram sebaithne', 'saathchalna'
 # were SPOKEN — API chunk boundaries lost the space between words)
 from agent.reply_guard import smart_join
+from agent.reply_guard import fix_merged_words
+check("merge t13: sahikaam", fix_merged_words("kafi sahikaam kar rahe hain") == "kafi sahi kaam kar rahe hain")
+check("merge t17: baaremein", fix_merged_words("uske baaremein kya lagta hai?") == "uske baare mein kya lagta hai?")
+check("merge: unlisted words untouched", fix_merged_words("kaisa hai bhai") == "kaisa hai bhai")
 check("join: restores lost space", smart_join("aaram se", "baithne wali") == "aaram se baithne wali")
 check("join: sentence boundary untouched", smart_join("achha.", "bol na") == "achha.bol na")
 check("join: empty buf", smart_join("", "hello") == "hello")

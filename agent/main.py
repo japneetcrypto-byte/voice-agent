@@ -28,7 +28,7 @@ from providers.stt_router import STTRouter
 from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide
 from agent.reply_guard import (feminine_self_reference, strip_tag_leak, smart_join,
-                               REPLY_MAX_CHARS, SENT_END_RE)
+                               fix_merged_words, REPLY_MAX_CHARS, SENT_END_RE)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -309,7 +309,16 @@ async def entrypoint(ctx: JobContext):
 
     async def run_agent_response(user_text: str, turn: dict):
         if agent_task and not agent_task.done() and agent_task != asyncio.current_task():
-            return  # newer task already running, don't double-respond
+            # A newer response task owns the floor. NEVER silent about it —
+            # silent skips surfaced as 'no reply generated' mysteries in
+            # session 133659 (t2/t3/t22: user left hanging).
+            turn["response_skipped"] = "newer_task_active"
+            print(f"[Agent] response SKIPPED turn={turn.get('turn')} "
+                  f"(newer task active; user_text={user_text[:40]!r})")
+            log_event("RESPONSE_SKIPPED", turn_id=turn.get("turn"),
+                      details={"reason": "newer_task_active", "user_text": user_text[:60]})
+            tmark("RESPONSE_SKIPPED", turn=turn.get("turn"))
+            return
         
         log_event("AGENT_TASK_CREATED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
         
@@ -443,6 +452,7 @@ async def entrypoint(ctx: JobContext):
                         turn["reply_trimmed"] = True
                     if piece:
                         piece, leaked = strip_tag_leak(piece)
+                        piece = fix_merged_words(piece)
                         if leaked:
                             turn["tag_leak_stripped"] = True
                             log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
@@ -463,6 +473,7 @@ async def entrypoint(ctx: JobContext):
                     trim["pending"] = ""
                     if piece.strip():
                         piece, leaked = strip_tag_leak(piece)
+                        piece = fix_merged_words(piece)
                         if leaked:
                             turn["tag_leak_stripped"] = True
                             log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
@@ -1048,6 +1059,16 @@ async def entrypoint(ctx: JobContext):
                                     print("AGENT_INTERRUPTED_BY_USER")
                                     log_event("AGENT_TASK_CANCEL_REQUESTED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task())), "previous_task_id": str(id(prev_task))})
                                     prev_task.cancel()
+                                    # AUDIT-FIX 133659: cancel() is async — the
+                                    # old task can still be mid-teardown when
+                                    # run_agent_response's guard looks at it,
+                                    # which silently skipped the new response
+                                    # (t2/t3/t22 'no reply generated'). Await
+                                    # the teardown so the floor is truly free.
+                                    try:
+                                        await asyncio.wait_for(prev_task, timeout=1.5)
+                                    except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
+                                        pass
 
                                 if not (speech_start_ts and speech_end_ts and transcript.text.strip() and turn_number):
                                     print("[Turn Gate Rejected] Missing valid turn lifecycle state")
@@ -1055,7 +1076,7 @@ async def entrypoint(ctx: JobContext):
 
                                 # ---- Conversation Turn Controller (locked brief):
                                 # a VAD speech-end is only a POSSIBLE handoff.
-                                prev_wait = bool(engine.get("last_turn_wait")) if engine else False
+                                prev_wait = int(engine.get("wait_streak", 0)) if engine else 0
                                 action, ctrl_reason = turn_controller_decide(transcript.text, prev_wait)
                                 turn["continuation_detected"] = action == "suppress"
                                 turn["turn_end_decision"] = action
@@ -1066,12 +1087,14 @@ async def entrypoint(ctx: JobContext):
                                     turn["response_suppressed"] = True
                                     turn["wait_started_at"] = time.monotonic()
                                     if engine:
+                                        engine["wait_streak"] = prev_wait + 1
                                         engine["last_turn_wait"] = True
                                     session.add_user_message(transcript.text)  # context preserved
                                     print(f"[TurnController] WAIT ({ctrl_reason}) — silent, "
                                           f"context kept: {transcript.text[:80]!r}")
                                     return
                                 if engine:
+                                    engine["wait_streak"] = 0
                                     engine["last_turn_wait"] = False
                                 turn["response_trigger_reason"] = "user_speech_ended"
                                 await run_agent_response(transcript.text, turn)
