@@ -13,9 +13,12 @@ Run: python3 phase5/tests/test_response_pipeline.py
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from agent.response_pipeline import (build_policy_and_contract, process_piece,
-                                     release_from, release_tail)
+                                     release_from, release_tail, run_turn,
+                                     TurnContext)
 from agent.response_contract import GATE_BLOCK_LINES
 from agent.reply_guard import REPEAT_BREAK_LINES, cap_for
+from agent.response_state import FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
+from agent.prompt_fragments import pick_line, FILLER_LINES
 
 fails = 0
 def check(label, got, want):
@@ -300,6 +303,75 @@ check("no sentence boundary yet -> no piece", p, "")
 t = release_tail(trim, cap=100)
 check("tail releases remainder", t, "yeh baat pakki hai, aur")
 check("tail clears pending", trim["pending"], "")
+
+# ---------------------------------------------------------------------------
+print("== run_turn: the §6 unified interface ==")
+def mk_ctx(**kw):
+    base = dict(
+        turn_no=1, user_text="haan batao kya hua", is_valid=True,
+        rejection_reason=None, avg_logprob=-0.2, agent_was_speaking=False,
+        engine_bound=True,
+        engine={"sess": FakeSess(), "lcm": FakeLCM(), "fused": None},
+        model_text="Pehli baat yeh hai. Dusri baat wo hai.",
+    )
+    base.update(kw)
+    return TurnContext(**base)
+
+print("== run_turn: fused path (policy + contract + completion) ==")
+eng = {"sess": FakeSess(), "lcm": FakeLCM(), "fused": None}
+t = run_turn(mk_ctx(engine=eng))
+check("route normal", (t["route_action"], t["route_reason"]), ("normal", "accepted"))
+check("engine_path fused", t["engine_path"], "fused")
+check("policy contract attached", isinstance((t.get("policy") or {}).get("contract"), dict), True)
+check("response_state FULLY_PLAYED", t["response_state"], FULLY_PLAYED)
+check("trigger completed", t["response_trigger_reason"], "completed")
+check("llm_response == model text (untrimmed)", t["llm_response"], t["llm_response_full"])
+check("engine last_response set", eng["last_response"]["status"], FULLY_PLAYED)
+
+print("== run_turn: drop path never reaches a substantive reply ==")
+t = run_turn(mk_ctx(user_text="", is_valid=False,
+                    rejection_reason="empty_transcript",
+                    agent_was_speaking=True))
+check("dropped", t["dropped_reason"], "invalid_acoustic_only_while_agent_speaking")
+check("no response fields", "llm_response" not in t and "engine_path" not in t, True)
+
+print("== run_turn: unbound filler (engine on, sess None) ==")
+eng = {"sess": None, "lcm": None, "fused": None}
+t = run_turn(mk_ctx(engine=eng))
+check("engine_path unbound_filler", t["engine_path"], "unbound_filler")
+check("llm_called False", t.get("llm_called"), False)
+check("deterministic filler line", t["llm_response"],
+      pick_line(FILLER_LINES, 1))
+check("no policy built", "policy" not in t, True)
+
+print("== run_turn: interrupted classification (PARTIALLY_PLAYED/UNHEARD) ==")
+t = run_turn(mk_ctx(interrupted=True, played_any_audio=True))
+check("PARTIALLY_PLAYED", t["response_state"], PARTIALLY_PLAYED)
+check("heard_text half", t["heard_text"] == t["llm_response"][:200], True)
+check("remaining_text half", "remaining_text" in t, True)
+eng2 = {"sess": FakeSess(), "lcm": FakeLCM(), "fused": None}
+t2 = run_turn(mk_ctx(interrupted=True, played_any_audio=False, engine=eng2))
+check("UNHEARD", t2["response_state"], UNHEARD)
+check("engine last_response status", eng2["last_response"]["status"], UNHEARD)
+check("engine last_response remaining half", "remaining_text" in eng2["last_response"], True)
+
+print("== run_turn: deterministic (same context -> same dict) ==")
+a = run_turn(mk_ctx(turn_no=7))
+b = run_turn(mk_ctx(turn_no=7))
+check("identical dicts", a == b, True)
+
+print("== run_turn: reconcile payload flows to the next turn ==")
+eng = {"sess": FakeSess(), "lcm": FakeLCM(), "fused": None,
+       "last_response": {"status": PARTIALLY_PLAYED, "turn": 6,
+                         "heard_text": "pehla hissa", "remaining_text": "baaki hissa"}}
+t = run_turn(mk_ctx(turn_no=7, engine=eng))
+check("reconciles_previous carried", (t.get("reconciles_previous") or {}).get("status"),
+      PARTIALLY_PLAYED)
+check("previous_plan carried", (t.get("reconciles_previous") or {}).get("turn"), 6)
+# The pop happens at build-time; completion then SETS the current turn's entry
+# (main.py semantics: last_response always reflects the last COMPLETED turn).
+check("engine advanced to this turn", eng["last_response"]["turn"], 7)
+check("engine advanced to FULLY_PLAYED", eng["last_response"]["status"], FULLY_PLAYED)
 
 print()
 if fails:

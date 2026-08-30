@@ -133,6 +133,13 @@ transcript, acoustic, timing, tts_sink, clock, logger).
 
 ## 9. Progress log (STATUS ONLY — not part of the spec above)
 
+**STATUS (2026-08-30, after Phase-0 review):**
+> **Slice-1 replay infrastructure is proven; Phase-0 replay identity is NOT
+> yet proven.** The synthetic fixture is a self-consistency check, not a
+> preservation proof. Phase 0 stays OPEN until owner baseline logs (frozen
+> commit `e0dc60f`, §5) replay with an EMPTY diff, and the post-extraction
+> smoke matches the baseline numbers.
+
 **2026-08-30 — Slice 1 (decision core extraction) + replay gate LANDED.**
 
 - `agent/response_pipeline.py` (new): `build_policy_and_contract()` +
@@ -166,3 +173,33 @@ archive under `phase5/harness/fixtures/baseline_YYYYMMDD_N/`, run
 `python3 phase5/harness/replay.py 'phase5/harness/fixtures/*/session_*.log'`
 — empty diff is the Slice-1 gate. Then: owner smoke session on the wired
 build must match the baseline numbers (post-extraction smoke, §7).
+
+**2026-08-30 (update) — `run_turn(context)` (approved §6 unified interface)
+NOW EXISTS and the replay gate runs through it.**
+
+- `agent/response_pipeline.py`: `TurnContext` + `run_turn(context) -> turn_dict`
+  — one callable that executes a full turn's deterministic critical path
+  (routing → policy/contract/nudges → caps → release → enforcement →
+  completion incl. interrupted/reconcile/filler paths) with injected deps
+  (engine state, detail/stuck state, recent replies, model text, callbacks).
+  Deterministic: same context ⇒ same turn dict.
+- `phase5/harness/replay.py`: context is REBUILT from the archived turn +
+  prior turn state and re-executed through `run_turn` — the gate now runs
+  through the exact §6 interface (no parallel hand-wired derivation).
+- Telemetry-only addition to main.py + run_turn: `turn["detail_latch_after"]`
+  (post-decrement detail latch) — the harness needs it for exact detail-turn
+  caps. Zero decision-path effect. Old-format archives (frozen `e0dc60f`)
+  replay with a documented heuristic: detail-turn trimming ambiguity is a
+  NOTE, never a hard gate failure; every other field stays byte-exact.
+- Live wiring of the async LLM→TTS playback loop onto `run_turn` (Slice 2)
+  remains DEFERRED until the baseline gate passes — the smoke target stays
+  the current wired build (frozen scope: no live-path change before proof).
+- Still 24 suites green (incl. run_turn unit tests + the §6 round-trip).
+
+**AWAITING from owner (parallel track, §5):** the baseline sessions on the
+frozen commit `e0dc60f` — `session_*.log` + `events_*.log` +
+`turn_lifecycle_*.jsonl` (+ the 4 numbers per session). On arrival:
+archive under `phase5/harness/fixtures/baseline_YYYYMMDD_N/`, run
+`python3 phase5/harness/replay.py 'phase5/harness/fixtures/*/session_*.log'`
+— empty diff (hard fields) is the Slice-1 gate. Then: owner smoke session on
+the wired build must match the baseline numbers (post-extraction smoke, §7).

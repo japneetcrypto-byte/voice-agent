@@ -24,16 +24,23 @@ Pure module: no livekit imports. Callbacks injected for side effects.
 """
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Callable
 
 from agent.reply_guard import (strip_tag_leak, clean_specials, fix_merged_words,
                                devanagari_present,
                                is_detail_request, is_challenge,
-                               SENT_END_RE, repeat_break_for)
+                               SENT_END_RE, repeat_break_for, cap_for,
+                               PLAN_CHUNK_CAP, remaining_text)
 from providers.stt import devanagari_to_roman
 from agent.response_contract import build_contract, gate_reply
-from agent.response_state import reconcile_payload as response_reconcile_payload
+from agent.response_state import (reconcile_payload as response_reconcile_payload,
+                                  classify as response_state_classify,
+                                  FULLY_PLAYED)
 from agent.turn_controller import continues_or_asks
+from agent.turn_router import route_decision
+from agent.stt_validation import is_repetition_loop
+from agent.prompt_fragments import FILLER_LINES, pick_line
 
 
 # ---------------------------------------------------------------------------
@@ -302,3 +309,176 @@ def release_tail(trim: dict, *, cap: int) -> str:
         piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
     trim["pending"] = ""
     return piece
+
+
+# ---------------------------------------------------------------------------
+# 4. run_turn(context) -> turn_dict — the approved §6 unified interface
+# ---------------------------------------------------------------------------
+@dataclass
+class TurnContext:
+    """Everything one turn's deterministic critical path needs — injected,
+    never imported. The replay harness builds this from an archived turn +
+    prior turn state; Slice-2 (after the baseline gate) builds it from live
+    runtime objects in main.py. The same code path both ways."""
+    turn_no: int
+    user_text: str
+    turn_type: str = "speech"
+    is_valid: bool = True
+    rejection_reason: str | None = None
+    avg_logprob: float | None = None
+    agent_was_speaking: bool = False
+    engine_bound: bool = True
+    # engine {"sess","lcm","fused",...} — MUTATED in place (last_response /
+    # last_head_plan popped by build_policy_and_contract, set at completion),
+    # exactly like main.py's closure dict.
+    engine: dict | None = None
+    recent_reply_texts: list = field(default_factory=list)  # prior replies
+    detail_mode: dict = field(default_factory=lambda: {"turns_left": 0})
+    stuck_nudged: dict = field(default_factory=lambda: {"until_turn": 0})
+    model_text: str = ""          # LLM output; Slice-2 wires an async stream
+    head_plan: dict | None = None
+    interrupted: bool = False
+    played_any_audio: bool = True  # for response_state classification
+    acoustic: dict | None = None
+    user_speech_start: str | None = None
+    user_speech_end: str | None = None
+    log_event: Callable = lambda *a, **k: None
+    owner_id_fn: Callable = lambda: None
+    schedule_compress: Callable | None = None
+
+
+def run_turn(ctx: TurnContext) -> dict:
+    """Execute ONE turn through the deterministic critical path and return the
+    turn dict — the same shape main.py's log_turn() archives (session_*.log).
+
+    Wiring order mirrors main.py byte-for-byte: routing (route_decision) ->
+    policy+contract+nudges (build_policy_and_contract) -> caps -> release
+    (release_from/release_tail) -> enforcement (process_piece) -> completion
+    (response_state / engine.last_response / reply_trimmed). Pure: no livekit,
+    no I/O; side effects go through injected ctx callbacks + the ctx.engine
+    dict. Deterministic: same context -> same turn dict (the replay-identity
+    premise).
+
+    Paths: drop (never a substantive reply — CA6), respond_now (acoustic_only
+    / unclear_speech), normal response (engine-bound fused), unbound filler
+    (engine on, sess None — INCIDENT GUARD, deterministic pick_line), and the
+    interrupted completion (PARTIALLY_PLAYED/UNHEARD + reconcile halves).
+    """
+    turn = {
+        "turn": ctx.turn_no,
+        "turn_type": ctx.turn_type,
+        "acoustic": ctx.acoustic,
+        "user_speech_start": ctx.user_speech_start,
+        "user_speech_end": ctx.user_speech_end,
+        "agent_was_speaking": ctx.agent_was_speaking,
+        "stt_transcript": ctx.user_text,
+        "stt_valid": ctx.is_valid,
+        "stt_rejection_reason": ctx.rejection_reason,
+        "stt_avg_logprob": ctx.avg_logprob,
+        "response_state": None,
+    }
+    r = route_decision(
+        transcript_text=ctx.user_text, is_valid=ctx.is_valid,
+        rejection_reason=ctx.rejection_reason, avg_logprob=ctx.avg_logprob,
+        is_repetition=is_repetition_loop(ctx.user_text),
+        is_catastrophic=(ctx.rejection_reason == "catastrophic_low_confidence"),
+        agent_was_speaking=ctx.agent_was_speaking, engine_bound=ctx.engine_bound)
+    turn["route_action"] = r["action"]
+    turn["route_reason"] = r["reason"]
+    if r["drop"]:
+        turn["dropped_reason"] = r["drop_reason"]
+        return turn
+    if r["respond_now"]:
+        turn["turn_type"] = r["turn_type"]
+        turn["response_trigger_reason"] = r["trigger"]
+    if r["recovery"]:
+        turn["recovery_mode"] = "contextual_recovery"
+
+    # ---- response path ----
+    sess_bound = bool(ctx.engine and ctx.engine.get("sess"))
+    model_text = ctx.model_text
+    if sess_bound:
+        turn["engine_path"] = ("supervisor" if ctx.turn_type == "supervisor_rescue"
+                               else "fused")
+        build_policy_and_contract(
+            user_text=ctx.user_text, turn=turn, engine=ctx.engine,
+            sess=ctx.engine["sess"], lcm=ctx.engine.get("lcm"),
+            recent_reply_texts=ctx.recent_reply_texts,
+            detail_mode=ctx.detail_mode, stuck_nudged=ctx.stuck_nudged,
+            log_event=ctx.log_event, owner_id_fn=ctx.owner_id_fn,
+            schedule_compress=ctx.schedule_compress)
+        turn["head_plan"] = ctx.head_plan
+    elif ctx.engine is not None:
+        # INCIDENT GUARD (2026-08-29): engine on but sess unbound -> the
+        # legacy assistant brain is FORBIDDEN; speak a deterministic filler.
+        turn["engine_path"] = "unbound_filler"
+        turn["llm_called"] = False
+        model_text = pick_line(FILLER_LINES, ctx.turn_no)
+
+    # caps (mirrors main.py wiring order: computed AFTER policy construction,
+    # which decremented the detail latch; A-P1 plan lift at first token).
+    caps = {"cap": cap_for(ctx.detail_mode["turns_left"] > 0)}
+    # Telemetry-only (Phase-0 2026-08-30): the post-decrement latch value is
+    # NOT otherwise archived, and the harness needs it to rebuild the exact
+    # cap for detail turns (cap_for(True)=110 vs cap_for(False)=240). No
+    # decision-path effect — a logged dict key only.
+    turn["detail_latch_after"] = ctx.detail_mode["turns_left"]
+    if turn.get("route_action") == "contextual_recovery":
+        caps["cap"] = min(caps["cap"], 110)
+    plan = turn.get("head_plan")
+    if isinstance(plan, dict) and isinstance(plan.get("total"), int) and plan["total"] > 1:
+        caps["cap"] = max(caps["cap"], PLAN_CHUNK_CAP)
+        ctx.detail_mode["turns_left"] = max(ctx.detail_mode["turns_left"], 3)
+
+    # release + enforce (chunking-invariant piece stream)
+    trim = {"pending": "", "emitted": 0, "done": False}
+    guard_state = {"guarded": False, "trim": trim}
+    pieces = []
+    for i in range(0, len(model_text), 17):
+        p = release_from(trim, model_text[i:i + 17], cap=caps["cap"])
+        if p:
+            pieces.append(p)
+    tail_trimmed = False
+    if not trim["done"] and trim["pending"]:
+        if trim["emitted"] + len(trim["pending"]) > caps["cap"] and trim["emitted"] > 0:
+            tail_trimmed = True
+        t = release_tail(trim, cap=caps["cap"])
+        if t:
+            pieces.append(t)
+    spoken = []
+    for p in pieces:
+        spoken.append(process_piece(
+            p, turn,
+            recent_reply_texts=ctx.recent_reply_texts,
+            user_text=ctx.user_text,
+            turn_number=ctx.turn_no,
+            guard_state=guard_state,
+            log_event=ctx.log_event))
+    turn["llm_response_full"] = model_text
+    turn["llm_response"] = "".join(spoken)
+    if trim["done"] or tail_trimmed:
+        turn["reply_trimmed"] = True
+
+    # ---- completion (mirrors main.py completion + CancelledError paths) ----
+    if ctx.interrupted:
+        _spoken = turn["llm_response"]
+        _state = response_state_classify(True, ctx.played_any_audio, len(_spoken))
+        turn["interrupted"] = True
+        turn["response_state"] = _state
+        turn["heard_text"] = _spoken[:200]
+        _remainder = remaining_text(model_text, _spoken)
+        turn["remaining_text"] = _remainder[:300]
+        if ctx.engine is not None:
+            ctx.engine["last_response"] = {
+                "status": _state, "turn": ctx.turn_no,
+                "heard_text": _spoken, "remaining_text": _remainder}
+    else:
+        turn["response_state"] = FULLY_PLAYED
+        turn["response_trigger_reason"] = "completed"
+        if ctx.engine is not None:
+            ctx.engine["last_response"] = {
+                "status": FULLY_PLAYED, "turn": ctx.turn_no,
+                "heard_text": turn["llm_response"]}
+            if plan:
+                ctx.engine["last_head_plan"] = plan
+    return turn

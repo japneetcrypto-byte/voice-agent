@@ -371,6 +371,9 @@ async def entrypoint(ctx: JobContext):
         # itself the detail signal, closing the latch-expiry gap (session
         # 210637: plans emitted/advanced but latch had expired → 10.7s chunk).
         caps = {"cap": cap_for(detail_mode["turns_left"] > 0)}
+        # Telemetry-only (Phase-0 2026-08-30): post-decrement latch value for
+        # the replay harness (detail-turn cap exactness). Logged key only.
+        turn["detail_latch_after"] = detail_mode["turns_left"]
         if turn.get("route_action") == "contextual_recovery":
             caps["cap"] = min(caps["cap"], 110)
         fused_ref = engine.get("fused") if engine else None
