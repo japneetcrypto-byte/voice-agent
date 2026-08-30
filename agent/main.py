@@ -1329,7 +1329,7 @@ async def entrypoint(ctx: JobContext):
                                     # never a random pick that sounds out of the
                                     # blue. None -> silence (correct move).
                                     clip, ack_word, ack_reason = ack_bridge.pick_for(
-                                        transcript.text, turn_relation, turn_number)
+                                        transcript.text, turn.get("turn_relation"), turn_number)
                                     if clip is not None:
                                         try:
                                             chunk_size = 960
