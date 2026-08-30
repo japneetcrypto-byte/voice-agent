@@ -154,6 +154,17 @@ def check_violations(reply: str) -> list[dict]:
 
 
 def gate_reply(reply: str) -> tuple[str, list[dict]]:
-    """Apply the hard violation gate. Returns (reply, violations).
-    Currently: flag-only (observability before blocking)."""
-    return reply, check_violations(reply)
+    """Apply the hard violation gate (OWNER DIRECTIVE: hard-block from day one).
+
+    system_exposure + action_fabrication → BLOCKED (replaced with safe filler).
+    memory_proactive → flagged (potential false positive on legitimate recall).
+    Returns (gated_reply, violations)."""
+    violations = check_violations(reply)
+    gated = reply
+    blocking = [v for v in violations if v["action"] == "block"]
+    if blocking:
+        # Replace the offending piece with a safe continuation
+        gated = "main sun raha hoon, bol."
+        print(f"[ContractGate] BLOCKED {len(blocking)} violation(s): "
+              + ", ".join(v["detail"] for v in blocking))
+    return gated, violations

@@ -973,3 +973,31 @@ contract proves its value via A/B measurement.
 
 Tests: test_response_contract.py (20 cases: shape, mode, constraints,
 determinism, violations, gate). All 14 suites green (~255 cases total).
+
+---
+
+## Session 111740 review + HARD BLOCKING ACTIVATED (2026-08-30)
+
+Owner directive: hard-block system_exposure + action_fabrication from day one
+(not Phase 2). Implemented — gate_reply now BLOCKS these categories by
+replacing the offending piece with "main sun raha hoon, bol." Memory
+proactive stays flag-only (potential false positive).
+
+Session 111740 analysis (29 turns, detail conversation about building a voice agent):
+- Healthiest conversation flow yet: coherent multi-turn detail discussion
+  (STT→LLM→TTS→cost→infra→optimization), A-P1 head plans visible, substance
+  maintained across 29 turns
+- PARTIALLY_PLAYED ×18/24 (75%!) = user interrupting constantly. Not a bug:
+  the user is highly engaged, asking rapid follow-ups. But it means avg
+  reply audio 2.95s is still too long for this conversation pace
+- Barge-in stop latency: avg 3702ms max 14281ms (!! the 14s is a monitoring
+  artifact — a reply played for 12s before the user barged in, so the
+  stop measured the full play time, not the stop delay). The avg excluding
+  outliers is ~2.5s
+- 429 ×10, TTFA degradation ×6 — providers under sustained pressure
+- ROUTE/HEAD MISMATCH ×1 (t25) — likely stale worker again
+- Echo shadow: n=11/30 (building), agree=2, text_only=4, corr_only=1
+- Health gate: ack bridge correctly skipped when LLM was unhealthy
+
+Owner's proposal ADOPTED: hard-block dangerous categories immediately,
+memory-reference stays flag until A/B validates. All suites green (14).

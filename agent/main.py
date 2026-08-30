@@ -31,7 +31,7 @@ from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
      continues_or_asks
 from agent.transcript_router import route_transcript
-from agent.response_contract import build_contract, check_violations
+from agent.response_contract import build_contract, gate_reply
 from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
      reconcile_payload as response_reconcile_payload, \
@@ -585,13 +585,18 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
-                        _gv = check_violations(piece)
+                        piece, _gv = gate_reply(piece)
                         if _gv:
                             turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"]} for v in _gv])
+                                [{"type": v["type"], "detail": v["detail"],
+                                  "action": v.get("action", "flag")} for v in _gv])
                             for v in _gv:
-                                log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                          details={"type": v["type"], "detail": v["detail"]})
+                                if v.get("action") == "block":
+                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
+                                              details={"type": v["type"], "detail": v["detail"]})
+                                else:
+                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
+                                              details={"type": v["type"], "detail": v["detail"]})
                         # GUARDRAIL: script enforcement — persona says Roman;
                         # code enforces it (transliterate instead of trust).
                         if devanagari_present(piece):
@@ -623,13 +628,18 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
-                        _gv = check_violations(piece)
+                        piece, _gv = gate_reply(piece)
                         if _gv:
                             turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"]} for v in _gv])
+                                [{"type": v["type"], "detail": v["detail"],
+                                  "action": v.get("action", "flag")} for v in _gv])
                             for v in _gv:
-                                log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                          details={"type": v["type"], "detail": v["detail"]})
+                                if v.get("action") == "block":
+                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
+                                              details={"type": v["type"], "detail": v["detail"]})
+                                else:
+                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
+                                              details={"type": v["type"], "detail": v["detail"]})
                         # GUARDRAIL: script enforcement — persona says Roman;
                         # code enforces it (transliterate instead of trust).
                         if devanagari_present(piece):
