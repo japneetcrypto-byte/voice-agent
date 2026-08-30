@@ -31,8 +31,7 @@ from agent.layered_context import LayeredContextManager
 from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
      continues_or_asks
 from agent.transcript_router import route_transcript
-from agent.response_contract import (build_contract, gate_reply, check_violations,
-                                      is_ai_build_topic)
+from agent.response_contract import build_contract, gate_reply, check_violations
 from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
      reconcile_payload as response_reconcile_payload, \
@@ -346,14 +345,7 @@ async def entrypoint(ctx: JobContext):
                 turn["policy"]["contract"] = _contract
             except Exception as e:
                 print(f"[Contract] build failed: {e}")
-            # Gate context (owner session 2026-08-30: EVERY reply blocked ->
-            # 'main sun raha hoon' constantly while discussing the voice
-            # agent). When the user's own turn is about building AI/voice
-            # systems, 'my system prompt/code' is on-topic — flag, not block.
-            _on_topic_ai = bool(
-                is_ai_build_topic(user_text)
-                or (_active_topic and is_ai_build_topic(str(_active_topic))))
-            turn["gate_on_topic_ai"] = _on_topic_ai
+
             # DETAILED MODE (directive synthesis): explicit detail request
             # latches chunked delivery for the next N turns; continuation
             # cues ('haan/aage/phir') keep it alive. Policy marker
@@ -483,7 +475,6 @@ async def entrypoint(ctx: JobContext):
         # length lever). Prose is released sentence-by-sentence until the cap.
         trim = {"pending": "", "emitted": 0, "done": False}
         _repeat_guarded = False  # near-repeat guard fires once per reply
-        _on_topic_ai = False    # gate dev-context downgrade (set below)
         
         async def text_stream_tee():
             nonlocal ttft_logged, _repeat_guarded
@@ -580,7 +571,7 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece, on_topic_ai=_on_topic_ai, turn_no=turn_number)
+                        piece, _gv = gate_reply(piece, turn_no=turn_number)
                         if _gv:
                             turn.setdefault("contract_violations", []).extend(
                                 [{"type": v["type"], "detail": v["detail"],
@@ -645,7 +636,7 @@ async def entrypoint(ctx: JobContext):
                         piece, leaked = strip_tag_leak(piece)
                         piece = clean_specials(piece)
                         piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece, on_topic_ai=_on_topic_ai, turn_no=turn_number)
+                        piece, _gv = gate_reply(piece, turn_no=turn_number)
                         if _gv:
                             turn.setdefault("contract_violations", []).extend(
                                 [{"type": v["type"], "detail": v["detail"],
@@ -818,7 +809,7 @@ async def entrypoint(ctx: JobContext):
             # evasions on the complete reply for the A/B report. Measurement
             # only — never blocks (no TTFA regression by design).
             try:
-                _sweep = check_violations("".join(spoken_text), on_topic_ai=_on_topic_ai)
+                _sweep = check_violations("".join(spoken_text))
                 if _sweep:
                     turn["contract_sweep"] = [v["type"] for v in _sweep]
                     for v in _sweep:
