@@ -143,7 +143,7 @@ def main():
               f"({100.0*ok/len(recovery):.0f}%)")
         for t in recovery[-6:]:
             print(f"    turn={t.get('turn'):>3} reason={t.get('route_reason', '')[:40]} "
-                  f"reply={t.get('llm_response', '')[:60]!r}")
+                  f"reply={(t.get('llm_response') or '')[:60]!r}")
     else:
         print("  none in the analyzed sessions.")
 
@@ -154,7 +154,7 @@ def main():
     if sub:
         for t in sub:
             print(f"    turn={t.get('turn'):>3} words={len((t.get('llm_response') or '').split())} "
-                  f"text={t.get('llm_response', '')[:80]!r}")
+                  f"text={(t.get('llm_response') or '')[:80]!r}")
     else:
         print("  none — recovery replies stayed bounded.")
 

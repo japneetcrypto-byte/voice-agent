@@ -104,23 +104,21 @@ class AckBridge:
         slug = re.sub(r"[^a-z0-9]+", "_", word.lower()).strip("_")
         return os.path.join(self.cache_dir, f"{self._cache_stamp}_{slug}.npy")
 
-    def _load_cache(self) -> bool:
-        """Load all ack clips from disk. Returns True if complete."""
+    def _load_cache(self) -> set[str]:
+        """Load ANY cached ack clips from disk. Returns the set of words
+        loaded (partial cache is fine — missing words get synthesized)."""
         if not self._cache_stamp:
-            return False
-        for word in ACK_POOL.values():
-            for w in word:
-                p = self._cache_path(w)
-                if not os.path.exists(p):
-                    return False
+            return set()
+        loaded = set()
         for w in {w for pool in ACK_POOL.values() for w in pool}:
             try:
                 clip = np.load(self._cache_path(w))
                 if clip.size > 0:
                     self._clips[w] = clip
+                    loaded.add(w)
             except Exception:
-                return False
-        return len(self._clips) == len({w for pool in ACK_POOL.values() for w in pool})
+                pass
+        return loaded
 
     async def pregenerate(self) -> None:
         """One-time: synthesize the ack pool with the CLONED Fish voice.
@@ -133,7 +131,8 @@ class AckBridge:
             (voice_id + "|ack-v2").encode()).hexdigest()[:10]
         os.makedirs(self.cache_dir, exist_ok=True)
 
-        if self._load_cache():
+        cached = self._load_cache()
+        if cached == {w for pool in ACK_POOL.values() for w in pool}:
             self._ready = True
             print(f"[AckBridge] loaded {len(self._clips)} cached clips "
                   f"(voice {voice_id[:8]})")
@@ -145,13 +144,24 @@ class AckBridge:
         except (ValueError, ImportError) as e:
             print(f"[AckBridge] Fish unavailable — acks DISABLED (no wrong-voice "
                   f"acks): {e}")
+            if self._clips:
+                self._ready = True  # partial cache still usable
             return
 
         words = {w for pool in ACK_POOL.values() for w in pool}
         for w in sorted(words):
+            if w in self._clips:
+                continue
             clip = await self._synth_one(fish, w)
+            if (clip is None or len(clip) < 500) and len(w) <= 4:
+                # Retry once with a trailing period — Fish can be picky with
+                # ultra-short single words (owner: 'filler words did not
+                # speak out', 2026-08-30).
+                print(f"[AckBridge] {w!r} too short/failed — retrying with '.'")
+                clip = await self._synth_one(fish, w + ".")
             if clip is None or len(clip) < 500:
-                print(f"[AckBridge] {w!r}: synth failed/too short — skipping")
+                print(f"[AckBridge] {w!r}: synth failed/too short — skipping "
+                      "(other acks still play)")
                 continue
             self._clips[w] = clip
             try:
@@ -159,8 +169,11 @@ class AckBridge:
             except Exception as e:
                 print(f"[AckBridge] cache write failed for {w!r}: {e}")
             print(f"[AckBridge] cached {w!r} ({len(clip)/48:.0f}ms)")
-        self._ready = len(self._clips) == len(words)
-        print(f"[AckBridge] ready with {len(self._clips)}/{len(words)} clips")
+        # PARTIAL READY: at least one clip => acks can play (pick_for falls
+        # back within a category). A single bad word never silences all acks.
+        self._ready = len(self._clips) > 0
+        print(f"[AckBridge] ready with {len(self._clips)}/{len(words)} clips "
+              f"({'PARTIAL' if len(self._clips) < len(words) else 'full'})")
 
     async def _synth_one(self, fish, text: str) -> np.ndarray | None:
         """Synthesize one short clip via the Fish provider (48kHz int16 mono)."""
@@ -184,11 +197,22 @@ class AckBridge:
 
         Returns (clip|None, word|None, reason|None). Caller skips when
         clip is None (silence is the right move).
+
+        Robustness (owner 2026-08-30, 'filler words did not speak out'): if
+        the chosen word's clip is missing (Fish refused that word), fall
+        back to the first available sibling in the SAME category — semantic
+        meaning preserved, never a wrong-category word.
         """
         word, reason = pick_ack_for(text, turn_relation, turn_no)
         if word is None:
             return None, None, reason
         clip = self._clips.get(word)
-        if clip is None:
-            return None, None, f"missing_clip:{reason}"
-        return clip, word, reason
+        if clip is not None:
+            return clip, word, reason
+        # category fallback
+        cat = reason  # pick_ack_for returns the category as reason
+        for w in ACK_POOL.get(cat, []):
+            c = self._clips.get(w)
+            if c is not None:
+                return c, w, f"sibling_fallback:{cat}"
+        return None, None, f"missing_clip:{reason}"

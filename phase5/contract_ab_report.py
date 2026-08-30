@@ -10,12 +10,20 @@ per session group, then a pre/post comparison when both are given:
   detail-mode completion quality | latency
 
 Usage:
-  python3 phase5/contract_ab_report.py                          # latest logs
+  python3 phase5/contract_ab_report.py
+      # AUTO mode (default): splits ALL logs/session_*.log into PRE/POST by
+      # the WORKER_BUILD commit recorded in the paired events_*.log.
+      # PRE  = sessions built on the old code (4057092 / 3900fc8)
+      # POST = sessions built on the fixes (086fa1b = STT/acks/pre-warm/
+      #        barge; fc361b8 = repeat-guard + fall-through fix)
   python3 phase5/contract_ab_report.py --pre a.log b.log --post c.log d.log
   python3 phase5/contract_ab_report.py logs/session_*.log       # one group
 
 Provider incidents (429/TTFA) are flagged per session as confounders so
 provider noise is not read as behavior change.
+
+AUTO split: a session whose events log is missing, or whose commit is
+unknown, is SKIPPED with a note (use --pre/--post for those).
 """
 import argparse, glob, json, os
 
@@ -97,6 +105,7 @@ def agg(turns, events, label):
                    if e.get("event") == "RESPONSE_FAILED"
                    and "429" in str(e.get("error", "")))
     warm = [t for t in turns if t.get("tts") and t["tts"].get("warm") is True]
+    acks = [t for t in turns if t.get("ack_played")]
 
     def mean(xs):
         return round(sum(xs) / len(xs), 2) if xs else None
@@ -124,6 +133,7 @@ def agg(turns, events, label):
         "llm_ttft_s_avg": mean(llm),
         "ttfa_s_avg": mean(ttfa),
         "tts_warm_turns": len(warm),
+        "ack_played_turns": len(acks),
         "provider_incident_events": prov_incidents,
         "provider_429_events": prov_429,
     }
@@ -155,6 +165,7 @@ METRICS = [
     ("llm_ttft_s_avg", "LLM TTFT (s)"),
     ("ttfa_s_avg", "TTS TTFA (s)"),
     ("tts_warm_turns", "TTS warm turns"),
+    ("ack_played_turns", "ack played turns"),
     ("provider_incident_events", "provider incidents"),
     ("provider_429_events", "provider 429s"),
 ]
@@ -164,6 +175,48 @@ def print_group(rows):
     for key, name in METRICS:
         vals = [fmt(r.get(key)) for r in rows]
         print(f"  {name:24s} " + " | ".join(vals))
+
+
+OLD_COMMITS = ("4057092", "3900fc8")   # pre-fix builds
+NEW_COMMITS = ("086fa1b", "fc361b8")   # task fixes
+
+
+def auto_split_groups():
+    """Split all session logs into PRE/POST by the WORKER_BUILD commit in
+    the paired events log (same timestamp prefix). Sessions without a
+    known commit are skipped with a note."""
+    commits = {}
+    for ep in glob.glob("logs/events_*.log"):
+        prefix = os.path.basename(ep)[len("events_"):-len(".log")]
+        for line in open(ep, encoding="utf-8"):
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            if rec.get("event") == "WORKER_BUILD":
+                det = rec.get("details") or {}
+                c = (det.get("commit") or "")[:7]
+                if c:
+                    commits[prefix] = c
+                break
+    pre, post, skipped = [], [], []
+    for sp in sorted(glob.glob("logs/session_*.log")):
+        prefix = os.path.basename(sp)[len("session_"):-len(".log")]
+        c = commits.get(prefix, "")
+        if c.startswith(OLD_COMMITS):
+            pre.append(sp)
+        elif c.startswith(NEW_COMMITS):
+            post.append(sp)
+        else:
+            skipped.append((sp, c))
+    for sp, c in skipped:
+        print(f"  (auto-split: skipped {os.path.basename(sp)} — commit {c or 'unknown'})")
+    groups = []
+    if pre:
+        groups.append(("PRE ", pre))
+    if post:
+        groups.append(("POST", post))
+    return groups
 
 
 def main():
@@ -183,11 +236,16 @@ def main():
     elif args.paths:
         groups.append(("LOG ", args.paths))
     else:
-        files = sorted(glob.glob("logs/session_*.log"), key=os.path.getmtime)
-        if not files:
-            print("No logs found. Pass paths or --pre/--post.")
+        groups = auto_split_groups()
+        if not groups:
+            print("No PRE/POST sessions found by commit split. Options:")
+            print("  - run a session on the NEW code first, then rerun this")
+            print("    (sessions are split by WORKER_BUILD commit)")
+            print("  - or use --pre <files> --post <files> explicitly")
+            files = sorted(glob.glob("logs/session_*.log"), key=os.path.getmtime)
+            if files:
+                print(f"  (found {len(files)} session log(s) but no commit split)")
             return 1
-        groups.append(("LOG ", files[-1:]))
 
     rows = []
     for label, paths in groups:
