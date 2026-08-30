@@ -37,7 +37,8 @@ from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
 from agent.reply_guard import (feminine_self_reference, is_confirm_echo,
                                shape_signature, is_repeat_of, cap_for,
                                remaining_text, SENT_END_RE, PLAN_CHUNK_CAP)
-from agent.response_pipeline import build_policy_and_contract, process_piece
+from agent.response_pipeline import (build_policy_and_contract, process_piece,
+                                     release_from, release_tail)
 from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
@@ -431,42 +432,12 @@ async def entrypoint(ctx: JobContext):
                     full_text.append(chunk)
                     if trim["done"]:
                         continue  # keep consuming so head/meta finalize, but speak no more
-                    trim["pending"] += chunk
-                    # Release complete sentences that fit under the cap.
-                    piece = ""
-                    while True:
-                        m = SENT_END_RE.search(trim["pending"])
-                        if not m:
-                            break
-                        sentence = trim["pending"][:m.end()]
-                        if trim["emitted"] + len(sentence) > caps["cap"] and trim["emitted"] > 0:
-                            # THIN-OUTPUT GUARD (evidence 200615 t3: model wrote
-                            # 167c; first boundary at 16c; rest dropped ->
-                            # uselessly short reply). If kept-so-far is thin,
-                            # FILL the remaining budget with a word-boundary
-                            # cut of this sentence instead of dropping it.
-                            if trim["emitted"] < caps["cap"] * 0.5:
-                                budget = caps["cap"] - trim["emitted"]
-                                fill = sentence[:budget]
-                                sp = fill.rfind(" ")
-                                if sp > 15:
-                                    fill = fill[:sp + 1]
-                                piece += fill
-                                trim["emitted"] += len(fill)
-                            trim["done"] = True
-                            break
-                        piece += sentence
-                        trim["pending"] = trim["pending"][m.end():]
-                        trim["emitted"] += len(sentence)
-                    # Pathological single unbroken sentence: cut at a word
-                    # boundary so audio can start at all.
-                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > caps["cap"]:
-                        cut = trim["pending"][:caps["cap"]]
-                        sp = cut.rfind(" ")
-                        if sp > 40:
-                            piece = trim["pending"][:sp + 1]
-                            trim["pending"] = trim["pending"][sp + 1:]
-                            trim["emitted"] = sp + 1
+                    # Sentence release + cap (verbatim rules) live in
+                    # agent/response_pipeline.release_from (Slice-1 wiring
+                    # 2026-08-30): stream-chunk release, thin-output guard,
+                    # pathological-cut — so the replay harness reproduces the
+                    # exact piece stream offline from llm_response_full.
+                    piece = release_from(trim, chunk, cap=caps["cap"])
                     if trim["done"] and trim["pending"].strip():
                         turn["reply_trimmed"] = True
                     if piece:
@@ -485,13 +456,9 @@ async def entrypoint(ctx: JobContext):
                 # boundary (most replies end without trailing punctuation).
                 # Done inside the body — a finally cannot yield.
                 if not trim["done"] and trim["pending"]:
-                    piece = trim["pending"]
-                    if trim["emitted"] + len(piece) > caps["cap"] and trim["emitted"] > 0:
-                        cut = piece[:caps["cap"] - trim["emitted"]]
-                        sp = cut.rfind(" ")
-                        piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
+                    if trim["emitted"] + len(trim["pending"]) > caps["cap"] and trim["emitted"] > 0:
                         turn["reply_trimmed"] = True
-                    trim["pending"] = ""
+                    piece = release_tail(trim, cap=caps["cap"])
                     if piece.strip():
                         piece = process_piece(
                             piece, turn,

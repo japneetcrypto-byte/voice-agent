@@ -10,6 +10,11 @@ Extracted VERBATIM (no logic change) into pure functions:
      nudge + challenge reconciliation + recovery + reconcile payloads.
   2. process_piece()              — per-piece enforcement chain: tag-strip,
      specials, merged-words, hard gate + events, repeat guard, script.
+  3. release_from() / release_tail() — the sentence-boundary trim/cap
+     release loop (was inline in text_stream_tee): stream-chunk release +
+     thin-output guard + pathological-cut + tail release. Pure over a
+     mutable trim state, so the replay harness feeds llm_response_full and
+     gets the EXACT pieces the live tee would have spoken.
 
 main.py calls these instead of the inline blocks. Slice 2 (the async
 LLM->TTS playback loop + LiveKit seam) remains in main.py until baseline
@@ -224,4 +229,76 @@ def process_piece(
             piece = _rep_line
             guard_state["guarded"] = True
             guard_state["trim"]["done"] = True
+    return piece
+
+
+# ---------------------------------------------------------------------------
+# 3. Sentence-release loop (verbatim from main.py text_stream_tee)
+# ---------------------------------------------------------------------------
+def release_from(trim: dict, chunk: str, *, cap: int) -> str:
+    """One stream-chunk step of the sentence-release loop (verbatim from
+    main.py's text_stream_tee, Phase-0 Slice-1 extraction 2026-08-30).
+
+    Mutates trim {"pending", "emitted", "done"} in place — the same object
+    main.py passes. Rules preserved byte-for-byte:
+      - release complete sentences (SENT_END_RE) while emitted stays under cap
+      - thin-output guard: if kept-so-far is <50% of cap, FILL the remaining
+        budget with a word-boundary cut instead of dropping the sentence
+      - pathological single unbroken sentence > cap: cut at a word boundary
+        so audio can start at all
+    Returns the piece to speak ("" when nothing to release this chunk).
+    Piece boundaries are chunking-invariant: feeding the full text in one
+    chunk yields the same piece stream as the live incremental tee, so the
+    replay harness can feed llm_response_full offline.
+    """
+    if trim["done"]:
+        return ""
+    trim["pending"] += chunk
+    piece = ""
+    while True:
+        m = SENT_END_RE.search(trim["pending"])
+        if not m:
+            break
+        sentence = trim["pending"][:m.end()]
+        if trim["emitted"] + len(sentence) > cap and trim["emitted"] > 0:
+            # THIN-OUTPUT GUARD (evidence 200615 t3: model wrote 167c; first
+            # boundary at 16c; rest dropped -> uselessly short reply).
+            if trim["emitted"] < cap * 0.5:
+                budget = cap - trim["emitted"]
+                fill = sentence[:budget]
+                sp = fill.rfind(" ")
+                if sp > 15:
+                    fill = fill[:sp + 1]
+                piece += fill
+                trim["emitted"] += len(fill)
+            trim["done"] = True
+            break
+        piece += sentence
+        trim["pending"] = trim["pending"][m.end():]
+        trim["emitted"] += len(sentence)
+    # Pathological single unbroken sentence: cut at a word boundary so audio
+    # can start at all.
+    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > cap:
+        cut = trim["pending"][:cap]
+        sp = cut.rfind(" ")
+        if sp > 40:
+            piece = trim["pending"][:sp + 1]
+            trim["pending"] = trim["pending"][sp + 1:]
+            trim["emitted"] = sp + 1
+    return piece
+
+
+def release_tail(trim: dict, *, cap: int) -> str:
+    """Tail release after the stream ends (verbatim from text_stream_tee):
+    most replies end without trailing punctuation, so the remaining pending
+    is released (word-boundary-capped). Clears trim["pending"]. Returns the
+    final piece to speak ("" if nothing left / already done)."""
+    if trim["done"] or not trim["pending"]:
+        return ""
+    piece = trim["pending"]
+    if trim["emitted"] + len(piece) > cap and trim["emitted"] > 0:
+        cut = piece[:cap - trim["emitted"]]
+        sp = cut.rfind(" ")
+        piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
+    trim["pending"] = ""
     return piece

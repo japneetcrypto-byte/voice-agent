@@ -12,9 +12,10 @@ Run: python3 phase5/tests/test_response_pipeline.py
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from agent.response_pipeline import build_policy_and_contract, process_piece
+from agent.response_pipeline import (build_policy_and_contract, process_piece,
+                                     release_from, release_tail)
 from agent.response_contract import GATE_BLOCK_LINES
-from agent.reply_guard import REPEAT_BREAK_LINES
+from agent.reply_guard import REPEAT_BREAK_LINES, cap_for
 
 fails = 0
 def check(label, got, want):
@@ -229,6 +230,76 @@ out = process_piece(prev, turn, recent_reply_texts=[prev], user_text="",
                     run_repeat_guard=False)
 check("tail not guarded", turn.get("repeat_guarded"), None)
 check("tail piece passed through", out, prev)
+
+# ---------------------------------------------------------------------------
+def speak(full_text, *, cap, chunk_size=13):
+    """Simulate text_stream_tee: release_from per chunk + release_tail.
+    Returns (joined_spoken, pieces)."""
+    trim = {"pending": "", "emitted": 0, "done": False}
+    pieces = []
+    for i in range(0, len(full_text), chunk_size):
+        p = release_from(trim, full_text[i:i + chunk_size], cap=cap)
+        if p:
+            pieces.append(p)
+    t = release_tail(trim, cap=cap)
+    if t:
+        pieces.append(t)
+    return "".join(pieces), pieces
+
+def norm(s):
+    """Content normalization for the replay premise: the live tee's cap-trim
+    point depends on token-stream chunk boundaries (a space at the trim edge
+    may or may not have arrived in the same chunk), so trimmed spoken text is
+    byte-equal modulo whitespace at the trim boundary."""
+    return " ".join(s.split())
+
+print("== release_from/release_tail: cap + sentence boundaries ==")
+full = ("Pehli baat yeh hai ki humein plan banana hoga. "
+        "Dusri baat yeh hai ki time kam hai. Teesri baat simple hai.")
+cap = cap_for(False)
+out, _ = speak(full, cap=cap)
+check("untrimmed turn: spoken == full text (byte-exact)", out, full)
+
+print("== release_from: chunking invariance (offline replay premise) ==")
+for cap in (cap_for(False), cap_for(True), 60):
+    a, _ = speak(full, cap=cap, chunk_size=13)
+    b, _ = speak(full, cap=cap, chunk_size=1)
+    c, _ = speak(full, cap=cap, chunk_size=len(full))
+    trimmed = len(a) != len(full)
+    if not trimmed:
+        check(f"untrimmed chunkings byte-identical at cap={cap}", (a == b == c), True)
+    check(f"chunkings content-identical at cap={cap}",
+          (norm(a) == norm(b) == norm(c)), True)
+
+print("== release_from: cap trims to the cap boundary ==")
+out60, _ = speak(full, cap=60, chunk_size=13)
+check("trimmed output within cap", len(out60) <= 61, True)
+check("trimmed output starts with first sentence", out60.startswith("Pehli baat"), True)
+check("trimmed output content = prefix of full", norm(full).startswith(norm(out60)), True)
+
+print("== release_from: thin-output guard fills thin replies ==")
+# Model writes a long text whose first sentence boundary is tiny: kept-so-far
+# thin (<50% cap), so the next sentence is FILLED into the budget instead of
+# dropped (evidence 200615 t3: 167c, first boundary at 16c -> empty reply).
+full2 = ("short. " + "y" * 60 + ".")
+cap = 50
+out2, _ = speak(full2, cap=cap, chunk_size=7)
+check("thin reply filled beyond first boundary", len(out2) > 20, True)
+
+print("== release_from: pathological unbroken sentence -> word cut, then tail ==")
+full3 = "aardvark " * 40
+out3, pieces3 = speak(full3, cap=50, chunk_size=11)
+check("pathological cut at word boundary (45 chars)", pieces3[0], "aardvark aardvark aardvark aardvark aardvark ")
+check("tail cuts remaining budget mid-word (verbatim rule)", pieces3[-1], "aardv")
+check("total within cap", len(out3), 50)
+
+print("== release_tail: trailing text without punctuation is released ==")
+trim = {"pending": "", "emitted": 0, "done": False}
+p = release_from(trim, "yeh baat pakki hai, aur", cap=100)
+check("no sentence boundary yet -> no piece", p, "")
+t = release_tail(trim, cap=100)
+check("tail releases remainder", t, "yeh baat pakki hai, aur")
+check("tail clears pending", trim["pending"], "")
 
 print()
 if fails:
