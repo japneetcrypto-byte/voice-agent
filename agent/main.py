@@ -28,20 +28,17 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
-from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
-     continues_or_asks
-from agent.transcript_router import route_transcript
-from agent.response_contract import build_contract, gate_reply, check_violations
+from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS
+from agent.response_contract import check_violations
 from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
-     reconcile_payload as response_reconcile_payload, \
      FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
-from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
-                               clean_specials, is_confirm_echo, devanagari_present,
-                               shape_signature, is_challenge, is_detail_request,
-                               is_repeat_of, cap_for, remaining_text, SENT_END_RE,
-                               PLAN_CHUNK_CAP, repeat_break_for)
+from agent.reply_guard import (feminine_self_reference, is_confirm_echo,
+                               shape_signature, is_repeat_of, cap_for,
+                               remaining_text, SENT_END_RE, PLAN_CHUNK_CAP)
+from agent.response_pipeline import build_policy_and_contract, process_piece
+from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -305,122 +302,27 @@ async def entrypoint(ctx: JobContext):
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         tmark("LLM_STARTED", turn=turn.get("turn"))
         if engine and engine.get("sess"):
-            turn["engine_path"] = ("supervisor" if turn.get("turn_type") == "supervisor_rescue"
-                                    else "fused")
-            turn["owner"] = (sess_owner_id() or "")[:8]
+            # ---- Phase-0 Slice-1 (wired 2026-08-30): deterministic policy +
+            # contract construction now lives in agent/response_pipeline.py —
+            # extracted verbatim so the harness can replay it. Contract,
+            # detail latch, anti-parrot nudge, challenge reconciliation,
+            # recovery, reconcile payloads: pure logic, no LiveKit.
             sess = engine["sess"]
             lcm = engine.get("lcm")
-            if user_text and turn.get("turn_type", "speech") == "speech":
-                lcm.add_turn("user", user_text)
-            if lcm.needs_compression():
-                overflow = lcm.get_overflow_turns()
-                if overflow:
-                    prompt = lcm.get_compression_prompt(overflow)
-                    asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
-            turn["policy"] = sess.policy_for_turn()
-            # Response Contract (boundaries in code, LLM inside them):
-            # compact MUST_NOT/GOAL/TOPIC/MODE injected into the policy
-            # object the LLM sees. Deterministic, no LLM call.
-            try:
-                # last_claim: first sentence of the most recent reply (the
-                # no-contradict constraint was DEAD without it — task wiring
-                # 2026-08-30). Deterministic, no LLM.
-                _last_claim = None
-                if recent_reply_texts:
-                    _m = SENT_END_RE.search(recent_reply_texts[-1])
-                    _last_claim = (recent_reply_texts[-1][:_m.end()] if _m
-                                   else recent_reply_texts[-1])
-                _active_topic = ((lcm.get_layer2() or {}).get("active_topic")
-                                 if lcm else None)
-                _contract = build_contract(
-                    policy=turn["policy"],
-                    active_topic=_active_topic,
-                    last_reply=(recent_reply_texts[-1] if recent_reply_texts else None),
-                    last_claim=_last_claim,
-                    detail_mode=detail_mode["turns_left"] > 0,
-                    is_recovery=turn.get("route_action") == "contextual_recovery",
-                    memory_count=len(sess.memory_view()) if sess else 0,
-                    route_action=turn.get("route_action"),
-                )
-                turn["policy"]["contract"] = _contract
-            except Exception as e:
-                print(f"[Contract] build failed: {e}")
-
-            # DETAILED MODE (directive synthesis): explicit detail request
-            # latches chunked delivery for the next N turns; continuation
-            # cues ('haan/aage/phir') keep it alive. Policy marker
-            # policy.delivery drives persona V1.11 rule 1b.
-            if user_text and is_detail_request(user_text):
-                detail_mode["turns_left"] = 6
-            elif (detail_mode["turns_left"] > 0 and user_text
-                  and continues_or_asks(user_text)):
-                # RENEWAL (evidence session 203226: latch expired at t10 mid-
-                # explanation; 11-14s monologues returned). A continuation cue
-                # or a question during a detail conversation extends it — the
-                # user is still walking through the detail.
-                # Plan-done (locked task item 3): when the model's own plan
-                # (current >= total) is complete, renewal shrinks to 1 turn so
-                # the next cue wraps up instead of re-entering detail mode.
-                _prev_plan2 = (engine.get("last_head_plan") if engine else None)
-                _plan_done = bool(isinstance(_prev_plan2, dict)
-                                  and isinstance(_prev_plan2.get("total"), int)
-                                  and isinstance(_prev_plan2.get("current"), int)
-                                  and _prev_plan2["current"] >= _prev_plan2["total"])
-                if _plan_done:
-                    turn["detail_complete"] = True
-                    log_event("DETAIL_PLAN_DONE", turn_id=turn.get("turn"),
-                              details={"total": _prev_plan2["total"]})
-                    print(f"[Detail] plan done (chunk {_prev_plan2['current']}/"
-                          f"{_prev_plan2['total']}) — next cue wraps up")
-                detail_mode["turns_left"] = max(detail_mode["turns_left"], 1 if _plan_done else 4)
-            if detail_mode["turns_left"] > 0 and isinstance(turn["policy"], dict):
-                detail_mode["turns_left"] -= 1
-                turn["detail_mode"] = True
-                if user_text and any(w in user_text.lower() for w in
-                                     ("haan", "aage", "phir", "हाँ", "आगे", "और")):
-                    turn["policy"]["delivery"] = "continue_detail"
-                else:
-                    turn["policy"]["delivery"] = "chunked_detail"
-            # Anti-parrot nudge (application layer, deterministic): when the
-            # parrot-streak detector fired, extend the avoid list for this call.
-            # The mutated object goes to the LLM AND the turn log — one truth.
-            if int(turn.get("turn", 0)) < _stuck_nudged["until_turn"] and isinstance(turn["policy"], dict):
-                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["echo_confirm_parroting"]
-                turn["policy"]["response_goal"] = "substantive_reaction"
-            # Challenge reconciliation (evidence 185741 t20-22: user challenged
-            # the 5-10 figure; model flip-flopped twice instead of reconciling
-            # with its own history). When the user challenges a previous claim,
-            # the model must CHECK history and reconcile — own the error or
-            # explain the difference. Never blind-agree.
-            if user_text and is_challenge(user_text) and isinstance(turn["policy"], dict):
-                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["flip_flop_agreeing"]
-                turn["policy"]["response_goal"] = "reconcile_claim"
-                turn["challenge_detected"] = True
-                log_event("CHALLENGE_DETECTED", turn_id=turn.get("turn"),
-                          details={"user_text": user_text[:80]})
-                print(f"[ReplyGuard] challenge detected — reconcile-claim nudge active")
-            # Recovery turns (routing contract): meaningful-but-rejected
-            # transcripts get BOUNDED recovery — short + checkpoint-oriented,
-            # never a substantive wall on a shaky transcript.
-            if turn.get("route_action") == "contextual_recovery":
-                turn["recovery_mode"] = "contextual_recovery"
-                if isinstance(turn["policy"], dict):
-                    turn["policy"]["response_goal"] = "checkpoint_recovery"
-                    turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["long_monologue_on_shaky_transcript"]
-            # Response reconciliation (directive fix 2): if the PREVIOUS reply
-            # was interrupted (unheard / partially heard), tell this call —
-            # popped, so it applies only to the immediately-following turn.
-            _prev_response = None
-            _prev_plan = None
-            if engine is not None:
-                _prev_response = response_reconcile_payload(
-                    engine.pop("last_response", None))
-                if _prev_response:
-                    turn["reconciles_previous"] = _prev_response
-                # A-P1: prior chunk plan -> model advances current+1
-                _prev_plan = engine.pop("last_head_plan", None)
-                if _prev_plan:
-                    turn["previous_plan"] = _prev_plan
+            _prev_response, _prev_plan = build_policy_and_contract(
+                user_text=user_text,
+                turn=turn,
+                engine=engine,
+                sess=sess,
+                lcm=lcm,
+                recent_reply_texts=list(recent_reply_texts),
+                detail_mode=detail_mode,
+                stuck_nudged=_stuck_nudged,
+                log_event=log_event,
+                owner_id_fn=sess_owner_id,
+                schedule_compress=lambda lcm2, prompt, overflow: asyncio.create_task(
+                    _compress_layer2(lcm2, prompt, overflow)),
+            )
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
                 turn_type=turn.get("turn_type", "speech"),
@@ -474,10 +376,10 @@ async def entrypoint(ctx: JobContext):
         # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
         trim = {"pending": "", "emitted": 0, "done": False}
-        _repeat_guarded = False  # near-repeat guard fires once per reply
+        _repeat_guard_state = {"guarded": False, "trim": trim}  # near-repeat guard fires once per reply
         
         async def text_stream_tee():
-            nonlocal ttft_logged, _repeat_guarded
+            nonlocal ttft_logged
             try:
                 async for chunk in text_stream:
                     if not ttft_logged:
@@ -568,55 +470,13 @@ async def entrypoint(ctx: JobContext):
                     if trim["done"] and trim["pending"].strip():
                         turn["reply_trimmed"] = True
                     if piece:
-                        piece, leaked = strip_tag_leak(piece)
-                        piece = clean_specials(piece)
-                        piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece, turn_no=turn_number)
-                        if _gv:
-                            turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"],
-                                  "action": v.get("action", "flag")} for v in _gv])
-                            for v in _gv:
-                                if v.get("action") == "block":
-                                    turn["contract_block_count"] = turn.get("contract_block_count", 0) + 1
-                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"],
-                                                       "stage": "pre_tts"})
-                                else:
-                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                        # GUARDRAIL: script enforcement — persona says Roman;
-                        # code enforces it (transliterate instead of trust).
-                        if devanagari_present(piece):
-                            try:
-                                piece = devanagari_to_roman(piece)
-                                turn["script_transliterated"] = True
-                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
-                            except Exception as _te:
-                                print(f"[ScriptGuard] transliteration failed: {_te}")
-                        if leaked:
-                            turn["tag_leak_stripped"] = True
-                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
-                        # Near-repeat guard (owner: 'it is repeating', 2026-08-30):
-                        # if the model's first sentence repeats its previous reply
-                        # (which the user likely never heard — interrupted), speak
-                        # a short varied line instead and stop. Deterministic
-                        # enforcement of the no-repeat MUST_NOT; a user explicitly
-                        # asking to repeat what we said is never guarded.
-                        if not _repeat_guarded:
-                            _rep_line, _rep_kind = repeat_break_for(
-                                piece,
-                                (recent_reply_texts[-1] if recent_reply_texts else None),
-                                user_text, turn_number)
-                            if _rep_line:
-                                turn["repeat_guarded"] = _rep_kind
-                                log_event("REPEAT_GUARDED", turn_id=turn.get("turn"),
-                                          details={"kind": _rep_kind,
-                                                   "prev": (recent_reply_texts[-1] if recent_reply_texts else "")[:60]})
-                                print(f"[RepeatGuard] near-repeat ({_rep_kind}) -> {piece!r}")
-                                piece = _rep_line
-                                _repeat_guarded = True
-                                trim["done"] = True  # stop the rest of the repeat
+                        piece = process_piece(
+                            piece, turn,
+                            recent_reply_texts=recent_reply_texts,
+                            user_text=user_text,
+                            turn_number=turn_number,
+                            guard_state=_repeat_guard_state,
+                            log_event=log_event)
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -633,35 +493,14 @@ async def entrypoint(ctx: JobContext):
                         turn["reply_trimmed"] = True
                     trim["pending"] = ""
                     if piece.strip():
-                        piece, leaked = strip_tag_leak(piece)
-                        piece = clean_specials(piece)
-                        piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece, turn_no=turn_number)
-                        if _gv:
-                            turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"],
-                                  "action": v.get("action", "flag")} for v in _gv])
-                            for v in _gv:
-                                if v.get("action") == "block":
-                                    turn["contract_block_count"] = turn.get("contract_block_count", 0) + 1
-                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"],
-                                                       "stage": "pre_tts"})
-                                else:
-                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                        # GUARDRAIL: script enforcement — persona says Roman;
-                        # code enforces it (transliterate instead of trust).
-                        if devanagari_present(piece):
-                            try:
-                                piece = devanagari_to_roman(piece)
-                                turn["script_transliterated"] = True
-                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
-                            except Exception as _te:
-                                print(f"[ScriptGuard] transliteration failed: {_te}")
-                        if leaked:
-                            turn["tag_leak_stripped"] = True
-                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
+                        piece = process_piece(
+                            piece, turn,
+                            recent_reply_texts=recent_reply_texts,
+                            user_text=user_text,
+                            turn_number=turn_number,
+                            guard_state=_repeat_guard_state,
+                            log_event=log_event,
+                            run_repeat_guard=False)
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -1377,14 +1216,24 @@ async def entrypoint(ctx: JobContext):
 
                                 # P0 contract (directive 2026-08-29): invalid
                                 # transcripts get an EXPLICIT route — never a
-                                # silent fall-through. Actions: acoustic_only /
-                                # clarify (deterministic) / contextual_recovery
-                                # (fused LLM, turn marked) / normal.
-                                action, route_reason = route_transcript(
-                                    transcript.text, is_valid, rejection_reason,
-                                    transcript.avg_logprob,
+                                # silent fall-through. The DECISION now lives in
+                                # agent/turn_router.py (Phase-0 Slice-1, wired
+                                # 2026-08-30): a pure decision table that the
+                                # harness can replay. main.py keeps ONLY the
+                                # async side effects below (await response /
+                                # drop / recovery telemetry).
+                                _routing = route_decision(
+                                    transcript_text=transcript.text,
+                                    is_valid=is_valid,
+                                    rejection_reason=rejection_reason,
+                                    avg_logprob=transcript.avg_logprob,
                                     is_repetition=is_repetition_loop(transcript.text),
-                                    is_catastrophic=(rejection_reason == "catastrophic_low_confidence"))
+                                    is_catastrophic=(rejection_reason == "catastrophic_low_confidence"),
+                                    agent_was_speaking=agent_was_speaking_at_detection,
+                                    engine_bound=bool(engine and engine.get("sess")),
+                                )
+                                action = _routing["action"]
+                                route_reason = _routing["reason"]
                                 turn["route_action"] = action
                                 turn["route_reason"] = route_reason
                                 # False-barge accounting (sign-off #4): the
@@ -1399,39 +1248,25 @@ async def entrypoint(ctx: JobContext):
                                 if not is_valid:
                                     print(f"[STT Rejected] reason={rejection_reason} "
                                           f"-> route={action} ({route_reason})")
-                                    if action == "acoustic_only":
-                                        if (engine and engine.get("sess")
-                                                and not agent_was_speaking_at_detection):
-                                            turn["turn_type"] = "acoustic_only"
-                                            turn["response_trigger_reason"] = "acoustic_only_presence"
-                                            await run_agent_response(transcript.text, turn)
-                                            return
+                                    if _routing["respond_now"]:
+                                        turn["turn_type"] = _routing["turn_type"]
+                                        turn["response_trigger_reason"] = _routing["trigger"]
+                                        await run_agent_response(transcript.text, turn)
+                                        return
+                                    if _routing["drop"]:
                                         # Fall-through fix (evidence: session
-                                        # 2026-08-30 t14 — clarify with agent
-                                        # speaking silently ran the FULL LLM on a
-                                        # catastrophic transcript). Invalid turn
-                                        # while Aiva was speaking = echo/junk:
-                                        # drop silently, NEVER a substantive LLM
+                                        # 2026-08-30 t14 — a clarify/acoustic
+                                        # turn with agent speaking silently ran
+                                        # the FULL LLM on a catastrophic
+                                        # transcript). Invalid turn while Aiva
+                                        # was speaking = echo/junk: drop
+                                        # silently, NEVER a substantive LLM
                                         # answer (locked-task CA6).
-                                        turn["dropped_reason"] = f"invalid_{action}_while_agent_speaking"
+                                        turn["dropped_reason"] = _routing["drop_reason"]
                                         print(f"[STT] dropped ({action} while agent speaking) — "
                                               "no reply (CA6)")
                                         return
-                                    elif action == "clarify":
-                                        if (engine and engine.get("sess")
-                                                and not agent_was_speaking_at_detection):
-                                            turn["turn_type"] = "unclear_speech"
-                                            turn["response_trigger_reason"] = "unclear_stt_clarify"
-                                            await run_agent_response(transcript.text, turn)
-                                            return
-                                        # Fall-through fix (same evidence): never
-                                        # a substantive LLM answer on an unclear
-                                        # transcript during playback.
-                                        turn["dropped_reason"] = f"invalid_{action}_while_agent_speaking"
-                                        print(f"[STT] dropped (clarify while agent speaking) — "
-                                              "no reply (CA6)")
-                                        return
-                                    elif action == "contextual_recovery":
+                                    if _routing["recovery"]:
                                         turn["recovery_mode"] = "contextual_recovery"
                                         tmark("CONTEXTUAL_RECOVERY", turn=turn.get("turn"))
                                         log_event("CONTEXTUAL_RECOVERY", turn_id=turn.get("turn"),
