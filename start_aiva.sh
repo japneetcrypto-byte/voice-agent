@@ -6,7 +6,7 @@
 cd "$(dirname "$0")"
 
 echo "Updating code..."
-git pull origin arena/01a03e6f-voice-agent 2>/dev/null
+git pull origin arena/01a05304-voice-agent 2>/dev/null
 
 echo "Killing old processes..."
 kill -9 $(lsof -ti:3001) 2>/dev/null

@@ -25,6 +25,10 @@ import re
 # (persona V1.10 drives that). 240 chars ~ 15s spoken ceiling; the trim still
 # cuts at sentence boundaries and keeps the full text in the log.
 REPLY_MAX_CHARS = 240          # default (small talk / normal turns)
+# Plan-driven detail turns (A-P1, locked task 2026-08-30): the model's own
+# head-plan defines chunk boundaries; code trim is FALLBACK ONLY. This is a
+# generous ceiling (a coherent paragraph chunk), not the chunker.
+PLAN_CHUNK_CAP = 320
 DETAIL_CHUNK_CAP = 110         # detailed answers: SMALL chunks (directive
                                # 2026-08-29 192439: no 10-15s monologues —
                                # detail is delivered across turns with
