@@ -319,3 +319,43 @@ def is_repeat_of(new_reply: str, previous: list[str], threshold: float = 0.85) -
                 difflib.SequenceMatcher(None, new.lower(), p.lower()).ratio() >= threshold:
             return True, "near_identical"
     return False, ""
+
+
+# User explicitly asking to repeat what WE said -> a repeat is the CORRECT
+# answer, never guarded. Deterministic exact-pattern set (Hinglish + Devanagari).
+_REPEAT_REQUEST_RE = re.compile(
+    r"kya bola|kya kaha|kya keh|bolo na kya|dobara bolo|dubara bolo|phir se bolo"
+    r"|repeat|ek baar aur|फिर से बोलो|दोबारा बोलो|क्या बोला|क्या कहा|क्या बोले"
+    r"|what did you say|say that again",
+    re.IGNORECASE)
+
+# Deterministic repeat-break lines (enforcement of the no-repeat MUST_NOT).
+# Rotated by turn — pick_line discipline, no randomness.
+REPEAT_BREAK_LINES = [
+    "haan, main sun raha hoon. aage bolo.",
+    "achha, samajh gaya. aage kya hua?",
+    "haan haan, bolo — main poora sun raha hoon.",
+]
+
+
+def repeat_break_for(piece: str, last_reply: str | None, user_text: str,
+                     turn_no: int) -> tuple[str | None, str | None]:
+    """Deterministic near-repeat guard (owner: 'it is repeating', 2026-08-30).
+
+    When the model's FIRST sentence is a verbatim/near repeat of its previous
+    reply, substitute a short varied continuation line INSTEAD (the previous
+    reply was likely never heard — interrupted/barge-in — and speaking it
+    again reads as a broken record). A user who explicitly asks to repeat
+    what we said is NEVER guarded.
+
+    Returns (substitute_line|None, kind|None). Pure — no LLM, no I/O.
+    """
+    piece = (piece or "").strip()
+    if not piece or not last_reply:
+        return None, None
+    if _REPEAT_REQUEST_RE.search(user_text or ""):
+        return None, None
+    rep, kind = is_repeat_of(piece, [last_reply])
+    if not rep:
+        return None, None
+    return REPEAT_BREAK_LINES[turn_no % len(REPEAT_BREAK_LINES)], kind

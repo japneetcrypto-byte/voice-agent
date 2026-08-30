@@ -27,6 +27,7 @@ def load_logs(paths):
     turns, events = [], []
     for p in paths:
         if not os.path.exists(p):
+            print(f"  (missing log file: {p})")
             continue
         for line in open(p, encoding="utf-8"):
             line = line.strip()
@@ -46,7 +47,10 @@ def load_logs(paths):
 def agg(turns, events, label):
     n = len(turns)
     if not n:
-        return {"label": label, "turns": 0}
+        base = {"label": label, "turns": 0}
+        for _k, _ in METRICS:
+            base[_k] = None
+        return base
 
     replied = [t for t in turns if t.get("tts_text") or t.get("llm_response")]
     audio = [t["tts"]["audio_duration_s"] for t in turns
@@ -199,7 +203,7 @@ def main():
     print("=" * 78)
     for i, (label, paths) in enumerate(groups):
         r = rows[i]
-        print(f"\n[{label.strip()}] {r['label']} — {len(paths)} file(s), {r['turns']} turns")
+        print(f"\n[{label.strip()}] {r['label']} — {len(paths)} file(s), {fmt(r['turns'])} turns")
         print(f"  provider incidents: {r['provider_incident_events']} "
               f"(429: {r['provider_429_events']})  <-- confounder flag for A/B")
     print("\n" + "-" * 78)

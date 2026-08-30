@@ -30,6 +30,9 @@ BAND_MIN, BAND_MAX = 0.5, 0.6
 def load_turns(paths):
     turns = []
     for p in paths:
+        if not os.path.exists(p):
+            print(f"  (missing log file: {p})")
+            continue
         try:
             for line in open(p, encoding="utf-8"):
                 line = line.strip()

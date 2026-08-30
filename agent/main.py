@@ -41,7 +41,7 @@ from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merg
                                clean_specials, is_confirm_echo, devanagari_present,
                                shape_signature, is_challenge, is_detail_request,
                                is_repeat_of, cap_for, remaining_text, SENT_END_RE,
-                               PLAN_CHUNK_CAP)
+                               PLAN_CHUNK_CAP, repeat_break_for)
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
@@ -471,9 +471,10 @@ async def entrypoint(ctx: JobContext):
         # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
         trim = {"pending": "", "emitted": 0, "done": False}
+        _repeat_guarded = False  # near-repeat guard fires once per reply
         
         async def text_stream_tee():
-            nonlocal ttft_logged
+            nonlocal ttft_logged, _repeat_guarded
             try:
                 async for chunk in text_stream:
                     if not ttft_logged:
@@ -593,6 +594,26 @@ async def entrypoint(ctx: JobContext):
                         if leaked:
                             turn["tag_leak_stripped"] = True
                             log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
+                        # Near-repeat guard (owner: 'it is repeating', 2026-08-30):
+                        # if the model's first sentence repeats its previous reply
+                        # (which the user likely never heard — interrupted), speak
+                        # a short varied line instead and stop. Deterministic
+                        # enforcement of the no-repeat MUST_NOT; a user explicitly
+                        # asking to repeat what we said is never guarded.
+                        if not _repeat_guarded:
+                            _rep_line, _rep_kind = repeat_break_for(
+                                piece,
+                                (recent_reply_texts[-1] if recent_reply_texts else None),
+                                user_text, turn_number)
+                            if _rep_line:
+                                turn["repeat_guarded"] = _rep_kind
+                                log_event("REPEAT_GUARDED", turn_id=turn.get("turn"),
+                                          details={"kind": _rep_kind,
+                                                   "prev": (recent_reply_texts[-1] if recent_reply_texts else "")[:60]})
+                                print(f"[RepeatGuard] near-repeat ({_rep_kind}) -> {piece!r}")
+                                piece = _rep_line
+                                _repeat_guarded = True
+                                trim["done"] = True  # stop the rest of the repeat
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -1382,6 +1403,17 @@ async def entrypoint(ctx: JobContext):
                                             turn["response_trigger_reason"] = "acoustic_only_presence"
                                             await run_agent_response(transcript.text, turn)
                                             return
+                                        # Fall-through fix (evidence: session
+                                        # 2026-08-30 t14 — clarify with agent
+                                        # speaking silently ran the FULL LLM on a
+                                        # catastrophic transcript). Invalid turn
+                                        # while Aiva was speaking = echo/junk:
+                                        # drop silently, NEVER a substantive LLM
+                                        # answer (locked-task CA6).
+                                        turn["dropped_reason"] = f"invalid_{action}_while_agent_speaking"
+                                        print(f"[STT] dropped ({action} while agent speaking) — "
+                                              "no reply (CA6)")
+                                        return
                                     elif action == "clarify":
                                         if (engine and engine.get("sess")
                                                 and not agent_was_speaking_at_detection):
@@ -1389,6 +1421,13 @@ async def entrypoint(ctx: JobContext):
                                             turn["response_trigger_reason"] = "unclear_stt_clarify"
                                             await run_agent_response(transcript.text, turn)
                                             return
+                                        # Fall-through fix (same evidence): never
+                                        # a substantive LLM answer on an unclear
+                                        # transcript during playback.
+                                        turn["dropped_reason"] = f"invalid_{action}_while_agent_speaking"
+                                        print(f"[STT] dropped (clarify while agent speaking) — "
+                                              "no reply (CA6)")
+                                        return
                                     elif action == "contextual_recovery":
                                         turn["recovery_mode"] = "contextual_recovery"
                                         tmark("CONTEXTUAL_RECOVERY", turn=turn.get("turn"))
