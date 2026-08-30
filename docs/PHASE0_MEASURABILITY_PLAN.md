@@ -128,3 +128,41 @@ transcript, acoustic, timing, tts_sink, clock, logger).
    (especially `session_*.log` + `events_*.log`).
 3. Anything in §0 (frozen) that you want explicitly unfrozen — say it now,
    it stays frozen otherwise.
+
+---
+
+## 9. Progress log (STATUS ONLY — not part of the spec above)
+
+**2026-08-30 — Slice 1 (decision core extraction) + replay gate LANDED.**
+
+- `agent/response_pipeline.py` (new): `build_policy_and_contract()` +
+  `process_piece()` + `release_from()`/`release_tail()` — the deterministic
+  decision core, extracted verbatim from `main.py` and wired in.
+- `agent/turn_router.py` (new): `route_decision()` — the routing decision
+  table (fall-through class included: invalid + agent speaking ⇒ drop,
+  never a substantive LLM answer). main.py keeps only the async side effects.
+- `agent/main.py`: 1,851 → 1,688 lines; now a thinner LiveKit adapter over
+  the pure core.
+- `phase5/harness/replay.py` (new): the replay gate — replays each archived
+  turn through the extracted core; exit 0 = identity (empty diff).
+  Coverage: routing, piece stream (release + enforcement), policy nudges
+  (detail/challenge/recovery/anti-parrot shape), reconcile payloads.
+  Documented boundary: `policy.contract` body (runtime memory_count) and
+  supervisor/idle turns need Slice-2 state snapshots.
+- `phase5/harness/fixtures/synthetic_slice1/`: synthetic archive built BY
+  the extracted core (15 turns covering all decision classes) + manifest
+  with the 4 §5 numbers. Placeholder — owner baseline logs replace it; the
+  gate must come back EMPTY on those too (the acceptance).
+- Tests: 24 suites green (21 existing + `test_response_pipeline`,
+  `test_turn_router`, `test_replay_identity`). Negative control in the
+  replay suite proves the gate flags drift (not vacuous).
+- Commits: `8bbb212` (Slice 1), `05436bc` (replay gate) — pushed to
+  `arena/01a05304-voice-agent`.
+
+**AWAITING from owner (parallel track, §5):** the baseline sessions on the
+frozen commit `e0dc60f` — `session_*.log` + `events_*.log` +
+`turn_lifecycle_*.jsonl` (+ the 4 numbers per session). On arrival:
+archive under `phase5/harness/fixtures/baseline_YYYYMMDD_N/`, run
+`python3 phase5/harness/replay.py 'phase5/harness/fixtures/*/session_*.log'`
+— empty diff is the Slice-1 gate. Then: owner smoke session on the wired
+build must match the baseline numbers (post-extraction smoke, §7).
