@@ -22,13 +22,21 @@ else:
 print(f"=== STAGE DIAGNOSTIC: {os.path.basename(p)} ===\n")
 
 turns = []
+build_line = None
 for line in open(p):
     try:
         t = json.loads(line)
     except Exception:
         continue
+    if t.get("event") == "BUILD":
+        build_line = t
     if t.get("turn"):
         turns.append(t)
+if build_line:
+    print(f"build: {build_line.get('commit')}  (worker pid {build_line.get('pid')})")
+else:
+    print("build: NOT RECORDED in this session log — the worker ran BEFORE the build-stamp")
+    print("       fix (v9). Check logs/events_*.log -> WORKER_BUILD for the commit it ran.")
 # Tasks complete concurrently (barge-in), so lines can land out of order.
 turns.sort(key=lambda t: (t.get("turn", 0)))
 
@@ -166,7 +174,16 @@ for t in turns:
           (f" | user_rels: {t.get('user_relations')}" if t.get("user_relations") else ""))
     print(f"  engine  : {epath} | decision: {t.get('turn_end_decision')} ({t.get('suppression_reason','')}) | because: {t.get('spoke_because') or t.get('response_trigger_reason')}")
     print(f"  head    : {head_s} | degrade: {t.get('degradation') or '-'}")
-    print(f"  reply   : {reply[:70]!r}" + (f" | {t.get('reply_words')}w/{t.get('reply_chars')}c" if reply else ""))
+    # Display the reply FULLY up to a sane width, with an explicit marker when
+    # truncated. The old reply[:70] silently cut mid-digit — the owner read a
+    # 13-digit recall as "the number was cut off" when the full 82-char line
+    # WAS spoken and played (smoke-10 t6/t9: 5.48s TTS). The w/c counts always
+    # show the true length; never imply truncation without saying so.
+    _rl = reply or ""
+    if len(_rl) > 120:
+        print(f"  reply   : {_rl[:120]!r}…(+{len(_rl) - 120}c) | {t.get('reply_words')}w/{t.get('reply_chars')}c")
+    else:
+        print(f"  reply   : {_rl!r}" + (f" | {t.get('reply_words')}w/{t.get('reply_chars')}c" if _rl else ""))
     print(f"  TTS     : {tts.get('provider')} audio={tts.get('audio_duration_s')}s playback={tts.get('playback_duration_s')}s")
     print(f"  latency : stt={t.get('stt_latency_s')}s llm_ttft={t.get('llm_ttft_s')}s tts_ttfa={t.get('tts_first_audio_s')}s speech->audio={t.get('speech_end_to_first_audio_s')}s")
     print(f"  context : {ctx_summary}")

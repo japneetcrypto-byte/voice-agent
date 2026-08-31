@@ -1,0 +1,104 @@
+build: 4045af7 Track 5 first slice IMPLEMENTED (rail v9): Conversation Controller owns the dictation decision —explicit ConversationState/Task objects + transition table (rows 1-43), decide() delegates, signal layer stays in precision_rail — fixes smoke-11 (task-switch, only-this, greeting-while-armed, recall survives LLM turns), behavior-preserving for v1-v10 — tests-first  (worker pid 9223)
+
+TURN 1
+  STT     : 'हेलो क्या कर रहे हो' | lang=Hindi logprob=-0.21246854999999998 | prov=groq
+  engine  : greeting | reply   : 'hello! bol kya scene hai?' | 5w/25c
+TURN 2
+  STT     : 'उन्हें ताकि फिट भो बोलेवा' | lang=Hindi logprob=-0.4315682 | prov=groq
+  engine  : fused | reply   : ''
+TURN 3
+  STT     : 'हेलो क्या कर दो कि इतना टाइम क्यों लिया है तुमने बोलने में ह' | lang=Hindi logprob=-0.19142327 | prov=groq
+  engine  : greeting | reply   : 'hello! kaise ho?' | 3w/16c
+TURN 4
+  STT     : 'बोलो इतना टाइम क्यों लिया तुमने बोलने में हेलो अरे धीरे करो ' | lang=Hindi logprob=-0.08327467 | prov=groq
+  engine  : fused | reply   : 'haan, thoda gap aa gaya tha. bata, kya chal raha hai?' | 11w/53c
+TURN 5
+  STT     : 'हेलो हेलो' | lang=Hindi logprob=-0.34540543 | prov=groq
+  engine  : greeting | reply   : 'namaste! kaise ho?' | 3w/18c
+TURN 6
+  STT     : 'शब्द बढ़ें तुम तुम जाते हैं' | lang=Hindi logprob=-0.46519375 | prov=groq
+  engine  : fused | reply   : 'main yahin hoon, bol kya chal raha hai?' | 8w/39c
+TURN 7
+  STT     : 'तो यह तक' | lang=Hindi logprob=-0.77733487| prov=groq
+  engine  : fused | reply   : 'sun raha hoon, batao aage kya hua?' | 7w/34c
+TURN 8
+  STT     : 'एक अकाउंट नंबर लिखो' | lang=Hindi logprob=-0.11758440999999999 | prov=groq
+  engine  : precision_rail | reply   : 'haan, bol number — main sun raha hoon.' | 8w/38c
+TURN 9
+  STT     : '012' | lang=Hindi logprob=-0.15963519 | prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 10
+  STT     : '1, 2, 0,' | lang=Hindi logprob=-0.42985982| prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 11
+  STT     : '1, 2,' | lang=Hindi logprob=-0.6282832 | prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 12
+  STT     : '5 x 0, 1, 2, 0, 3,' | lang=Hindi logprob=-0.46204382000000005 | prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 13
+  STT     : 'क्या लिखा तुमने?' | lang=Hindi logprob=-0.070386566 | prov=groq
+  engine  : precision_rail | reply   : 'yeh raha number — zero one two one two zero one two zero one two zero three.' | 17w/76c
+TURN 14
+  STT     : 'मैंने बोला था 5 बट 0 उसका क्या किया तुमने' | lang=Hindi logprob=-0.1538527 | prov=groq
+  engine  : fused | reply   : 'haan, woh 5 wala number yaad hai mujhe. kya hua usko lekar?' | 12w/59c
+TURN 15
+  STT     : 'वो 5 वाला नमबर नहीं है वो 5 बार 0 मैंने बोला है'| lang=Hindi logprob=-0.112817705 | prov=groq
+  engine  : precision_rail | reply   : 'haan, 00000 theek hai. poori number phir se bolo — main note kar raha hoon.' | 15w/75c
+TURN 16
+  STT     : 'तुम एक बार हमको बोलो अब क्या नंबर होगा 5 को अटाकर अगर तुम पा' | lang=Hindi logprob=-0.11823739999999999 | prov=groq
+  engine  : precision_rail | reply   : 'abhi kuch nahi likha hai — number bolo, note karta hoon.' | 11w/56c
+TURN 17
+  STT     : 'तो तुम लिख क्यों नहीं रहे हो जब हम बोल रहे हैं तो'| lang=Hindi logprob=-0.032170195 | prov=groq | corr=0.1516
+  engine  : precision_rail | reply   : ''
+TURN 18
+  STT     : 'हुआ है' | lang=Hindi logprob=-0.3087092000000001 | prov=groq | corr=0.5276
+  engine  : precision_rail | reply   : ''
+TURN 19
+  STT     : 'चलो चाहिए' | lang=Hindi logprob=-0.49118203 | prov=groq | corr=0.4149
+  engine  : precision_rail | reply   : ''
+TURN 20
+  STT     : 'एक mobile number लिखो' | lang=Hindi logprob=-0.21022831000000003 | prov=groq | corr=0.1523
+  engine  : precision_rail | reply   : ''
+TURN 21
+  STT     : 'कर दो' | lang=Hindi logprob=-0.3364045 | prov=groq | corr=0.3938
+  engine  : precision_rail | reply   : ''
+TURN 22
+  STT     : 'बोलें' | lang=Hindi logprob=-0.32074478 | prov=groq | corr=0.3627
+  engine  : precision_rail | reply   : ''
+TURN 23
+  STT     : 'दीरे कर लो यार मैंने पापा करका है मैंने तुम्हें बंद करतेहैं' | lang=Hindi logprob=-0.24086866 | prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 24
+  STT     : 'भाईया हेलो आईवा' | lang=Hindi logprob=-0.40788364000000005 | prov=groq
+  engine  : precision_rail | reply   : ''
+TURN 25
+  STT     : 'क्या हो गया तुम्हें?' | lang=Hindi logprob=-0.16708925 | prov=groq | corr=0.5022
+  engine  : precision_rail | reply   : 'abhi kuch nahi aaya — number bolo, main sun raha hoon.' | 11w/54c
+TURN 26
+  STT     : '7398' | lang=Hindi logprob=-0.30458364 | prov=groq | corr=0.3219
+  engine  : precision_rail | reply   : ''
+TURN 27
+  STT     : '438138' | lang=Hindi logprob=-0.25565177 |prov=groq | corr=0.1022
+  engine  : precision_rail | reply   : ''
+TURN 28
+  STT     : 'क्या लिखा?' | lang=Hindi logprob=-0.14060509 | prov=groq | corr=0.2644
+  engine  : precision_rail | reply   : 'yeh raha number — seven three nine eight four three eight one three eight.' | 14w/74c
+TURN 29
+  STT     : 'ठीक है अब हमको जरा वह चाहिए ज़िन के बारे में बताओ' | lang=Hindi logprob=-0.24553986000000003 | prov=groq
+  engine  : precision_rail | reply   : 'main suna: seven three nine eight four three eight one three eight. yeh hi hai na?' | 16w/82c
+TURN 30
+  STT     : 'में तरह ओ' | lang=Hindi logprob=-0.7234087 |prov=groq | corr=0.2959
+  engine  : precision_rail | reply   : ''
+TURN 31
+  STT     : 'बताओ जरा' | lang=Hindi logprob=-0.47276005| prov=groq | corr=0.0972
+  engine  : precision_rail | reply   : 'yeh raha number — seven three nine eight four three eight one three eight.' | 14w/74c
+TURN 32
+  STT     : 'अब मैं बोल रहा हूं वॉइस एजेंट के बारे में बताओ' | lang=Hindi logprob=-0.14821653 | prov=groq
+  engine  : precision_rail | reply   : 'note kiya hua hai: seven three nine eight four three eight one three eight.' | 14w/75c
+
+--- SESSION SUMMARY ---
+turns=32 replies=16 ctx_captured=6/16 heads=0 errors=0
+engine paths: {'greeting': 3, 'fused': 5, 'precision_rail': 24}
+echo corr (voice key): n=12 min=0.0972 med=0.3219 max=0.5276
+stt providers: {'groq': 32}

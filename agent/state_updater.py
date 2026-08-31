@@ -92,9 +92,32 @@ def normalize_label(raw: str, conf: float, log: list) -> tuple[str, float, bool]
     return "neutral_unclear", min(conf, 0.3), True
 
 
+def classify_mode(text: str) -> str:
+    """Deterministic conversation mode from the user's turn. Root cause of
+    the owner's smoke-13 complaint ('while I am speaking it says \"main
+    yahin hoon, sun raha hoon\"'): mode defaulted to VENT and was NEVER
+    transitioned, so the LLM was told every conversation was
+    'encourage_continuation' and answered neutral turns with listening
+    filler. Modes are now turn-derived; the default is CALM.
+    Precedence: CLOSING > ADVICE > VENT > CALM."""
+    t = text or ""
+    words = len(re.findall(r"[\w\u0900-\u097F]+", t))
+    if words <= 8 and re.search(
+            r"\b(?:bye|goodbye|अलविदा|चलता हूँ|चलती हूँ|निकलता हूँ|जाता हूँ|"
+            r"बस इतना|बस यही)\b", t, re.IGNORECASE):
+        return "CLOSING"
+    if re.search(r"क्या करूँ|क्या करुं|सलाह|advice|suggest|क्या करना चाहिए|"
+                 r"कैसे करूँ|क्या करें|बताओ क्या करें", t, re.IGNORECASE):
+        return "ADVICE"
+    if re.search(r"मैंने|मुझसे|मेरे साथ|परेशान|दिक्कत|तकलीफ|तंग आ|गुस्सा|"
+                 r"बुरा हुआ|बहुत खराब", t):
+        return "VENT"
+    return "CALM"
+
+
 def default_state() -> dict:
     return {
-        "mode": {"current": "VENT", "since_turn": 0, "pending_target": None, "pending_count": 0},
+        "mode": {"current": "CALM", "since_turn": 0, "pending_target": None, "pending_count": 0},
         "emotion": {"primary": "neutral_unclear", "valence": "neutral",
                     "intensity": {"ordinal": 2}, "confidence": 0.0,
                     "trajectory": "stable", "recent_estimates": [],
@@ -113,7 +136,7 @@ def default_state() -> dict:
                                                      "questions_last_2_turns": 0,
                                                      "advice_given": 0,
                                                      "last_move": None},
-                          "mode_history": ["VENT"]},
+                          "mode_history": ["CALM"]},
         "degraded_perception": False,
         "parse_fail_streak": 0,
         "idle": {"line_used": False},
@@ -146,6 +169,14 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
     events = events or {}
 
     turn_type = tr.get("turn_type", "speech")
+
+    # ---- Conversation mode is TURN-DERIVED (owner smoke-13: VENT-locked
+    # default made the LLM say 'sun raha hoon, batao aage' on neutral
+    # turns). Deterministic; the head-based ADVICE inference below can still
+    # override on its hysteresis. ----
+    if tr.get("user_text"):
+        state["mode"]["current"] = classify_mode(tr["user_text"])
+        state["mode"]["since_turn"] = turn
 
     # ---- Degradation turns (C7 D7/D8): no head, deterministic responses ----
     if turn_type == "unclear_speech":
@@ -531,7 +562,11 @@ def update(prev_state: dict | None, turn_record: dict, head: dict | None,
     elif traj == "falling" or (state["conversation"].get("turn_count", 0) > 12):
         phase = "winding_down"
     else:
-        phase = "venting"
+        # 'venting' was the catch-all default (with VENT mode default) — the
+        # root of the LLM answering neutral turns with 'sun raha hoon, batao
+        # aage'. Neutral conversation is now the default; venting must be
+        # detected, not assumed.
+        phase = "conversing"
     state["conversation"]["phase"] = phase
 
     # ---- Step 13: ledger (only fully-spoken responses count) ----

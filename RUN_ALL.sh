@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 
 echo "== STEP 0: update code =="
-git pull origin arena/01a03e6f-voice-agent || echo "(pull skipped)"
+git pull origin arena/01a05304-voice-agent || echo "(pull skipped)"
 
 echo ""
 echo "== STEP 1: offline unit tests (no API key) =="
@@ -15,6 +15,22 @@ uv run python phase4/harness/eval_runner.py --batch2 --determinism 3
 echo ""
 echo "--- Turn controller regression ---"
 uv run python phase5/tests/test_turn_controller.py
+
+echo ""
+echo "--- STT validation gates (segment aggregation + suspicious band) ---"
+uv run python phase5/tests/test_stt_validation.py
+
+echo ""
+echo "--- Semantic ack selection (Fish-voice acks) ---"
+uv run python phase5/tests/test_ack_selection.py
+
+echo ""
+echo "--- TTS warmup policy (pre-warm) ---"
+uv run python phase5/tests/test_tts_warmup.py
+
+echo ""
+echo "--- Contract wiring (last_claim/last_reply + priority cap) ---"
+uv run python phase5/tests/test_contract_wiring.py
 
 echo ""
 echo "--- Adaptive endpointing regression ---"

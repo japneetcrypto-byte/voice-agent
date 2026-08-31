@@ -28,97 +28,30 @@ from providers.stt import get_stt_provider, devanagari_to_roman
 from providers.stt_router import STTRouter
 from providers.speaker_signature import echo_score
 from agent.layered_context import LayeredContextManager
-from agent.turn_controller import decide as turn_controller_decide, GREETING_MARKERS, \
-     continues_or_asks
-from agent.transcript_router import route_transcript
-from agent.response_contract import build_contract, gate_reply
+from agent.turn_controller import (decide as turn_controller_decide,
+                                   greeting_line_for, GREETING_MARKERS)
+from agent.response_contract import check_violations
 from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
-     reconcile_payload as response_reconcile_payload, \
      FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
-from agent.reply_guard import (feminine_self_reference, strip_tag_leak, fix_merged_words,
-                               clean_specials, is_confirm_echo, devanagari_present,
-                               shape_signature, is_challenge, is_detail_request,
-                               is_repeat_of, cap_for, remaining_text, SENT_END_RE)
+from agent.reply_guard import (feminine_self_reference, is_confirm_echo,
+                               shape_signature, is_repeat_of, cap_for,
+                               remaining_text, SENT_END_RE, PLAN_CHUNK_CAP)
+from agent.response_pipeline import (build_policy_and_contract, process_piece,
+                                     release_from, release_tail)
+from agent.precision_rail import decide as precision_rail_decide
+from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
 from providers.tts import get_tts_provider
 
 from agent.config import Config
+from agent.stt_validation import (validate_transcript as is_real_user_turn,
+                                  classify_turn_relation, is_repetition_loop,
+                                  BACKCHANNEL_TOKENS, LISTEN_REQUEST_TOKENS)
 
 import re
-
-def is_real_user_turn(transcript, speech_duration_ms: float) -> tuple[bool, str]:
-    text = transcript.text.strip()
-    if not text:
-        return False, "empty_transcript"
-        
-    # Hallucination patterns
-    lower_text = text.lower()
-    hallucinations = ["i am good.", "i am good", "thank you.", "thanks for watching.", "subscribe."]
-    if any(lower_text == h for h in hallucinations):
-        return False, "known_hallucination_pattern"
-        
-    # Reject if it's just punctuation/symbols (common Whisper noise hallucination)
-    if not re.search(r'[a-zA-Z0-9\u0900-\u097F]', text):
-        return False, "punctuation_only"
-        
-    if (transcript.no_speech_prob is not None and 
-            transcript.no_speech_prob > Config.NO_SPEECH_THRESHOLD):
-        return False, "high_no_speech_prob"
-        
-    if (transcript.avg_logprob is not None and 
-            transcript.avg_logprob < -0.85):
-        return False, "catastrophic_low_confidence"
-        
-    if (transcript.avg_logprob is not None and 
-            transcript.avg_logprob < Config.AVG_LOGPROB_THRESHOLD):
-        return False, "low_avg_logprob"
-        
-    return True, "accepted"
-
-
-# C7-style deterministic turn-taking flags (exact-match only — no interpretation;
-# same class as is_real_user_turn's hallucination blacklist). Consumed by the
-# policy derivation as structured booleans.
-BACKCHANNEL_TOKENS = {"haan", "han", "hmm", "hm", "hmmm", "okay", "ok", "accha", "achha",
-                       "acha", "phir", "bol", "yeah", "yes", "हाँ", "हम्म", "अच्छा", "ठीक"}
-LISTEN_REQUEST_TOKENS = {"chup", "chupchup", "suno", "suno_bas", "bassuno", "pehlemeribaatsun",
-                          "beechmeinmatbolo", "chupraho", "meribaatsun", "pehlesunomera"}
-
-
-def is_repetition_loop(transcript_text: str) -> bool:
-    """Deterministic detector for Whisper degeneration (evidence 2026-08-27):
-    'ake ake ake ake', 'bake bake bake': same token repeated >=4x consecutively,
-    or one token dominating the transcript."""
-    words = re.findall(r"[\w\u0900-\u097F]+", (transcript_text or ""), re.UNICODE)
-    if len(words) >= 4:
-        run, prev = 1, None
-        for w in words:
-            lw = w.lower()
-            run = run + 1 if lw == prev else 1
-            prev = lw
-            if run >= 4 and len(prev) >= 2:
-                return True
-        from collections import Counter
-        top, n = Counter(w.lower() for w in words).most_common(1)[0]
-        if n >= 3 and len(top) >= 2 and n / len(words) >= 0.5:
-            return True
-    return False
-
-
-def classify_turn_relation(transcript_text: str) -> str:
-    """Exact-token match on the normalized transcript (no interpretation)."""
-    norm = re.sub(r"[^\w\s]", "", (transcript_text or "").lower()).strip()
-    norm = re.sub(r"\s+", "", norm)
-    if not norm:
-        return "empty"
-    if any(tok in norm for tok in LISTEN_REQUEST_TOKENS):
-        return "listen_request"
-    if norm in BACKCHANNEL_TOKENS or norm in {"bas", "hmmhaan", "haanhmm"}:
-        return "backchannel"
-    return "content"
 
 
 def is_echo(transcript_text: str, recent_agent_text: str) -> tuple[bool, float]:
@@ -191,6 +124,20 @@ async def entrypoint(ctx: JobContext):
             print(f"[StateEngine] on (persona {PROMPT_VERSION}) — components: "
                   f"fused=ON store=ON lcm=ON sess=BINDS-ON-PARTICIPANT-JOIN "
                   f"gemini_stt={'ON' if engine.get('gemini_stt') else 'off'}")
+            # BUILD STAMP (2026-08-31, owner smokes 4-8): every stale-worker
+            # report traced back to an unverifiable running version. The
+            # worker now logs its git HEAD at startup so a smoke can be
+            # matched to a commit. Best-effort — never blocks startup.
+            try:
+                _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                _head = open(os.path.join(_root, ".git", "HEAD")).read().strip()
+                if _head.startswith("ref:"):
+                    _ref = _head[5:].strip()
+                    _head = open(os.path.join(_root, ".git", _ref)).read().strip()
+                print(f"[BUILD] git={_head[:12]} — worker must match "
+                      f"'git log --oneline -1' on the checked-out branch)")
+            except Exception:
+                print("[BUILD] git=unknown (no .git at runtime root)")
         except Exception as e:
             print(f"[StateEngine] INIT FAILED: {type(e).__name__}: {e} — "
                   f"turns will speak a deterministic filler (legacy brain disabled)")
@@ -265,6 +212,24 @@ async def entrypoint(ctx: JobContext):
             f.write(json.dumps(turn_data) + "\n")
 
     log_event("WORKER_BUILD", details={"commit": _build, "pid": os.getpid()})
+    # BUILD STAMP in the SESSION log too (2026-08-31): the owner's diagnostic
+    # reads session_*.log — neither events_*.log nor worker stdout were ever
+    # looked at, so the build stayed invisible. Now the stamp lands in all
+    # three: worker console [BUILD] git=..., events_*.log WORKER_BUILD, and a
+    # JSON {"event": "BUILD", ...} line here. The diagnostic skips non-turn
+    # JSON lines, so this cannot break turn parsing.
+    try:
+        _short = _build.split()[0] if _build and _build != "unknown" else "unknown"
+        with open(session_log_path, "a") as f:
+            f.write(json.dumps({
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "event": "BUILD",
+                "commit": _build,
+                "stamp": f"[BUILD] git={_short}",
+                "pid": os.getpid(),
+            }) + "\n")
+    except Exception:
+        pass
 
     # ---- Phase-1 turn lifecycle telemetry (owner plan; monotonic, per event) ----
     # Crash-proof: every event APPENDS to disk immediately (never buffered), so
@@ -274,7 +239,10 @@ async def entrypoint(ctx: JobContext):
     tl_resume_gaps = []
     tl_barge_stop = []
     tl_frag = []
-    tl_playback = {"user_speech_mono": None}
+    # Sign-off #4 (2026-08-30): false_barge_in / total_barge_in metric —
+    # a cancel issued at VAD start whose turn turned out echo/invalid.
+    tl_playback = {"user_speech_mono": None, "barge_cancel_issued": None}
+    _barge_counter = {"total": 0, "false": 0}
     tl_path = os.path.join(log_dir,
         f"turn_lifecycle_{session_start.strftime('%Y%m%d_%H%M%S')}.jsonl")
 
@@ -300,14 +268,25 @@ async def entrypoint(ctx: JobContext):
             buckets[k] += 1
         frag_d = [f["duration_ms"] for f in tl_frag if f.get("duration_ms")]
         frag_w = [f["words"] for f in tl_frag if f.get("words") is not None]
+        stops = [b["stop_ms"] for b in tl_barge_stop if isinstance(b, dict)]
+        c2s = [b["cancel_to_stop_ms"] for b in tl_barge_stop
+               if isinstance(b, dict) and b.get("cancel_to_stop_ms") is not None]
         summary = {
             "total_events": len(tl_events),
             "resume_gap_buckets": buckets,
             "barge_stop_latency_ms": {
-                "n": len(tl_barge_stop),
-                "avg": round(sum(tl_barge_stop) / len(tl_barge_stop), 1) if tl_barge_stop else None,
-                "max": round(max(tl_barge_stop), 1) if tl_barge_stop else None,
+                "n": len(stops),
+                "avg": round(sum(stops) / len(stops), 1) if stops else None,
+                "max": round(max(stops), 1) if stops else None,
             },
+            "barge_cancel_to_stop_ms": {
+                "n": len(c2s),
+                "avg": round(sum(c2s) / len(c2s), 1) if c2s else None,
+            },
+            "barge_false_ratio": (round(_barge_counter["false"] / _barge_counter["total"], 3)
+                                  if _barge_counter["total"] else None),
+            "barge_total": _barge_counter["total"],
+            "barge_false": _barge_counter["false"],
             "stt_fragmentation": {
                 "n": len(tl_frag),
                 "avg_duration_ms": round(sum(frag_d) / len(frag_d), 1) if frag_d else None,
@@ -327,7 +306,8 @@ async def entrypoint(ctx: JobContext):
         except Exception:
             return None
 
-    async def run_agent_response(user_text: str, turn: dict):
+    async def run_agent_response(user_text: str, turn: dict, rail: dict | None = None,
+                                 greeting: str | None = None):
         if agent_task and not agent_task.done() and agent_task != asyncio.current_task():
             # A newer response task owns the floor. NEVER silent about it —
             # silent skips surfaced as 'no reply generated' mysteries in
@@ -344,110 +324,102 @@ async def entrypoint(ctx: JobContext):
         
         session.recent_agent_text = ""
         response_id = f"R{turn.get('turn', 0)}"
-        if turn.get("turn_type", "speech") == "speech":
-            session.add_user_message(user_text)
-        messages = session.get_context()
-        turn["conversation_turn_count"] = len(messages)
-        try:
-            turn["llm_input"] = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
-        except Exception:
-            turn["llm_input"] = [str(msg) for msg in messages]
+        # PRECISION-DETAIL RAIL (approved fix ①, 2026-08-31; v2 2026-08-31):
+        # dictated structured details are SYSTEM-owned — the decision is made
+        # ONCE per turn in transcribe_and_respond (so the ack can be gated
+        # off and silent decisions suppressed before any LLM work) and passed
+        # in here. The dictation is deliberately NOT added to session/lcm
+        # history (the LLM must never re-encode it) and never reaches
+        # long-term memory (PII no-store). Identical decision in run_turn
+        # (the replay interface) — agent/precision_rail.py is the single
+        # source.
+        if rail is not None:
+            turn["engine_path"] = "precision_rail"
+            turn["llm_called"] = False
+            turn["precise_detail"] = {"action": rail["action"],
+                                      "value": rail["value"],
+                                      "status": rail["status"]}
+            if rail.get("raw"):
+                turn["precise_detail"]["raw"] = rail["raw"]
+            log_event("PRECISION_RAIL", turn_id=turn.get("turn"), details={
+                "action": rail["action"], "value": rail["value"]})
+            print(f"[PrecisionRail] {rail['action']}: {rail['value']}")
+            tmark("PRECISION_RAIL", turn=turn.get("turn"))
+            if rail.get("line") is None:
+                # SILENT rail decision (accumulating / staying quiet while the
+                # user dictates): suppress the turn — no speech, no LLM.
+                turn["response_suppressed"] = True
+                turn["response_trigger_reason"] = None
+                log_event("PRECISION_RAIL_SILENT", turn_id=turn.get("turn"),
+                          details={"action": rail["action"]})
+                return
+
+            async def _precision_stream():
+                yield rail["line"]
+            text_stream = _precision_stream()
+        elif greeting is not None:
+            # GREETING RAIL (owner smoke 3, 2026-08-31): "it started with
+            # acha- not hello". A first-word greeting gets a deterministic
+            # greeting reply (no LLM), and the ack was already gated off by
+            # transcribe_and_respond.
+            turn["engine_path"] = "greeting"
+            turn["llm_called"] = False
+            log_event("GREETING", turn_id=turn.get("turn"),
+                      details={"line": greeting[:40]})
+            print(f"[Greeting] {greeting!r}")
+
+            async def _greeting_stream():
+                yield greeting
+            text_stream = _greeting_stream()
+        else:
+            if turn.get("turn_type", "speech") == "speech":
+                session.add_user_message(user_text)
+            messages = session.get_context()
+            turn["conversation_turn_count"] = len(messages)
+            try:
+                turn["llm_input"] = [{"role": msg["role"], "content": msg["content"]} for msg in messages]
+            except Exception:
+                turn["llm_input"] = [str(msg) for msg in messages]
         
-        print("Agent thinking...")
+        print("Agent thinking..." if rail is None else "Precision rail speaking...")
         llm_start = time.time()
         log_event("LLM_STARTED", turn_id=turn.get("turn"), response_id=response_id)
         tmark("LLM_STARTED", turn=turn.get("turn"))
-        if engine and engine.get("sess"):
-            turn["engine_path"] = ("supervisor" if turn.get("turn_type") == "supervisor_rescue"
-                                    else "fused")
-            turn["owner"] = (sess_owner_id() or "")[:8]
+        if rail is not None:
+            pass  # deterministic rail line — no LLM, no policy, no contract
+        elif greeting is not None:
+            # GREETING GUARD (root-caused 2026-08-31, owner smoke-10 t1 on a
+            # VERIFIED build): without this guard a greeting turn fell into
+            # the engine block below — build_policy_and_contract() clobbered
+            # turn["engine_path"] back to "fused" (response_pipeline.py:79)
+            # and text_stream was overwritten with the LLM stream, so the
+            # deterministic greeting line was NEVER spoken (t1 'हेलो' -> no
+            # reply / LLM drift "bas yahin hoon..."). The greeting stream was
+            # already set above; just skip policy/contract/LLM — identical to
+            # the replay path (run_turn guards greeting before sess_bound).
+            pass
+        elif engine and engine.get("sess"):
+            # ---- Phase-0 Slice-1 (wired 2026-08-30): deterministic policy +
+            # contract construction now lives in agent/response_pipeline.py —
+            # extracted verbatim so the harness can replay it. Contract,
+            # detail latch, anti-parrot nudge, challenge reconciliation,
+            # recovery, reconcile payloads: pure logic, no LiveKit.
             sess = engine["sess"]
             lcm = engine.get("lcm")
-            if user_text and turn.get("turn_type", "speech") == "speech":
-                lcm.add_turn("user", user_text)
-            if lcm.needs_compression():
-                overflow = lcm.get_overflow_turns()
-                if overflow:
-                    prompt = lcm.get_compression_prompt(overflow)
-                    asyncio.create_task(_compress_layer2(lcm, prompt, overflow))
-            turn["policy"] = sess.policy_for_turn()
-            # Response Contract (boundaries in code, LLM inside them):
-            # compact MUST_NOT/GOAL/TOPIC/MODE injected into the policy
-            # object the LLM sees. Deterministic, no LLM call.
-            try:
-                _contract = build_contract(
-                    policy=turn["policy"],
-                    active_topic=(lcm.get_layer2() or {}).get("active_topic") if lcm else None,
-                    last_reply=(recent_reply_texts[-1] if recent_reply_texts else None),
-                    detail_mode=detail_mode["turns_left"] > 0,
-                    is_recovery=turn.get("route_action") == "contextual_recovery",
-                    memory_count=len(sess.memory_view()) if sess else 0,
-                    route_action=turn.get("route_action"),
-                )
-                turn["policy"]["contract"] = _contract
-            except Exception as e:
-                print(f"[Contract] build failed: {e}")
-            # DETAILED MODE (directive synthesis): explicit detail request
-            # latches chunked delivery for the next N turns; continuation
-            # cues ('haan/aage/phir') keep it alive. Policy marker
-            # policy.delivery drives persona V1.11 rule 1b.
-            if user_text and is_detail_request(user_text):
-                detail_mode["turns_left"] = 6
-            elif (detail_mode["turns_left"] > 0 and user_text
-                  and continues_or_asks(user_text)):
-                # RENEWAL (evidence session 203226: latch expired at t10 mid-
-                # explanation; 11-14s monologues returned). A continuation cue
-                # or a question during a detail conversation extends it — the
-                # user is still walking through the detail.
-                detail_mode["turns_left"] = max(detail_mode["turns_left"], 4)
-            if detail_mode["turns_left"] > 0 and isinstance(turn["policy"], dict):
-                detail_mode["turns_left"] -= 1
-                turn["detail_mode"] = True
-                if user_text and any(w in user_text.lower() for w in
-                                     ("haan", "aage", "phir", "हाँ", "आगे", "और")):
-                    turn["policy"]["delivery"] = "continue_detail"
-                else:
-                    turn["policy"]["delivery"] = "chunked_detail"
-            # Anti-parrot nudge (application layer, deterministic): when the
-            # parrot-streak detector fired, extend the avoid list for this call.
-            # The mutated object goes to the LLM AND the turn log — one truth.
-            if int(turn.get("turn", 0)) < _stuck_nudged["until_turn"] and isinstance(turn["policy"], dict):
-                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["echo_confirm_parroting"]
-                turn["policy"]["response_goal"] = "substantive_reaction"
-            # Challenge reconciliation (evidence 185741 t20-22: user challenged
-            # the 5-10 figure; model flip-flopped twice instead of reconciling
-            # with its own history). When the user challenges a previous claim,
-            # the model must CHECK history and reconcile — own the error or
-            # explain the difference. Never blind-agree.
-            if user_text and is_challenge(user_text) and isinstance(turn["policy"], dict):
-                turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["flip_flop_agreeing"]
-                turn["policy"]["response_goal"] = "reconcile_claim"
-                turn["challenge_detected"] = True
-                log_event("CHALLENGE_DETECTED", turn_id=turn.get("turn"),
-                          details={"user_text": user_text[:80]})
-                print(f"[ReplyGuard] challenge detected — reconcile-claim nudge active")
-            # Recovery turns (routing contract): meaningful-but-rejected
-            # transcripts get BOUNDED recovery — short + checkpoint-oriented,
-            # never a substantive wall on a shaky transcript.
-            if turn.get("route_action") == "contextual_recovery":
-                turn["recovery_mode"] = "contextual_recovery"
-                if isinstance(turn["policy"], dict):
-                    turn["policy"]["response_goal"] = "checkpoint_recovery"
-                    turn["policy"]["avoid"] = list(turn["policy"].get("avoid") or []) + ["long_monologue_on_shaky_transcript"]
-            # Response reconciliation (directive fix 2): if the PREVIOUS reply
-            # was interrupted (unheard / partially heard), tell this call —
-            # popped, so it applies only to the immediately-following turn.
-            _prev_response = None
-            _prev_plan = None
-            if engine is not None:
-                _prev_response = response_reconcile_payload(
-                    engine.pop("last_response", None))
-                if _prev_response:
-                    turn["reconciles_previous"] = _prev_response
-                # A-P1: prior chunk plan -> model advances current+1
-                _prev_plan = engine.pop("last_head_plan", None)
-                if _prev_plan:
-                    turn["previous_plan"] = _prev_plan
+            _prev_response, _prev_plan = build_policy_and_contract(
+                user_text=user_text,
+                turn=turn,
+                engine=engine,
+                sess=sess,
+                lcm=lcm,
+                recent_reply_texts=list(recent_reply_texts),
+                detail_mode=detail_mode,
+                stuck_nudged=_stuck_nudged,
+                log_event=log_event,
+                owner_id_fn=sess_owner_id,
+                schedule_compress=lambda lcm2, prompt, overflow: asyncio.create_task(
+                    _compress_layer2(lcm2, prompt, overflow)),
+            )
             text_stream = engine["fused"].stream_prose(
                 user_text=user_text,
                 turn_type=turn.get("turn_type", "speech"),
@@ -458,6 +430,8 @@ async def entrypoint(ctx: JobContext):
                 layer2=lcm.get_layer2() if lcm else None,
                 previous_response=_prev_response,
                 previous_plan=_prev_plan,
+                delivery_state=(engine.get("detail", {}).get("resume")
+                                if engine.get("detail") else None),
                 turn_no=int(turn.get("turn", 0)),
                 degraded=bool(sess.state.get("degraded_perception")),
                 key=os.getenv("GEMINI_API_KEY", ""),
@@ -495,12 +469,24 @@ async def entrypoint(ctx: JobContext):
         # itself the detail signal, closing the latch-expiry gap (session
         # 210637: plans emitted/advanced but latch had expired → 10.7s chunk).
         caps = {"cap": cap_for(detail_mode["turns_left"] > 0)}
+        # Telemetry-only (Phase-0 2026-08-30): post-decrement latch value for
+        # the replay harness (detail-turn cap exactness). Logged key only.
+        turn["detail_latch_after"] = detail_mode["turns_left"]
         if turn.get("route_action") == "contextual_recovery":
             caps["cap"] = min(caps["cap"], 110)
+        # SYSTEM-OWNED DETAIL PLAN (approved fix ③): a system-active detail
+        # delivery gets the same generous ceiling as a model-announced plan
+        # (A-P1) — a chunk is a substantive thought, not 1-2 lines — and the
+        # latch is renewed so continuation cues stay alive across turns.
+        det = engine.get("detail") if engine else None
+        if det and det.get("active"):
+            caps["cap"] = max(caps["cap"], PLAN_CHUNK_CAP)
+            detail_mode["turns_left"] = max(detail_mode["turns_left"], 3)
         fused_ref = engine.get("fused") if engine else None
         # Deterministic length guard state (safety net; the prompt is the primary
         # length lever). Prose is released sentence-by-sentence until the cap.
         trim = {"pending": "", "emitted": 0, "done": False}
+        _repeat_guard_state = {"guarded": False, "trim": trim}  # near-repeat guard fires once per reply
         
         async def text_stream_tee():
             nonlocal ttft_logged
@@ -518,7 +504,11 @@ async def entrypoint(ctx: JobContext):
                         # reset at the start of every stream_prose call, so a
                         # post-playback read can miss or read the next turn's
                         # meta — observed as 'context: NOT CAPTURED' in logs).
-                        if fused_ref is not None:
+                        if fused_ref is not None and turn.get("engine_path") != "precision_rail":
+                            # (rail turns: fused meta is stale from the prior
+                            # turn — stream_prose was never called. llm_called
+                            # was already set False at the rail short-circuit;
+                            # never overwrite from stale meta.)
                             turn["llm_context"] = fused_ref.meta.get("context")
                             turn["llm_called"] = fused_ref.meta.get("llm_called", True)
                             turn["spoke_because"] = fused_ref.meta.get("spoke_because", "llm")
@@ -532,8 +522,20 @@ async def entrypoint(ctx: JobContext):
                             if plan:
                                 turn["head_plan"] = plan
                                 if isinstance(plan.get("total"), int) and plan["total"] > 1:
-                                    caps["cap"] = min(caps["cap"], 110)
+                                    # A-P1 IS the chunking mechanism (locked task
+                                    # item 3): the model plans N chunks and
+                                    # delivers one per turn. Code trimming is
+                                    # FALLBACK ONLY — a generous ceiling lets the
+                                    # model's natural chunk define the boundary
+                                    # (was min(cap,110), which made code the
+                                    # primary chunker). Casual stays short via
+                                    # cap_for() default.
+                                    caps["cap"] = max(caps["cap"], PLAN_CHUNK_CAP)
                                     detail_mode["turns_left"] = max(detail_mode["turns_left"], 3)
+                                if isinstance(plan.get("current"), int):
+                                    turn["chunk_current"] = plan["current"]
+                                if isinstance(plan.get("total"), int):
+                                    turn["chunk_total"] = plan["total"]
                             # AUDIT FIX 2026-08-29: the epoch snapshot MUST be
                             # taken here, after stream_prose's body has run
                             # (generators only execute on first consume — a
@@ -543,72 +545,26 @@ async def entrypoint(ctx: JobContext):
                     full_text.append(chunk)
                     if trim["done"]:
                         continue  # keep consuming so head/meta finalize, but speak no more
-                    trim["pending"] += chunk
-                    # Release complete sentences that fit under the cap.
-                    piece = ""
-                    while True:
-                        m = SENT_END_RE.search(trim["pending"])
-                        if not m:
-                            break
-                        sentence = trim["pending"][:m.end()]
-                        if trim["emitted"] + len(sentence) > caps["cap"] and trim["emitted"] > 0:
-                            # THIN-OUTPUT GUARD (evidence 200615 t3: model wrote
-                            # 167c; first boundary at 16c; rest dropped ->
-                            # uselessly short reply). If kept-so-far is thin,
-                            # FILL the remaining budget with a word-boundary
-                            # cut of this sentence instead of dropping it.
-                            if trim["emitted"] < caps["cap"] * 0.5:
-                                budget = caps["cap"] - trim["emitted"]
-                                fill = sentence[:budget]
-                                sp = fill.rfind(" ")
-                                if sp > 15:
-                                    fill = fill[:sp + 1]
-                                piece += fill
-                                trim["emitted"] += len(fill)
-                            trim["done"] = True
-                            break
-                        piece += sentence
-                        trim["pending"] = trim["pending"][m.end():]
-                        trim["emitted"] += len(sentence)
-                    # Pathological single unbroken sentence: cut at a word
-                    # boundary so audio can start at all.
-                    if not piece and trim["emitted"] == 0 and len(trim["pending"]) > caps["cap"]:
-                        cut = trim["pending"][:caps["cap"]]
-                        sp = cut.rfind(" ")
-                        if sp > 40:
-                            piece = trim["pending"][:sp + 1]
-                            trim["pending"] = trim["pending"][sp + 1:]
-                            trim["emitted"] = sp + 1
+                    # Sentence release + cap (verbatim rules) live in
+                    # agent/response_pipeline.release_from (Slice-1 wiring
+                    # 2026-08-30): stream-chunk release, thin-output guard,
+                    # pathological-cut — so the replay harness reproduces the
+                    # exact piece stream offline from llm_response_full.
+                    piece = release_from(trim, chunk, cap=caps["cap"])
                     if trim["done"] and trim["pending"].strip():
                         turn["reply_trimmed"] = True
                     if piece:
-                        piece, leaked = strip_tag_leak(piece)
-                        piece = clean_specials(piece)
-                        piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece)
-                        if _gv:
-                            turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"],
-                                  "action": v.get("action", "flag")} for v in _gv])
-                            for v in _gv:
-                                if v.get("action") == "block":
-                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                                else:
-                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                        # GUARDRAIL: script enforcement — persona says Roman;
-                        # code enforces it (transliterate instead of trust).
-                        if devanagari_present(piece):
-                            try:
-                                piece = devanagari_to_roman(piece)
-                                turn["script_transliterated"] = True
-                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
-                            except Exception as _te:
-                                print(f"[ScriptGuard] transliteration failed: {_te}")
-                        if leaked:
-                            turn["tag_leak_stripped"] = True
-                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
+                        piece = process_piece(
+                            piece, turn,
+                            recent_reply_texts=recent_reply_texts,
+                            user_text=user_text,
+                            turn_number=turn_number,
+                            guard_state=_repeat_guard_state,
+                            log_event=log_event,
+                            # Rail/greeting lines are SYSTEM-owned (the value
+                            # is deliberately re-stated for confirmation) —
+                            # never near-repeat-guarded (smoke-3 bug).
+                            run_repeat_guard=not (rail or greeting))
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -617,41 +573,18 @@ async def entrypoint(ctx: JobContext):
                 # boundary (most replies end without trailing punctuation).
                 # Done inside the body — a finally cannot yield.
                 if not trim["done"] and trim["pending"]:
-                    piece = trim["pending"]
-                    if trim["emitted"] + len(piece) > caps["cap"] and trim["emitted"] > 0:
-                        cut = piece[:caps["cap"] - trim["emitted"]]
-                        sp = cut.rfind(" ")
-                        piece = cut[:sp].rstrip() if sp > 20 else cut.rstrip()
+                    if trim["emitted"] + len(trim["pending"]) > caps["cap"] and trim["emitted"] > 0:
                         turn["reply_trimmed"] = True
-                    trim["pending"] = ""
+                    piece = release_tail(trim, cap=caps["cap"])
                     if piece.strip():
-                        piece, leaked = strip_tag_leak(piece)
-                        piece = clean_specials(piece)
-                        piece = fix_merged_words(piece)
-                        piece, _gv = gate_reply(piece)
-                        if _gv:
-                            turn.setdefault("contract_violations", []).extend(
-                                [{"type": v["type"], "detail": v["detail"],
-                                  "action": v.get("action", "flag")} for v in _gv])
-                            for v in _gv:
-                                if v.get("action") == "block":
-                                    log_event("CONTRACT_BLOCKED", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                                else:
-                                    log_event("CONTRACT_VIOLATION", turn_id=turn.get("turn"),
-                                              details={"type": v["type"], "detail": v["detail"]})
-                        # GUARDRAIL: script enforcement — persona says Roman;
-                        # code enforces it (transliterate instead of trust).
-                        if devanagari_present(piece):
-                            try:
-                                piece = devanagari_to_roman(piece)
-                                turn["script_transliterated"] = True
-                                log_event("SCRIPT_TRANSLITERATED", turn_id=turn.get("turn"))
-                            except Exception as _te:
-                                print(f"[ScriptGuard] transliteration failed: {_te}")
-                        if leaked:
-                            turn["tag_leak_stripped"] = True
-                            log_event("TAG_LEAK_STRIPPED", turn_id=turn.get("turn"))
+                        piece = process_piece(
+                            piece, turn,
+                            recent_reply_texts=recent_reply_texts,
+                            user_text=user_text,
+                            turn_number=turn_number,
+                            guard_state=_repeat_guard_state,
+                            log_event=log_event,
+                            run_repeat_guard=False)
                         print(piece, end="", flush=True)
                         spoken_text.append(piece)
                         session.recent_agent_text += piece
@@ -726,6 +659,13 @@ async def entrypoint(ctx: JobContext):
             
             print(f"[Metrics] TTS Total Synthesis Time: {time.time() - tts_start:.2f}s")
             log_event("TTS_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
+            # TTS pre-warm (CA3-approved add-on, 2026-08-30): fire-and-forget
+            # background warmup so the NEXT reply's first-audio is faster.
+            # Policy-bounded (idle gap + per-session quota budget); never raises.
+            try:
+                asyncio.create_task(tts_provider.warmup())
+            except Exception:
+                pass
             
             if hasattr(agent_source, "wait_for_playout"):
                 await agent_source.wait_for_playout()
@@ -737,6 +677,7 @@ async def entrypoint(ctx: JobContext):
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
                 "synthesis_wall_s": round(time.time() - tts_start, 2),
+                "warm": getattr(tts_provider, "warm_hit", None),
             }
             print(f"[TurnEval] turn={turn.get('turn')} lang={turn.get('stt_language')} "
                   f"rel={turn.get('turn_relation')} spoke_because={turn.get('response_trigger_reason')} "
@@ -782,10 +723,34 @@ async def entrypoint(ctx: JobContext):
                                             "turn": turn.get("turn"),
                                             "heard_text": "".join(spoken_text)}
                 turn.get("head_plan") and engine.__setitem__("last_head_plan", turn["head_plan"])
+                # System-owned detail state (approved fix ③): remember the
+                # spoken chunk as the next continuation's resume point; the
+                # per-turn resume payload is rebuilt fresh at the next build.
+                det = engine.get("detail")
+                if det and det.get("active"):
+                    if turn.get("llm_response"):
+                        det["last_chunk"] = turn["llm_response"]
+                    det.pop("resume", None)
             turn["response_trigger_reason"] = "completed"
             log_event("PLAYBACK_COMPLETED", turn_id=turn.get("turn"), response_id=response_id)
             tmark("TURN_COMPLETED", turn=turn.get("turn"))
             log_event("AGENT_TASK_COMPLETED", turn_id=turn.get("turn"), details={"task_id": str(id(asyncio.current_task()))})
+            # Post-play full-text sweep (sign-off CA2, 2026-08-30): the
+            # per-piece gate blocked before TTS; this MEASURES cross-piece
+            # evasions on the complete reply for the A/B report. Measurement
+            # only — never blocks (no TTFA regression by design).
+            try:
+                _sweep = check_violations("".join(spoken_text))
+                if _sweep:
+                    turn["contract_sweep"] = [v["type"] for v in _sweep]
+                    for v in _sweep:
+                        log_event("CONTRACT_VIOLATION_SWEEP", turn_id=turn.get("turn"),
+                                  details={"type": v["type"], "detail": v["detail"],
+                                           "stage": "post_play"})
+                    print(f"[ContractGate] post-play sweep found {len(_sweep)} "
+                          f"violation(s): {', '.join(v['type'] for v in _sweep)}")
+            except Exception as _se:
+                print(f"[ContractGate] sweep failed: {_se}")
             
             # Finished naturally without interruption
             session.add_agent_message("".join(spoken_text))
@@ -832,6 +797,7 @@ async def entrypoint(ctx: JobContext):
                 try:
                     tr = {"turn": turn.get("turn"),
                             "turn_type": turn.get("turn_type", "speech"),
+                            "user_text": user_text,
                             "acoustic": turn.get("acoustic"),
                             "response_completed": True,
                             "interrupted": False,
@@ -914,6 +880,7 @@ async def entrypoint(ctx: JobContext):
                 "audio_duration_s": round(tts_total_samples / 48000, 2) if tts_total_samples else None,
                 "playback_duration_s": round(time.time() - tts_audio_start, 2) if tts_audio_start else None,
                 "interrupted_at_ms": round((time.time() - tts_audio_start) * 1000) if tts_audio_start else None,
+                "warm": getattr(tts_provider, "warm_hit", None),
             }
             print("[TurnTrace] " + json.dumps({
                 "turn_id": turn.get("turn"), "endpoint": turn.get("endpoint"),
@@ -934,9 +901,19 @@ async def entrypoint(ctx: JobContext):
             tmark("PLAYBACK_STOPPED", turn=turn.get("turn"))
             if tl_playback["user_speech_mono"] is not None:
                 lat = round((time.monotonic() - tl_playback["user_speech_mono"]) * 1000, 1)
-                tl_barge_stop.append(lat)
-                tmark("BARGE_IN_STOP_LATENCY_MS", turn=turn.get("turn"), latency_ms=lat)
+                c2s = None
+                if tl_playback.get("barge_cancel_issued") is not None:
+                    c2s = round((time.monotonic() - tl_playback["barge_cancel_issued"]) * 1000, 1)
+                # Task directive 2026-08-30: measure ACTUAL playback-stop latency
+                # separately from total reply duration, and split the bottleneck:
+                #   vad_to_stop_ms  = VAD speech-detect -> playback stopped
+                #   cancel_to_stop_ms = cancel issued -> playback stopped (flush)
+                tl_barge_stop.append({"stop_ms": lat, "cancel_to_stop_ms": c2s})
+                turn["barge_ms"] = {"vad_to_stop_ms": lat, "cancel_to_stop_ms": c2s}
+                tmark("BARGE_IN_STOP_LATENCY_MS", turn=turn.get("turn"),
+                      latency_ms=lat, cancel_to_stop_ms=c2s)
                 tl_playback["user_speech_mono"] = None
+                tl_playback["barge_cancel_issued"] = None
             truncated_message = "".join(spoken_text).strip()
             if truncated_message and ttfa_logged:
                 session.add_agent_message(truncated_message, interrupted=True)
@@ -1099,9 +1076,26 @@ async def entrypoint(ctx: JobContext):
                         
                         if agent_speaking_event.is_set():
                             tl_playback["user_speech_mono"] = time.monotonic()
+                            tl_playback["barge_cancel_issued"] = time.monotonic()
                             tmark("USER_SPEECH_DURING_PLAYBACK", turn=turn_number + 1)
                             print("BARGE_IN_CANDIDATE: Agent is speaking. Buffering to evaluate.")
                             log_event("BARGE_IN_CANDIDATE", turn_id=turn_number + 1, details={"agent_speaking": True})
+                            # Sign-off #4 (2026-08-30): cancel IMMEDIATELY —
+                            # near-immediate playback interruption. Energy-gated
+                            # by VAD (agent speaking + user speech started).
+                            # The echo/STT evaluation still runs afterwards, but
+                            # it can no longer un-stop Aiva — hence the
+                            # false_barge_in/total_barge_in accounting below.
+                            _barge_counter["total"] += 1
+                            if agent_task and not agent_task.done():
+                                tmark("BARGE_CANCEL_ISSUED", turn=turn_number + 1)
+                                agent_task.cancel()
+                                print("[BargeIn] response task cancelled IMMEDIATELY "
+                                      "(stop latency now ~flush, not STT)")
+                                log_event("BARGE_CANCEL_ISSUED", turn_id=turn_number + 1)
+                            else:
+                                print("[BargeIn] speech during playback, no active task "
+                                      "(idle/open-door line?) — nothing to cancel")
                         else:
                             log_event("USER_SPEECH_STARTED", turn_id=turn_number + 1)
                             print(f"User started speaking... (pre-roll: {len(audio_pre_roll)} samples)")
@@ -1236,6 +1230,12 @@ async def entrypoint(ctx: JobContext):
                                 except Exception as ee:
                                     print(f"[EchoCorr] failed: {ee}")
                                 turn["echo_corr_score"] = corr_score
+                                # Wire the SHADOW corr into the decision: the
+                                # Conversation Controller's row 46 (owner T10)
+                                # clarifies on low-corr turns instead of
+                                # silence (smoke-12 t17). Telemetry -> input.
+                                if engine is not None:
+                                    engine["stt_corr"] = corr_score
                                 turn["echo_shadow"] = {
                                     "corr": corr_score,
                                     "text_sim": round(similarity, 3),
@@ -1279,9 +1279,21 @@ async def entrypoint(ctx: JobContext):
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")
                                     tmark("TURN_DROPPED", turn=turn.get("turn"), reason="echo", similarity=round(similarity, 2))
                                     log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
+                                    # False-barge accounting (sign-off #4): the
+                                    # cancel was issued at VAD start; an echo
+                                    # turn means the interruption was false.
+                                    if agent_was_speaking_at_detection:
+                                        _barge_counter["false"] += 1
+                                        log_event("BARGE_FALSE_POSITIVE", turn_id=turn.get("turn"),
+                                                  details={"reason": "echo", "similarity": round(similarity, 2)})
                                     return
                                     
-                                is_valid, rejection_reason = is_real_user_turn(transcript, duration_ms)
+                                is_valid, rejection_reason = is_real_user_turn(
+                                    transcript, duration_ms,
+                                    no_speech_threshold=Config.NO_SPEECH_THRESHOLD,
+                                    suspicious_nsp_min=Config.SUSPICIOUS_NSP_MIN,
+                                    avg_logprob_threshold=Config.AVG_LOGPROB_THRESHOLD,
+                                    catastrophic_logprob=Config.CATASTROPHIC_LOGPROB)
                                 turn["stt_valid"] = is_valid
                                 turn["stt_rejection_reason"] = rejection_reason
                                 tmark("VALIDATION_COMPLETED", turn=turn.get("turn"),
@@ -1303,34 +1315,106 @@ async def entrypoint(ctx: JobContext):
 
                                 # P0 contract (directive 2026-08-29): invalid
                                 # transcripts get an EXPLICIT route — never a
-                                # silent fall-through. Actions: acoustic_only /
-                                # clarify (deterministic) / contextual_recovery
-                                # (fused LLM, turn marked) / normal.
-                                action, route_reason = route_transcript(
-                                    transcript.text, is_valid, rejection_reason,
-                                    transcript.avg_logprob,
+                                # silent fall-through. The DECISION now lives in
+                                # agent/turn_router.py (Phase-0 Slice-1, wired
+                                # 2026-08-30): a pure decision table that the
+                                # harness can replay. main.py keeps ONLY the
+                                # async side effects below (await response /
+                                # drop / recovery telemetry).
+                                _routing = route_decision(
+                                    transcript_text=transcript.text,
+                                    is_valid=is_valid,
+                                    rejection_reason=rejection_reason,
+                                    avg_logprob=transcript.avg_logprob,
                                     is_repetition=is_repetition_loop(transcript.text),
-                                    is_catastrophic=(rejection_reason == "catastrophic_low_confidence"))
+                                    is_catastrophic=(rejection_reason == "catastrophic_low_confidence"),
+                                    agent_was_speaking=agent_was_speaking_at_detection,
+                                    engine_bound=bool(engine and engine.get("sess")),
+                                )
+                                action = _routing["action"]
+                                route_reason = _routing["reason"]
                                 turn["route_action"] = action
                                 turn["route_reason"] = route_reason
+                                # False-barge accounting (sign-off #4): the
+                                # cancel was already issued at VAD start; an
+                                # invalid/junk turn means it was a false stop.
+                                if agent_was_speaking_at_detection and (
+                                        not is_valid or action in ("acoustic_only", "clarify")):
+                                    _barge_counter["false"] += 1
+                                    log_event("BARGE_FALSE_POSITIVE", turn_id=turn.get("turn"),
+                                              details={"reason": rejection_reason or action,
+                                                       "route": action})
+                                if not (speech_start_ts and speech_end_ts and transcript.text.strip() and turn_number):
+                                    print("[Turn Gate Rejected] Missing valid turn lifecycle state")
+                                    return
+
+                                # ---- PRECISION-DETAIL RAIL + GREETING: the ONE
+                                # decision per turn (mirrors run_turn), made
+                                # BEFORE the turn controller (fix 2026-08-31,
+                                # owner smoke-4 t17: a dictation fragment like
+                                # '99.35' was being suppressed as a
+                                # continuation_fragment before the rail could
+                                # own it) AND BEFORE the invalid-turn
+                                # respond_now early return (fix 2026-08-31,
+                                # owner smoke-6 t4: the dictation
+                                # '026900124205703' was STT-rejected as
+                                # suspicious_no_speech_band, routed to
+                                # respond_now 'unclear_speech', and the
+                                # perfectly-heard number was LOST — the rail
+                                # must own it and echo it). Rail turns (incl.
+                                # silent accumulate and the announce 'arm')
+                                # bypass the turn controller's WAIT — dictation
+                                # stays in the rail. Silent rail decisions
+                                # still suppress the turn (in
+                                # run_agent_response), and the ack is gated
+                                # off below. Drop turns (junk barged over agent
+                                # speech) never run the rail — a dropped
+                                # transcript is unreliable.
+                                _rail = (precision_rail_decide(transcript.text, engine, turn_number)
+                                         if engine and action != "drop" else None)
+                                # Greeting gate: NO sess requirement — the
+                                # owner's live smokes 4+5+6 all showed the
+                                # greeting rail NOT firing (t1 'हेलो...' ran
+                                # the LLM) even though greeting_line_for is
+                                # verified in-sandbox; the only blocker was
+                                # this live sess gate (SessionState binding is
+                                # environment-timing dependent). Greeting is
+                                # deterministic + persona-safe.
+                                _greeting = (greeting_line_for(transcript.text, turn_number)
+                                             if engine else None)
                                 if not is_valid:
                                     print(f"[STT Rejected] reason={rejection_reason} "
                                           f"-> route={action} ({route_reason})")
-                                    if action == "acoustic_only":
-                                        if (engine and engine.get("sess")
-                                                and not agent_was_speaking_at_detection):
-                                            turn["turn_type"] = "acoustic_only"
-                                            turn["response_trigger_reason"] = "acoustic_only_presence"
-                                            await run_agent_response(transcript.text, turn)
-                                            return
-                                    elif action == "clarify":
-                                        if (engine and engine.get("sess")
-                                                and not agent_was_speaking_at_detection):
-                                            turn["turn_type"] = "unclear_speech"
-                                            turn["response_trigger_reason"] = "unclear_stt_clarify"
-                                            await run_agent_response(transcript.text, turn)
-                                            return
-                                    elif action == "contextual_recovery":
+                                    if _routing["respond_now"]:
+                                        turn["turn_type"] = _routing["turn_type"]
+                                        # The rail still owns a dictated
+                                        # number even on a rejected turn
+                                        # (smoke-6 t4: '026900124205703' was
+                                        # STT-rejected as suspicious_no_speech_
+                                        # band and lost to the unclear-speech
+                                        # line); only when the rail declines
+                                        # does the deterministic unclear line
+                                        # fire.
+                                        turn["response_trigger_reason"] = (
+                                            "user_speech_ended" if _rail is not None
+                                            else _routing["trigger"])
+                                        await run_agent_response(transcript.text, turn,
+                                                                 rail=_rail, greeting=_greeting)
+                                        return
+                                    if _routing["drop"]:
+                                        # Fall-through fix (evidence: session
+                                        # 2026-08-30 t14 — a clarify/acoustic
+                                        # turn with agent speaking silently ran
+                                        # the FULL LLM on a catastrophic
+                                        # transcript). Invalid turn while Aiva
+                                        # was speaking = echo/junk: drop
+                                        # silently, NEVER a substantive LLM
+                                        # answer (locked-task CA6).
+                                        turn["dropped_reason"] = _routing["drop_reason"]
+                                        print(f"[STT] dropped ({action} while agent speaking) — "
+                                              "no reply (CA6)")
+                                        return
+                                    if _routing["recovery"]:
                                         turn["recovery_mode"] = "contextual_recovery"
                                         tmark("CONTEXTUAL_RECOVERY", turn=turn.get("turn"))
                                         log_event("CONTEXTUAL_RECOVERY", turn_id=turn.get("turn"),
@@ -1350,12 +1434,37 @@ async def entrypoint(ctx: JobContext):
                                         if lp is not None and lp < -0.6:
                                             print(f"[EntityCapture] skipped (logprob {lp:.2f} < -0.6)")
                                         else:
-                                            from agent.entity_extractor import extract_entities_from_user_text
+                                            from agent.entity_extractor import (extract_entities_from_user_text,
+                                                                                extract_place_facts,
+                                                                                extract_fact_candidates)
                                             for ent in extract_entities_from_user_text(transcript.text):
                                                 if ent.get("relation") and ent.get("name"):
                                                     asyncio.create_task(_promote_relationship(
                                                         engine, turn.get("turn"), ent["name"], ent["relation"]))
                                                     turn.setdefault("user_relations", []).append(ent)
+                                            # PLACE/TRAVEL facts -> episodic
+                                            # memory (owner smoke-13 follow-up:
+                                            # 'shared wrong places from
+                                            # Uttarakhand' — nothing about
+                                            # places/trips was ever stored, so
+                                            # recall had nothing to retrieve
+                                            # and the LLM fabricated). Explicit
+                                            # statements -> immediate commit.
+                                            for pf in extract_place_facts(transcript.text):
+                                                asyncio.create_task(_promote_memory(
+                                                    engine, turn.get("turn"), pf["type"], pf["content"],
+                                                    criterion=pf.get("criterion", "explicit")))
+                                                turn.setdefault("place_facts", []).append(pf["content"])
+                                            # EXPLICIT facts + preferences
+                                            # (name/job/likes/no-advice) ->
+                                            # deterministic write path (memory
+                                            # continuity slice #2). Explicit
+                                            # -> commit; no LLM in the write.
+                                            for fc in extract_fact_candidates(transcript.text):
+                                                asyncio.create_task(_promote_memory(
+                                                    engine, turn.get("turn"), fc["type"], fc["content"],
+                                                    criterion=fc.get("criterion", "explicit")))
+                                                turn.setdefault("fact_candidates", []).append(fc["content"])
                                     except Exception as ee:
                                         print(f"[EntityCapture] user-text extraction failed: {ee}")
                                     
@@ -1375,33 +1484,46 @@ async def entrypoint(ctx: JobContext):
                                     except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                                         pass
 
-                                if not (speech_start_ts and speech_end_ts and transcript.text.strip() and turn_number):
-                                    print("[Turn Gate Rejected] Missing valid turn lifecycle state")
-                                    return
-
-                                # ---- Conversation Turn Controller (locked brief):
-                                # a VAD speech-end is only a POSSIBLE handoff.
-                                prev_wait = int(engine.get("wait_streak", 0)) if engine else 0
-                                action, ctrl_reason = turn_controller_decide(transcript.text, prev_wait)
-                                turn["continuation_detected"] = action == "suppress"
-                                turn["turn_end_decision"] = action
-                                tmark("TURN_DECISION", turn=turn.get("turn"),
-                                      decision=action, reason=ctrl_reason)
-                                if action == "suppress":
-                                    turn["suppression_reason"] = ctrl_reason
-                                    turn["response_suppressed"] = True
-                                    turn["wait_started_at"] = time.monotonic()
+                                # Turn Gate + rail/greeting decision moved ABOVE
+                                # the invalid-turn block (smoke-6 t4) — see the
+                                # block after route_decision. No recomputation
+                                # here: decide() is stateful and must run ONCE
+                                # per turn.
+                                if _rail is not None:
+                                    action, ctrl_reason = "respond", "precision_rail"
+                                    turn["continuation_detected"] = False
+                                    turn["turn_end_decision"] = action
+                                    tmark("TURN_DECISION", turn=turn.get("turn"),
+                                          decision=action, reason=ctrl_reason)
                                     if engine:
-                                        engine["wait_streak"] = prev_wait + 1
-                                        engine["last_turn_wait"] = True
-                                    session.add_user_message(transcript.text)  # context preserved
-                                    print(f"[TurnController] WAIT ({ctrl_reason}) — silent, "
-                                          f"context kept: {transcript.text[:80]!r}")
-                                    return
-                                if engine:
-                                    engine["wait_streak"] = 0
-                                    engine["last_turn_wait"] = False
-                                turn["response_trigger_reason"] = "user_speech_ended"
+                                        engine["wait_streak"] = 0
+                                        engine["last_turn_wait"] = False
+                                    turn["response_trigger_reason"] = "user_speech_ended"
+                                else:
+                                    # ---- Conversation Turn Controller (locked
+                                    # brief): a VAD speech-end is only a POSSIBLE
+                                    # handoff.
+                                    prev_wait = int(engine.get("wait_streak", 0)) if engine else 0
+                                    action, ctrl_reason = turn_controller_decide(transcript.text, prev_wait)
+                                    turn["continuation_detected"] = action == "suppress"
+                                    turn["turn_end_decision"] = action
+                                    tmark("TURN_DECISION", turn=turn.get("turn"),
+                                          decision=action, reason=ctrl_reason)
+                                    if action == "suppress":
+                                        turn["suppression_reason"] = ctrl_reason
+                                        turn["response_suppressed"] = True
+                                        turn["wait_started_at"] = time.monotonic()
+                                        if engine:
+                                            engine["wait_streak"] = prev_wait + 1
+                                            engine["last_turn_wait"] = True
+                                        session.add_user_message(transcript.text)  # context preserved
+                                        print(f"[TurnController] WAIT ({ctrl_reason}) — silent, "
+                                              f"context kept: {transcript.text[:80]!r}")
+                                        return
+                                    if engine:
+                                        engine["wait_streak"] = 0
+                                        engine["last_turn_wait"] = False
+                                    turn["response_trigger_reason"] = "user_speech_ended"
                                 # Ack bridge: play a cached vocal cue to fill
                                 # the LLM+TTS latency gap (zero added latency —
                                 # cached PCM, written directly to AudioSource).
@@ -1410,26 +1532,47 @@ async def entrypoint(ctx: JobContext):
                                 # random "achha" followed by silence is worse
                                 # than silence). Evidence: session 213711 —
                                 # ack played on turns where no reply followed.
+                                # NEVER ack on a precision-rail turn (dictation
+                                # flow owns its own words; owner: "it keeps
+                                # speaking in between while I dictate") or on
+                                # a greeting turn (owner: "it started with
+                                # acha- not hello" — the greeting rail speaks
+                                # its own line).
                                 _llm_healthy = (
                                     turn.get("llm_ttft_s") is None  # not measured yet this turn
                                     or turn.get("llm_ttft_s", 0) < 3.0  # healthy
                                 ) or not ack_bridge.ready  # let it try anyway if no clips
-                                if (ack_bridge.ready and _llm_healthy and
+                                if (_rail is None and _greeting is None
+                                        and ack_bridge.ready and _llm_healthy and
                                         turn.get("route_action") in (None, "normal", "contextual_recovery")
                                         and not agent_was_speaking_at_detection):
-                                    try:
-                                        clip = ack_bridge.get_clip()
-                                        chunk_size = 960
-                                        for i in range(0, len(clip), chunk_size):
-                                            c = clip[i:i + chunk_size]
-                                            frame = rtc.AudioFrame(
-                                                data=c.tobytes(), sample_rate=48000,
-                                                num_channels=1, samples_per_channel=len(c))
-                                            await agent_source.capture_frame(frame)
-                                        turn["ack_played"] = True
-                                    except Exception as e:
-                                        print(f"[AckBridge] play failed: {e}")
-                                await run_agent_response(transcript.text, turn)
+                                    # Semantic ack (owner directive 2026-08-30):
+                                    # the ack word is derived from THIS turn's
+                                    # meaning (question/venting/positive/neutral),
+                                    # never a random pick that sounds out of the
+                                    # blue. None -> silence (correct move).
+                                    clip, ack_word, ack_reason = ack_bridge.pick_for(
+                                        transcript.text, turn.get("turn_relation"), turn_number)
+                                    if clip is not None:
+                                        try:
+                                            chunk_size = 960
+                                            for i in range(0, len(clip), chunk_size):
+                                                c = clip[i:i + chunk_size]
+                                                frame = rtc.AudioFrame(
+                                                    data=c.tobytes(), sample_rate=48000,
+                                                    num_channels=1, samples_per_channel=len(c))
+                                                await agent_source.capture_frame(frame)
+                                            turn["ack_played"] = True
+                                            turn["ack_word"] = ack_word
+                                            turn["ack_reason"] = ack_reason
+                                            log_event("ACK_PLAYED", turn_id=turn.get("turn"),
+                                                      details={"word": ack_word, "reason": ack_reason})
+                                        except Exception as e:
+                                            print(f"[AckBridge] play failed: {e}")
+                                    else:
+                                        turn["ack_reason"] = ack_reason
+                                await run_agent_response(transcript.text, turn,
+                                                         rail=_rail, greeting=_greeting)
 
                             except asyncio.CancelledError:
                                 turn["interrupted"] = True
@@ -1631,36 +1774,56 @@ async def entrypoint(ctx: JobContext):
             lcm.set_layer2(new_state)
             lcm.remove_overflow(overflow)
             lcm.save_checkpoint()
+            # L2 -> L3 PROMOTION (memory continuity slice #1): compression
+            # learned people with relations -> deterministic diff -> memory
+            # gate. Rows land in SQLite MID-SESSION, so they survive clean
+            # shutdown (the checkpoint itself is discarded by design —
+            # anti-leak unchanged). Inferred -> pending; a repeat sighting
+            # confirms -> committed.
+            try:
+                if engine and engine.get("sess") and engine.get("store"):
+                    from agent.layered_context import promotable_people
+                    existing = engine["sess"].memory_view()
+                    for name, rel in promotable_people(new_state, existing):
+                        await _promote_memory(engine, 0, "relationship",
+                                              f"{name} — user's {rel}")
+            except Exception as e2:
+                print(f"[L2Promote] failed: {type(e2).__name__}: {str(e2)[:100]}")
             print(f"[Layer2] compressed {len(overflow)} turns -> new state")
         except Exception as e:
             print(f"[Layer2] compression failed: {type(e).__name__}: {str(e)[:100]}")
 
-    async def _promote_relationship(engine, turn_no, name, relation):
+    async def _promote_memory(engine, turn_no, typ, content, criterion="salient"):
+        """Commit a deterministic memory candidate (relationship / place
+        fact / explicit fact / preference / L2-compressed person).
+
+        Lifecycle (STATE_MODEL 4.5 + gate directive): EXPLICIT user
+        statements commit immediately (immediate branch); everything else
+        (inferred/L2) is pending on first sighting and confirms on a repeat
+        sighting or at session end (occurrences>=2). Every write still
+        routes through MemoryGate (reject/quarantine/commit)."""
         if not (engine and engine.get("store") and engine.get("sess")):
             return
         try:
-            content = f"{name} — user's {relation}"
             store = engine["store"]
             owner = engine["sess"].owner_id
-            # Garble containment (evidence t3 2026-08-29): a stated relation is
-            # committed PENDING on first sighting (promoted at session end) and
-            # IMMEDIATELY only when the store has already seen it before — a
-            # repeated fact is real, a one-off garble waits and stays out of
-            # the live context.
+            if criterion == "explicit":
+                store.commit(owner, {"type": typ, "content": content,
+                                     "criterion": "explicit"}, immediate=True)
+                print(f"[Memory] committed (explicit): {typ} {content[:60]!r}")
+                return
             already = any(content in line for line in store.view(owner))
-            # BUGFIX 182736: criterion="explicit" made commit() treat EVERY
-            # sighting as immediate-commit (explicit short-circuits the
-            # pending branch), so the pending-until-confirmed rule never
-            # engaged and 'गए — user's bhai' went live mid-session.
-            # First sighting -> pending (promoted at session end); repeat ->
-            # explicit + immediate (a repeated fact is real).
             store.commit(owner,
-                {"type": "relationship", "content": content,
+                {"type": typ, "content": content,
                  "criterion": ("explicit" if already else "salient")},
                 immediate=bool(already))
-            print(f"[Relationship] {'committed' if already else 'pending'}: {name} ({relation})")
+            print(f"[Memory] {'committed' if already else 'pending'}: {typ} {content[:60]!r}")
         except Exception as e:
-            print(f"[Relationship] promotion failed: {e}")
+            print(f"[Memory] promotion failed: {e}")
+
+    async def _promote_relationship(engine, turn_no, name, relation):
+        content = f"{name} — user's {relation}"
+        await _promote_memory(engine, turn_no, "relationship", content)
 
     async def _commit_session_memory():
         if engine and engine.get("sess"):

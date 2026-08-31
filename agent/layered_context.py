@@ -227,3 +227,39 @@ class LayeredContextManager:
             parts.append("RECENT CONVERSATION:\n" + "\n".join(hist_lines))
         
         return "\n\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# L2 -> L3 PROMOTION (memory continuity slice #1, owner 2026-08-31: "L2
+# currently dies on clean shutdown"). Deterministic diff of Layer-2 'people'
+# against already-committed memory. The caller (main.py _compress_layer2)
+# routes each pair through _promote_memory, so compression-learned people
+# land in SQLite during the session and survive restart — the checkpoint
+# itself stays discard-only (anti-leak design unchanged).
+# ---------------------------------------------------------------------------
+def promotable_people(state: dict | None, existing_lines: list[str]) -> list[tuple[str, str]]:
+    """Return [(name, relation)] for Layer-2 people entries that carry a
+    relation and are not already committed. Handles both compression
+    schemas:
+      {"Neetu": "behen"}                              (string value = relation)
+      {"neetu": {"name": "Neetu", "relation": "behen", "source": "explicit"}}
+    Entries without a relation are skipped (nothing learnable)."""
+    if not isinstance(state, dict):
+        return []
+    people = state.get("people") or {}
+    if not isinstance(people, dict):
+        return []
+    out: list[tuple[str, str]] = []
+    for key, val in people.items():
+        if isinstance(val, dict):
+            name = val.get("name") or key
+            rel = val.get("relation")
+        else:
+            name, rel = key, (val or "")
+        if not name or not rel:
+            continue
+        content = f"{name} — user's {rel}"
+        if any(content in (line or "") for line in existing_lines or []):
+            continue
+        out.append((name, rel))
+    return out

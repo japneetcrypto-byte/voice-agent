@@ -1,0 +1,102 @@
+build: 4b5e955 Deploy lock: start_aiva.sh now LOCK + SANITY + START + VERIFY — deterministic checkout, offline rail test, worker [BUILD] stamp auto-verification with loud PASS/FAIL; --check mode for running deployments; smoke kit updated to script-first  (worker pid 2620)
+
+TURN 1
+  STT     : 'हेलो' | lang=Hindi logprob=-0.25762224 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : fish audio=Nones playback=Nones
+  latency : stt=0.597s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  ISSUES: no reply generated
+  FLAGS: route=normal
+
+TURN 2
+  STT     : 'अकाउंट नंबर लिखना जाएगा' | lang=Hindi logprob=-0.14470202 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(head_never_completed) | degrade: -
+  reply   : 'haan, bol number — main sun raha hoon.' | 8w/38c
+  TTS     : fish audio=2.6s playback=2.6s
+  context : deterministic (no LLM call)
+
+TURN 3
+  STT     : '026900' | lang=Hindi logprob=-0.39170906 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  context : deterministic (no LLM call)
+
+TURN 4
+  STT     : 'बन दूँ' | lang=Hindi logprob=-0.5813513 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  context : deterministic (no LLM call)
+
+TURN 5
+  STT     : '4204301' | lang=Hindi logprob=-0.23370704 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  context : deterministic (no LLM call)
+
+TURN 6
+  STT     : 'बताओ क्या लिखा' | lang=Hindi logprob=-0.17037062 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(head_never_completed) | degrade: -
+  reply   : 'haan, jo likha hai: zero two six nine zerozero four two zero four thr' | 17w/82c
+  TTS     : fish audio=5.48s playback=5.48s
+  context : deterministic (no LLM call)
+
+TURN 7
+  STT     : 'पिर से बोलो' | lang=Hindi logprob=-0.34833097 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(head_never_completed) | degrade: -
+  reply   : 'haan, note kar raha hoon — bolo.' | 7w/32c
+  TTS     : fish audio=1.9s playback=1.96s
+  context : deterministic (no LLM call)
+
+TURN 8
+  STT     : 'पिरशे बोलो' | lang=Hindi logprob=-0.18275519 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(head_never_completed) | degrade: -
+  reply   : 'haan, sun raha hoon — bolo.' | 6w/27c
+  TTS     : fish audio=1.95s playback=1.95s
+  context : deterministic (no LLM call)
+
+TURN 9
+  STT     : 'अरे भाई एक बार दुबारा रिपीट कर दो तुमने नंबर क्या लिखा है' | lang=Hindi logprob=-0.10702587000000001 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(head_never_completed) | degrade: -
+  reply   : 'haan, jo likha hai: zero two six nine zerozero four two zero four thr' | 17w/82c
+  TTS     : fish audio=4.83s playback=4.83s
+  context : deterministic (no LLM call)
+  FLAGS: route=normal, REPEAT(verbatim)
+
+TURN 10
+  STT     : 'कि यह काशिड नंबर आ गया' | lang=Hindi logprob=-0.44757106999999996 | prov=groq | corr=0.2772
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  context : deterministic (no LLM call)
+
+--- SESSION SUMMARY ---
+turns=10 replies=5 ctx_captured=0/5 heads=0 errors=0
+engine paths: {'fused': 1, 'precision_rail': 9}
+owner(s): ['4da66eb5']
+response states: {'UNHEARD': 1, 'FULLY_PLAYED': 5}
+stt providers: {'groq': 10}

@@ -1,0 +1,104 @@
+build: 1500c29 '4 बार 0 not 420': dictation capture now expands the बार multiplier (full-span cluster when a times/double word is present; normalize never duplicates a multi-digit run) — the canonical smoke-10 number is 02690000004301 — tests-first  (worker pid 7513)
+
+TURN 1
+  STT     : 'हेलो क्या करते हो' | lang=Hindi logprob=-0.18550458999999997 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : greeting | decision: respond () | because: llm
+  head    : FAIL(unknown) | degrade: -
+  reply   : 'hello! bol kya scene hai?' | 5w/25c
+  TTS     : fish audio=1.81s playback=1.81s
+  context : NOT CAPTURED
+  FLAGS: route=normal
+
+TURN 2
+  STT     : 'चौब बढ़ेया' | lang=Hindi logprob=-0.43411997| prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: user_speech_ended
+  reply   : ''
+  ISSUES: no reply generated
+
+TURN 3
+  STT     : 'दो काम है एक पर एक मोबाइल नंबर लिखना ठीक है' | lang=Hindi logprob=-0.15858178 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: user_speech_ended
+  reply   : 'haan, bolo — number note karta hoon.' | 7w/36c
+  ISSUES: REPLY CANCELLED BEFORE AUDIO
+
+TURN 5
+  STT     : '9935' | lang=Hindi logprob=-0.45512605 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+
+TURN 6
+  STT     : '411907' | lang=Hindi logprob=-0.40644907999999996 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+
+TURN 7
+  STT     : 'लिख लिया' | lang=Hindi logprob=-0.14598511| prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  reply   : 'yeh raha number — nine nine three five four one one nine zero seven.' | 14w/68c
+
+TURN 8
+  STT     : 'पढ़ें या एक number, अब account number लिखो जरा, 026-900-1262' | lang=Hindi logprob=-0.21119897000000004 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+  ISSUES: (BUG) appended to 9935411907 -> 99354119070269001262
+
+TURN 9
+  STT     : 'लिख लिया?' | lang=Hindi logprob=-0.18746363 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  reply   : 'haan, jo likha hai: nine nine three five four one one nine zero seven zero two six nine zero zero one two six two zero f…(+19c)' | 29w/139c
+
+TURN 10
+  STT     : 'ठीक है' | lang=Hindi logprob=-0.123730235 |prov=groq | corr=0.3105
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: user_speech_ended
+  reply   : 'theek hai, poora number: nine nine three five four one one nine zero seven zero two six nine zero zero one two six two z…(+37c)' | 32w/157c
+  ISSUES: REPLY CANCELLED BEFORE AUDIO; LONG(157c)
+
+TURN 11
+  STT     : 'इसमें जो 9935411907 है, सिर्फ इतना नमबर, ठीक है?' | lang=Hindi logprob=-0.13350734 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+  ISSUES: (BUG) correction ignored -> silent append
+
+TURN 15
+  STT     : 'Hello' | lang=Hindi logprob=-0.32653755000000007 | prov=groq | corr=0.271
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+  ISSUES: (BUG) greeting swallowed silent
+
+TURN 16
+  STT     : 'हेलो' | lang=Hindi logprob=-0.19771804 | prov=groq | corr=0.5429
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  reply   : ''
+  ISSUES: (BUG) greeting swallowed silent
+
+TURN 17
+  STT     : 'आई वा यहीं पर होगी चले गए कहीं' | lang=Hindi logprob=-0.18386148 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  reply   : 'yahin hoon, kahin nahi gaya. bata kya chalraha hai?' | 10w/52c
+  ISSUES: INTERRUPTED at 3338ms
+
+TURN 19
+  STT     : 'मेरा मोबाइल नंबर मुझे बता क्या है' | lang=Hindi logprob=-0.06747943 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  reply   : 'yahin hoon, kahin nahi gaya. aur number toh mujhe nahi pata tera.' | 12w/65c
+  ISSUES: (BUG) task was discarded at t17; recall lost
+
+--- SESSION SUMMARY ---
+turns=20 replies=8 ctx_captured=3/8 heads=0 errors=0
+engine paths: {'greeting': 1, 'fused': 4, 'precision_rail': 14, '?': 1}
+replies cancelled BEFORE audio: 2
+stt providers: {'groq': 20}

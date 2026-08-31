@@ -1,11 +1,18 @@
 .env
 __pycache__/
+.venv/
 logs/
 *.mp3
 *.wav
 *.log
 session_summary.jsonl
 .DS_Store
+
+# Committed gate fixtures MUST be trackable (Phase-0 discipline, 2026-08-31):
+# the real baseline fixture was silently lost because *.log ignored
+# phase5/harness/fixtures/. Gate fixtures under this dir are force-tracked.
+!phase5/harness/fixtures/
+!phase5/harness/fixtures/**
 
 # Phase 1 local artifacts (docs/PHASE1_PLAN.md)
 infra/oracle/keys/oracle_vm_ed25519

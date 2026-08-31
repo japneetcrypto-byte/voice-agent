@@ -64,6 +64,32 @@ GREETING_MARKERS = {"hello", "helo", "hallo", "halo", "hey", "hi",
 # disappearing (evidence t16-t21 chain: user said "hello hello" into silence).
 WAIT_STREAK_CAP = 2
 
+# Greeting rail (owner smoke 3, 2026-08-31: "it started with acha- not
+# hello"). A turn whose FIRST word is a greeting marker gets a deterministic
+# greeting reply instead of the LLM's drift ('bas yahin hoon, bol kya scene
+# hai?') and instead of a bare ack ('achha'). Persona-consistent, short,
+# masculine, Roman — same discipline as the other rails.
+GREETING_LINES = [
+    "hello! kaise ho?",
+    "hello! bol kya scene hai?",
+    "namaste! kaise ho?",
+]
+
+
+def greeting_line_for(text: str, turn_no: int) -> str | None:
+    """Deterministic greeting reply when the user's FIRST word is a greeting
+    marker ('hello'/'hi'/'हेलो'/'नमस्ते'... — the same marker set as
+    decide()). 'hi' as a non-first word is the Hindi particle ('aise hi') —
+    only the first word is checked, matching turn_controller discipline.
+    Returns None for non-greeting turns (normal LLM flow)."""
+    t = (text or "").strip()
+    if not t:
+        return None
+    words = re.findall(r"[\w\u0900-\u097F]+", t, re.UNICODE)
+    if words and words[0].lower() in GREETING_MARKERS:
+        return GREETING_LINES[turn_no % len(GREETING_LINES)]
+    return None
+
 
 # Cues that should EXTEND an ongoing detail conversation (directive
 # 192439-synthesis session 203226: the 6-turn latch expired mid-explanation
@@ -71,15 +97,45 @@ WAIT_STREAK_CAP = 2
 # a question means "more depth on this thread".
 CONTINUATION_CUES = {"haan", "han", "aage", "aagay", "phir", "aur", "और",
                      "हाँ", "हां", "आगे", "फिर", "ok", "okay", "achha",
-                     "अच्छा", "बताओ", "batao", "next"}
+                     "अच्छा", "बताओ", "batao", "next", "continue"}
+# Multi-word keep-going phrases (owner brief 2026-08-31, fix ②): 'bolte jao' /
+# 'roko mat' mean CONTINUE the active explanation, never a fresh request.
+# Checked as substrings — the single-word cue set above is separate.
+CONTINUATION_PHRASES = ("bolte jao", "bolte ja", "roko mat", "rokna mat",
+                        "aage bolo", "aage bata", "keep going",
+                        "और बोलो", "रुको मत", "बोलते जाओ")
+# DELIVERY-flag cues: the ORIGINAL verified 6-cue list (baseline semantics,
+# 2026-08-30) — NOT the wider CONTINUATION_CUES. Widening would change the
+# delivery flag on fresh detail requests ('poora plan batao' contains
+# 'batao', which must stay chunked_detail) — a regression. The approved fix ②
+# adds only the keep-going PHRASES to the delivery semantics.
+DELIVERY_CUES = {"haan", "aage", "phir", "हाँ", "आगे", "और"}
+
+
+def delivery_cue_present(text: str) -> bool:
+    """True when the user text carries a DELIVERY continuation cue: one of
+    the verified single-word cues or a keep-going phrase ('bolte jao' /
+    'roko mat' / 'aage bolo'...). Deliberately excludes bare questions and
+    the wider cue set — the delivery flag (continue_detail vs chunked_detail)
+    follows the verified semantics, while continues_or_asks() (which includes
+    questions) drives state extension. Single source for the prompt-delivery
+    branch AND the replay gate's policy.delivery check."""
+    t = (text or "").lower()
+    if any(p in t for p in CONTINUATION_PHRASES):
+        return True
+    words = re.findall(r"[\w\u0900-\u097F]+", t, re.UNICODE)
+    return any(w.lower() in DELIVERY_CUES for w in words)
 
 
 def continues_or_asks(text: str) -> bool:
     """True when a user turn should EXTEND an ongoing detail conversation:
-    any question (marker or question-word) or a continuation cue."""
+    any question (marker or question-word), a continuation cue, or a
+    keep-going phrase ('bolte jao' / 'roko mat' — approved fix ②)."""
     t = (text or "").strip()
     if not t:
         return False
+    if any(p in t.lower() for p in CONTINUATION_PHRASES):
+        return True
     if "?" in t or "？" in t:
         return True
     words = re.findall(r"[\w\u0900-\u097F]+", t, re.UNICODE)

@@ -1,0 +1,49 @@
+build: fcb6318 Smoke-12 fixes (controller rows 44-49 + primitives) (worker pid 3165)
+
+TURN 1
+  STT     : 'हेलो क्या कर रहे हो' | engine: greeting | reply: 'hello! bol kya scene hai?'
+TURN 3
+  STT     : 'क्या करो' | engine: fused | reply: 'bata kya hua, sun raha hoon main.' | mode=VENT
+TURN 4
+  STT     : 'मुझे वाइस एजेंट के बारे में बताओ ये क्या होता कैसे आपरेट होत' | engine: fused | reply: LONG 206c | mode=VENT
+TURN 7
+  STT     : 'आगे' | engine: fused | reply: LONG 234c | mode=VENT
+TURN 22
+  STT     : 'नमःत तुम्हें अपना एक अकाउंट नंबर बता रहा हूं जरूर उसको लिख ल' | engine: precision_rail | reply: 'theek hai, bol — main likh raha hoon.'
+TURN 23
+  STT     : 'लिख ले वस्तु याद रखियो ठीक है' | corr=0.3156 | engine: precision_rail | reply: "didn't catch that — bolo, number kya hai?"
+  ISSUES: (BUG) FALSE clarify — clearly-heard filler got 'didn't catch that'
+TURN 25
+  STT     : '026 900' | engine: precision_rail | reply: ''
+TURN 26
+  STT     : '12' | engine: precision_rail | reply: ''
+TURN 27
+  STT     : '6205703' | engine: precision_rail | reply: ''  (value: 026900126205703)
+TURN 28
+  STT     : 'लिख लिया यह मेरा अकाउंट नंबर इसको सेफ कर ले' | engine: precision_rail | reply: recall 026900126205703
+TURN 29
+  STT     : '620 नहीं है, 6 बार 0 लिखने है, 6 को replace करो 6 बार 0 से.' | engine: precision_rail | reply: 'theek, ek baar aur bolo — main sun raha hoon.'
+  ISSUES: (BUG) correction NOT parsed -> retry WIPED the stored value
+TURN 30
+  STT     : '6 को replace करना है 6 बार 0 से' | engine: precision_rail | reply: 'nhi samjha — phir se bolo, main sun raha hoon.'
+  ISSUES: (BUG) repeat instruction -> 'nhi samjha' again
+TURN 31
+  STT     : 'लिखा है ना 1, 2, 6' | engine: precision_rail | reply: ''  (silent append -> 126)
+TURN 32
+  STT     : 'करके लिखा है ना तो वह 12 के बाद 6 बार जीरो है इसको अपडेट करो' | engine: precision_rail | reply: echo '120000006' (applied to WRONG base)
+TURN 35
+  STT     : 'अभी clear हुआ' | engine: precision_rail | reply: 'note kiya hua hai: 1200000061200000'
+  ISSUES: (BUG) final value mangled (expected 026900120000005703)
+TURN 37
+  STT     : 'भाई यह बता कि मुबाइल नंबर तेरे पास का मेरा सेव है' | corr=0.1798 | engine: precision_rail | reply: 'nhi suna sahi se — number bolo, phir se.'
+  ISSUES: (BUG) FALSE clarify on a real question
+TURN 38
+  STT     : 'तुने अकाउंट नंबर क्या लिखा था वैसा पूरा एक बार बताइयो' | engine: precision_rail | reply: recall 1200000061200000 (mangled)
+
+--- SESSION SUMMARY ---
+turns=41 replies=25 ctx_captured=13/25 heads=0 errors=0
+engine paths: {'greeting': 1, 'fused': 19, '?': 1, 'precision_rail': 20}
+replies cancelled BEFORE audio: 5
+response states: {'UNHEARD': 11, 'PARTIALLY_PLAYED': 5, 'FULLY_PLAYED': 15}
+echo corr (voice key): n=32 min=0.0411 med=0.3084 max=0.5447
+stt providers: {'groq': 41}

@@ -5,7 +5,8 @@ Switch via AIVA_STT_PROVIDER env:
   groq         — Groq whisper-large-v3 batch only
 """
 import numpy as np
-from faster_whisper import WhisperModel
+
+from providers.segment_metrics import aggregate_segments as _aggregate_segments
 
 class Transcript:
     def __init__(self, text: str, language: str = "", 
@@ -24,8 +25,6 @@ class STTProvider:
 
 import os
 import io
-import scipy.io.wavfile as wavfile
-from groq import Groq
 
 def devanagari_to_roman(text: str) -> str:
     """Module-level so the echo filter can compare in a common script.
@@ -40,6 +39,7 @@ def devanagari_to_roman(text: str) -> str:
 
 class GroqSTT(STTProvider):
     def __init__(self):
+        from groq import Groq
         self.client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         # Product scope: Hindi/English/Hinglish for Indian users.
         # Default pin to 'hi' — handles Hindi, English words, and code-switching.
@@ -54,6 +54,7 @@ class GroqSTT(STTProvider):
         if len(audio_data) < 4000:
             return Transcript(text="", language="auto")
         
+        import scipy.io.wavfile as wavfile  # lazy: heavy + only at transcribe time
         int_audio = (audio_data * 32767).astype(np.int16)
         wav_io = io.BytesIO()
         wavfile.write(wav_io, 16000, int_audio)
@@ -79,10 +80,8 @@ class GroqSTT(STTProvider):
         if self.auto_mode:
             duration_ms = len(audio_data) / 16
             n_words = len((transcription.text or "").split())
-            seg_conf = None
-            if getattr(transcription, "segments", None):
-                seg = transcription.segments[0]
-                seg_conf = seg.get("avg_logprob") if isinstance(seg, dict) else getattr(seg, "avg_logprob", None)
+            _, seg_conf, _ = _aggregate_segments(
+                getattr(transcription, "segments", None) or [])
             qualifies = (duration_ms >= 1200 and n_words >= 3
                           and (seg_conf is None or seg_conf >= -1.0))
             detected = normalize_lang(getattr(transcription, "language", "") or "")
@@ -107,21 +106,9 @@ class GroqSTT(STTProvider):
                         self.mismatch_streak = 0
         
         cleaned = transcription.text.strip()
-        
-        no_speech_prob = None
-        avg_logprob = None
-        compression_ratio = None
 
-        if hasattr(transcription, 'segments') and transcription.segments:
-            seg = transcription.segments[0]
-            if isinstance(seg, dict):
-                no_speech_prob = seg.get('no_speech_prob')
-                avg_logprob = seg.get('avg_logprob')
-                compression_ratio = seg.get('compression_ratio')
-            else:
-                no_speech_prob = getattr(seg, 'no_speech_prob', None)
-                avg_logprob = getattr(seg, 'avg_logprob', None)
-                compression_ratio = getattr(seg, 'compression_ratio', None)
+        no_speech_prob, avg_logprob, compression_ratio = _aggregate_segments(
+            getattr(transcription, 'segments', None) or [])
 
         detected_language = getattr(transcription, 'language', "auto")
         return Transcript(
@@ -131,6 +118,8 @@ class GroqSTT(STTProvider):
             avg_logprob=avg_logprob,
             compression_ratio=compression_ratio
         )
+
+
 
 _LANG_MAP = {"hindi": "hi", "english": "en", "urdu": "hi"}
 

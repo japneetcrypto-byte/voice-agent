@@ -100,6 +100,87 @@ USER_STOPWORDS = {
 
 _WORD_RE = re.compile(r"[\w\u0900-\u097F]{2,25}", re.UNICODE)
 
+# ---------------------------------------------------------------------------
+# PLACE / TRAVEL FACT capture (owner smoke-13 follow-up: "agent is not able
+# to retrieve from memory, is hallucinating — it shared wrong places from
+# Uttarakhand"). Root cause: the compact perception head hardcodes
+# head["memory_candidates"] = [], so nothing about the user's places/trips
+# was ever stored — cross-session recall had nothing to retrieve and the
+# LLM fabricated. This extractor captures LOCATION clauses deterministically
+# (no LLM) as episodic candidates; main.py promotes them like relationships
+# (pending-first, repeat-confirm) into the memory store.
+# ---------------------------------------------------------------------------
+_PLACE_SIGNAL_RES = [
+    re.compile(r"गया\s+था|गई\s+थी|गए\s+थे|गये\s+थे|गयी\s+थी|गया\s+हूं|गया\s+हूँ|गई\s+हूं|गए\s+हैं"),
+    re.compile(r"जाता\s+हूं|जाता\s+हूँ|जाती\s+हूं|जाते\s+हैं|जा\s+रहा|जा\s+रही"),
+    re.compile(r"आया\s+था|आई\s+थी|आए\s+थे|आया\s+हूं|आया\s+हूँ|आई\s+हूं|आए\s+हैं"),
+    re.compile(r"घूमने|घूमा\s+था|घूमी\s+थी|घूमे\s+थे|घूमा\s+हूं|घूमा\s+हूँ"),
+    re.compile(r"रहता\s+हूं|रहता\s+हूँ|रहती\s+हूं|रहते\s+हैं|बसता\s+हूं|बसता\s+हूँ|बसती\s+हूं"),
+    re.compile(r"[\w\u0900-\u097f]{2,}\s+से\s+(?:हूं|हूँ|हैं)"),  # origin: 'कानपुर से हूँ'
+    re.compile(r"\b(?:went|visited?|visit(?:ed)?|travell?ed?|traveled|trip|tour|stayed?|"
+               r"live[sd]?\s+in|living\s+in|from)\b", re.IGNORECASE),
+]
+_PLACE_VERB_SET = {
+    "गया", "गई", "गए", "गये", "गयी", "था", "थी", "थे", "हूं", "हूँ", "है", "हैं",
+    "जाता", "जाती", "जाते", "रहता", "रहती", "रहते", "बसता", "बसती", "आया", "आई",
+    "आए", "घूमने", "घूमा", "घूमी", "घूमे", "से", "में", "को", "से", "कर", "की",
+    "का", "के", "और", "या", "visited", "visit", "went", "trip", "tour", "from",
+    "live", "lived", "living", "stay", "stayed", "travel", "travelled", "traveled",
+}
+_PLACE_PRONOUNS = {
+    "मैं", "मैने", "मैंने", "मेरा", "मेरी", "मेरे", "हम", "हमने", "हमारा", "हमारी",
+    "तुम", "तुमने", "तुम्हारा", "तुम्हारी", "आप", "आपने", "वो", "वह", "यह", "वे",
+    "ये", "उस", "उन", "main", "mai", "hum", "tum", "aap", "wo", "woh", "ye",
+    "i", "me", "my", "we", "our", "you", "your",
+}
+_PLACE_QUESTION_WORDS = ("कहां", "कहाँ", "क्या", "कौन", "कौनसा", "कौन सा", "किस", "कहा")
+_PLACE_SENT_SPLIT_RE = re.compile(r"[।.!?\n]+")
+
+
+def extract_place_facts(text: str) -> list[dict]:
+    """Deterministic episodic capture of the user's PLACE/TRAVEL statements.
+
+    Splits the transcript into clauses (। . ? ! newline), keeps clauses that
+    contain a location/travel signal, and returns:
+        {"type": "episodic", "content": "user: <verbatim clause>",
+         "criterion": "salient"}
+    Conservative by design (the memory gate is the last line of defense):
+      - no signal (गया/घूमने/रहता/से हूँ/went/visited/...) -> no capture
+      - question words ('कहां से हो') -> no capture (it is addressed TO us)
+      - bare verb with no content word ('मैं गया था') -> no capture
+      - digit-heavy dictation turns -> no capture
+    """
+    if not text:
+        return []
+    out = []
+    seen = set()
+    for clause in _PLACE_SENT_SPLIT_RE.split(text):
+        clause = clause.strip().strip(" ,;:،")
+        if len(clause) < 10:
+            continue
+        low = clause.lower()
+        if any(w in low for w in _PLACE_QUESTION_WORDS):
+            continue
+        if not any(r.search(low) for r in _PLACE_SIGNAL_RES):
+            continue
+        toks = _WORD_RE.findall(clause)
+        if len(toks) < 3:
+            continue
+        digits = sum(1 for t in toks if t.isdigit())
+        if digits > len(toks) // 2:
+            continue
+        content = [t for t in toks if t.lower() not in USER_STOPWORDS
+                   and t.lower() not in _PLACE_VERB_SET
+                   and t.lower() not in _PLACE_PRONOUNS]
+        if not content:
+            continue
+        key = clause.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append({"type": "episodic", "content": f"user: {clause}",
+                        "criterion": "explicit"})
+    return out
+
 
 def extract_entities_from_user_text(text: str) -> list[dict]:
     """Extract relationship facts the USER states about themselves.
@@ -204,3 +285,70 @@ def extract_preferences_from_reply(reply: str) -> list[dict]:
             if len(value) >= 2:
                 prefs.append({"type": pref_type, "value": value})
     return prefs
+
+
+# ---------------------------------------------------------------------------
+# EXPLICIT FACTS + PREFERENCES (memory continuity slice #2, owner 2026-08-31):
+# "name, job, 'no advice', etc. Use the same pending -> confirm -> commit
+# pattern. No LLM free-form memory writes." Deterministic first-person
+# statement capture only; question words and pronouns are never captured;
+# the caller routes candidates through the MemoryGate (explicit -> commit).
+# ---------------------------------------------------------------------------
+_NAME_FACT_RE = re.compile(
+    r"(?:मेरा नाम|mera naam|my name is)\s+([\w\u0900-\u097F]{2,25})",
+    re.IGNORECASE)
+_JOB_WORDS = {
+    "engineer", "doctor", "teacher", "manager", "businessman", "business",
+    "student", "lawyer", "accountant", "consultant", "designer", "developer",
+    "driver", "officer", "employee", "trader", "इंजीनियर", "डॉक्टर", "डाक्टर",
+    "टीचर", "मैनेजर", "व्यापारी", "वकील", "लेखाकार", "छात्र", "छात्रा",
+}
+_JOB_RE = re.compile(
+    r"\b(?:मैं|main)\s+(?:एक\s+)?([\w\u0900-\u097F]{2,25})", re.IGNORECASE)
+_LIKE_RE = re.compile(
+    r"(?:मुझे|mujhe)\s+([\w\u0900-\u097F]{2,25})\s+(?:बहुत\s+)?पसंद\s+(?:है|हैं)",
+    re.IGNORECASE)
+_NO_ADVICE_RE = re.compile(
+    r"(?:सलाह|advice).{0,12}(?:मत|नहीं|nahi|no|mat)", re.IGNORECASE)
+_FACT_QUESTION_WORDS = {
+    "क्या", "कौन", "कौनसा", "कौन सा", "किस", "कहां", "कहाँ", "क्यों", "कैसे",
+    "what", "who", "which", "where", "why", "how",
+}
+_FACT_PRONOUN_STOP = {
+    "वह", "यह", "वो", "ये", "उस", "उन", "यहाँ", "यहीं", "वहाँ", "वहां",
+    "he", "she", "it", "that", "this", "there", "here",
+}
+
+
+def extract_fact_candidates(text: str) -> list[dict]:
+    """Deterministic capture of EXPLICIT first-person facts/preferences:
+    name, job (allowlist), likes, no-advice. Returns
+        {"type": "semantic"|"preference", "content": <readable fact>,
+         "criterion": "explicit"}
+    Conservative: questions ('मेरा नाम क्या है'), pronouns ('मुझे वह पसंद
+    है'), and non-fact speech never fire. The caller commits via the memory
+    gate (explicit -> commit immediately, per STATE_MODEL 4.5)."""
+    if not text:
+        return []
+    out: list[dict] = []
+    seen = set()
+
+    def add(typ: str, content: str) -> None:
+        key = (typ, content.lower())
+        if key not in seen:
+            seen.add(key)
+            out.append({"type": typ, "content": content, "criterion": "explicit"})
+
+    m = _NAME_FACT_RE.search(text)
+    if m and m.group(1).lower() not in _FACT_QUESTION_WORDS:
+        add("semantic", f"user's name is {m.group(1)}")
+    m = _JOB_RE.search(text)
+    if m and m.group(1).lower() in _JOB_WORDS:
+        add("semantic", f"user is a {m.group(1).lower()}")
+    for m in _LIKE_RE.finditer(text):
+        tok = m.group(1)
+        if tok.lower() not in _FACT_QUESTION_WORDS and tok.lower() not in _FACT_PRONOUN_STOP:
+            add("preference", f"user likes {tok}")
+    if _NO_ADVICE_RE.search(text):
+        add("preference", "no advice unless explicitly asked")
+    return out

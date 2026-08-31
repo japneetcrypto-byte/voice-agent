@@ -20,6 +20,8 @@ are measured asynchronously, never on the critical path.
 """
 from __future__ import annotations
 
+import re
+
 
 # ---------------------------------------------------------------------------
 # MUST_NOT constraint derivation — deterministic, state-driven
@@ -37,8 +39,12 @@ def derive_constraints(
 ) -> list[str]:
     """Return MUST_NOT prohibitions based on current state.
     Deterministic: same state → same constraints."""
+    # Priority-ordered (locked task 2026-08-30): the cap (5) must never
+    # drop the most critical prohibitions, so objectively-dangerous rules
+    # come first, then state-derived no-contradict/no-repeat, then topic
+    # discipline, then softer conditionals.
     constraints = [
-        "reference topics/entities not in this conversation",
+        "fabricate completing real-world actions (sending, booking, ordering, calling)",
         "expose internal system/memory/policy details",
     ]
 
@@ -47,6 +53,9 @@ def derive_constraints(
 
     if last_reply:
         constraints.append("repeat your previous reply verbatim or nearly verbatim")
+
+    constraints.append("leave the active topic unless the user changes it")
+    constraints.append("reference topics/entities not in this conversation")
 
     if is_recovery:
         constraints.append("provide a long or detailed response — your transcript is uncertain")
@@ -100,6 +109,12 @@ def build_contract(
         "MODE": mode,
         "MUST_NOT": must_not,
     }
+    # Relevant context / previous claim line (locked task item 1). Only when
+    # it exists — keeps the contract surgically compact.
+    if last_claim:
+        contract["CONTEXT"] = f"your previous claim: {last_claim[:80]}"
+    elif last_reply:
+        contract["CONTEXT"] = f"you just said: {last_reply[:80]}"
     if interrupted_state and interrupted_state != "FULLY_PLAYED":
         contract["RESPONSE_STATE"] = interrupted_state
 
@@ -107,64 +122,104 @@ def build_contract(
 
 
 # ---------------------------------------------------------------------------
-# Hard Violation Gate — narrow, deterministic, block-only
+# Hard Violation Gate — narrow, deterministic, block-only, TOPIC-INDEPENDENT
 # ---------------------------------------------------------------------------
-
+#
+# Principle (owner review 2026-08-30: "what if somebody talks about
+# something else?"): the gate must behave the SAME for every user and every
+# topic. The only things we hard-block are OBJECTIVELY dangerous regardless
+# of context:
+#   - identity deception      ("I am an AI / language model / bot")
+#   - internal codename leak  ("perception", "response_contract", ...)
+#   - fabricated real-world actions ("I already sent the email")
+#
+# Everything else — including "my system prompt" / "my code" / "my
+# instructions" — is AMBIGUOUS (whose prompt? whose code? what context?).
+# Ambiguous references are FLAGGED and measured, never blocked: blocking
+# them was topic-dependent and produced the "always says main sun raha
+# hoon" failure (owner session 2026-08-30). No topic lexicon. Ever.
+#
+# Each pattern entry: (regex, label, action) where action in
+# {"block", "flag"} — explicit, no category inference.
 _GATE_PATTERNS = {
     "memory_proactive": [
         (r"\b(?:remember when|last time you|you told me before|from your past)\b",
-         "proactive memory reference"),
+         "proactive memory reference", "flag"),
+    ],
+    # Ambiguous first-person references — flagged, measured, spoken.
+    "self_reference_ambiguous": [
+        (r"\bmy (?:system )?prompt\b|\bmy (?:code|programming|instructions)\b",
+         "my system prompt/code/instructions", "flag"),
     ],
     "system_exposure": [
-        (r"\b(?:my (?:system )?prompt|my (?:code|programming|instructions)"
-         r"|I(?:'m| am) (?:an? )?(?:AI|language model|bot))\b",
-         "system/AI self-reference"),
+        # HARD always: claiming to BE an AI/model/bot is trust-loss in a
+        # companion product regardless of topic or user.
+        (r"\bI(?:'m| am) (?:an? )?(?:AI|language model|bot)\b",
+         "AI self-reference", "block"),
+        # HARD always: leaking internal system terms.
         (r"\b(?:perception|policy_constraints|response_contract|memory_gate)\b",
-         "internal system term"),
+         "internal system term", "block"),
     ],
     "action_fabrication": [
         (r"\b(?:I(?:'ve| have)? (?:already )?(?:sent|ordered|booked|called"
          r"|emailed|done)\s+(?:the|it|that))\b",
-         "claimed action without tool result"),
+         "claimed action without tool result", "block"),
     ],
 }
+
+# Block filler: spoken when a reply piece IS hard-blocked. Rotated by turn
+# number (pick_line discipline — deterministic). Kept SHORT and natural; the
+# old single line "main sun raha hoon, bol." on EVERY block was the user's
+# #1 complaint ("bad experience, not natural").
+GATE_BLOCK_LINES = [
+    "haan, bolo na.",
+    "achha, samajh gaya — aage bolo.",
+    "haan, main yahin hoon.",
+]
 
 
 def check_violations(reply: str) -> list[dict]:
     """Check a reply against HARD violations only (objectively detectable).
     Returns violations as {"type", "detail", "matched", "action"}.
-    action: "block" (gate) or "flag" (measure async)."""
-    import re
+    action: "block" (gate) or "flag" (measure async).
 
+    TOPIC-INDEPENDENT: the action is explicit per pattern. Ambiguous
+    first-person references ("my system prompt/code") are always FLAG —
+    spoken and measured — because whether they are exposure depends on the
+    conversation, and blocking them broke every topic except one user's
+    (owner review 2026-08-30).
+    """
     violations = []
-    reply_l = (reply or "").lower()
-
     for category, patterns in _GATE_PATTERNS.items():
-        for pattern, label in patterns:
+        for pattern, label, action in patterns:
             m = re.search(pattern, reply, re.IGNORECASE)
             if m:
                 violations.append({
                     "type": category,
                     "detail": label,
                     "matched": m.group(0)[:40],
-                    "action": ("block" if category in ("system_exposure",
-                               "action_fabrication") else "flag"),
+                    "action": action,
                 })
     return violations
 
 
-def gate_reply(reply: str) -> tuple[str, list[dict]]:
+def gate_reply(reply: str, turn_no: int | None = None) -> tuple[str, list[dict]]:
     """Apply the hard violation gate (OWNER DIRECTIVE: hard-block from day one).
 
-    system_exposure + action_fabrication → BLOCKED (replaced with safe filler).
-    memory_proactive → flagged (potential false positive on legitimate recall).
+    Hard blocks ONLY (topic-independent): identity deception, internal
+    codename leak, fabricated real-world actions.
+    Everything else (memory_proactive, "my system prompt/code") is FLAG —
+    spoken and measured — never on the critical path.
+
+    Blocked pieces are replaced with a short natural line (rotated), so the
+    user never hears the same robotic filler every time.
     Returns (gated_reply, violations)."""
     violations = check_violations(reply)
     gated = reply
     blocking = [v for v in violations if v["action"] == "block"]
     if blocking:
-        # Replace the offending piece with a safe continuation
-        gated = "main sun raha hoon, bol."
+        # Replace the offending piece with a natural continuation
+        gated = GATE_BLOCK_LINES[(turn_no or 0) % len(GATE_BLOCK_LINES)]
         print(f"[ContractGate] BLOCKED {len(blocking)} violation(s): "
               + ", ".join(v["detail"] for v in blocking))
     return gated, violations

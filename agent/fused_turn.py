@@ -98,7 +98,8 @@ class FusedLLM:
     def build_contents(self, user_text: str, policy: dict, memory_view: list,
                        threads: list, history: list, layer2: dict | None = None,
                        previous_response: dict | None = None,
-                       previous_plan: dict | None = None) -> str:
+                       previous_plan: dict | None = None,
+                       delivery_state: dict | None = None) -> str:
         payload = {
             "policy": policy,
             "memory": memory_view,
@@ -106,6 +107,16 @@ class FusedLLM:
             "history": history,
             "user_turn": user_text,
         }
+        # HONEST RECALL (owner smoke-13 follow-up: 'shared wrong places from
+        # Uttarakhand'). When there is NO cross-session memory at all, say so
+        # explicitly so the LLM admits 'yaad nahi hai' instead of inventing
+        # facts. Today's chat history is still normal context.
+        if not memory_view:
+            payload["memory_note"] = (
+                "No cross-session user facts are stored yet. If the user asks "
+                "you to recall past-session facts, places, names or numbers, "
+                "say 'hmm, yaad nahi hai — batao na' and NEVER invent them. "
+                "Use today's chat history normally.")
         # Layer 2 (compressed session state) — only when it carries content,
         # per the approved 3-layer design (docs/LAYERED_CONTEXT_ARCHITECTURE.md).
         if layer2 and (layer2.get("people") or layer2.get("open_items")
@@ -120,6 +131,12 @@ class FusedLLM:
         # advance current + 1 instead of re-planning.
         if previous_plan:
             payload["previous_plan"] = previous_plan
+        # SYSTEM-OWNED DELIVERY STATE (approved fix ③, 2026-08-31): when the
+        # system detail plan is active and the user continues, carry the
+        # resume point (step + last spoken chunk) so the model advances the
+        # SAME explanation even when it never emitted an A-P1 head plan.
+        if delivery_state:
+            payload["delivery_state"] = delivery_state
         return json.dumps(payload, ensure_ascii=False)
 
     async def stream_prose(self, *, user_text: str, turn_type: str, policy: dict,
@@ -127,6 +144,7 @@ class FusedLLM:
                             turn_no: int, degraded: bool, layer2: dict | None = None,
                             previous_response: dict | None = None,
                             previous_plan: dict | None = None,
+                            delivery_state: dict | None = None,
                             key: str) -> AsyncGenerator[str, None]:
         """Yields spoken prose. Sets self.head / self.meta for the updater."""
         self.head, self.meta = None, {}
@@ -186,7 +204,8 @@ class FusedLLM:
         self.meta["system_sha1"] = hashlib.sha1(system.encode()).hexdigest()[:10]
         contents = self.build_contents(user_text, policy, memory_view, threads, history,
                                        layer2=layer2, previous_response=previous_response,
-                                       previous_plan=previous_plan)
+                                       previous_plan=previous_plan,
+                                       delivery_state=delivery_state)
         self.meta["context"] = contents
         config = {"temperature": 0.7, "system_instruction": system}
 

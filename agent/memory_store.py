@@ -55,14 +55,18 @@ class MemoryStore:
 
     def view(self, owner_id: str) -> list:
         cur = self.db.execute(
-            "SELECT type, content, occurrences, sessions FROM memory "
+            "SELECT type, content, occurrences, sessions, criterion FROM memory "
             "WHERE owner_id=? AND status='committed' ORDER BY last_seen DESC LIMIT 40",
             (owner_id,))
         lines = []
-        for typ, content, occ, sess in cur.fetchall():
+        for typ, content, occ, sess, criterion in cur.fetchall():
             prefix = {"preference": "preference", "relationship": "relationship",
-                      "semantic": "fact", "episodic": "episodic"}.get(typ, typ)
+                      "semantic": "fact", "episodic": "episodic",
+                      "saved_number": "saved number"}.get(typ, typ)
             suffix = f" (recurring x{occ} across {sess} sessions)" if typ == "relationship" and occ > 1 else ""
+            if criterion == "explicit":
+                # Provenance (owner acceptance: "provenance should be clear").
+                suffix += " (explicit)"
             lines.append(f"{prefix}: {content}{suffix}")
         return lines
 

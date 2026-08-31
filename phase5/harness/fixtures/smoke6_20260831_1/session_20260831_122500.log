@@ -1,0 +1,272 @@
+=== STAGE DIAGNOSTIC: session_20260831_122500.log ===
+
+TURN 1
+  STT     : 'हलो' | lang=Hindi logprob=-0.4995602 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  head    : m=C c=1.0 s=SAFE | degrade: -
+  reply   : 'hello! kaise ho aaj?' | 4w/20c
+  TTS     : fish audio=1.49s playback=1.49s
+  latency : stt=0.731s llm_ttft=1.779s tts_ttfa=2.476s speech->audio=3.34s
+  context : mem=25 hist=1 mode=VENT goal=encourage_continuation threads=0
+  FLAGS: route=normal
+
+TURN 3
+  STT     : 'यह अकाउंट नंबर जरूर लिखो बोल रहे हैं ठीक है' | lang=Hindi logprob=-0.3005349 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : 'haan, bolo — number note karta hoon.' | 7w/36c
+  TTS     : fish audio=1.28s playback=0.63s
+  latency : stt=0.387s llm_ttft=0.001s tts_ttfa=0.595s speech->audio=1.01s
+  context : deterministic (no LLM call)
+  ISSUES: INTERRUPTED at 627ms
+  FLAGS: route=normal
+
+TURN 4
+  STT     : '026900124205703' | lang=Hindi logprob=-0.30777457 | prov=groq
+  valid   : False (suspicious_no_speech_band) | relation: content
+  engine  : fused | decision: None () | because: unclear_speech
+  head    : - | degrade: -
+  reply   : 'yeh wala part miss ho gaya — phir se bol na.' | 11w/44c
+  TTS     : fish audio=Nones playback=Nones
+  latency : stt=0.677s llm_ttft=0.001s tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  ISSUES: STT rejected (suspicious_no_speech_band); REPLY CANCELLED BEFORE AUDIO
+  FLAGS: route=clarify
+
+TURN 5
+  STT     : 'लिख लिया?' | lang=Hindi logprob=-0.17049079 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.278s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 6
+  STT     : 'ये clear?' | lang=Hindi logprob=-0.45593524| prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.309s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 8
+  STT     : 'कुछ पूछ रहे हैं तुमसे लिख लिया है' | lang=Hindi logprob=-0.064845964 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  head    : m=C c=0.9 s=SAFE | degrade: -
+  reply   : 'achha, kya likha hai? sunao.' | 5w/28c
+  TTS     : fish audio=2.14s playback=2.14s
+  latency : stt=0.4s llm_ttft=1.428s tts_ttfa=2.062s speech->audio=2.49s
+  context : mem=25 hist=5 mode=VENT goal=encourage_continuation threads=0
+  FLAGS: route=normal
+
+TURN 9
+  STT     : 'तू सुना मुझे, मेग्रेशन होंगा तुझे, क्या लिखा तुने अकाउंडनंब' | lang=Hindi logprob=-0.13784057 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : - | degrade: -
+  reply   : 'haan, bolo — number note karta hoon.' | 7w/36c
+  TTS     : fish audio=2.14s playback=2.16s
+  latency : stt=0.487s llm_ttft=0.001s tts_ttfa=0.611s speech->audio=1.1s
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 10
+  STT     : 'मैंने अभी बोला तो तुने लिखा नहीं किया।' | lang=Hindi logprob=-0.06278179 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  head    : m=C c=0.95 s=SAFE | degrade: -
+  reply   : 'arey yaar, sach mein miss ho gaya. bata, abhi sun raha hoon.' | 12w/60c
+  TTS     : fish audio=3.3s playback=3.41s
+  latency : stt=0.489s llm_ttft=1.163s tts_ttfa=1.74s speech->audio=2.26s
+  context : mem=25 hist=8 mode=VENT goal=reconcile_claim threads=0
+  FLAGS: route=normal
+
+TURN 12
+  STT     : '026' | lang=Hindi logprob=-0.24210181999999997 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : fish audio=Nones playback=Nones
+  latency : stt=0.273s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : NOT CAPTURED
+  ISSUES: no reply generated
+  FLAGS: route=normal
+
+TURN 13
+  STT     : '9000' | lang=Hindi logprob=-0.6165364 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : fish audio=Nones playback=Nones
+  latency : stt=0.266s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : NOT CAPTURED
+  ISSUES: no reply generated
+  FLAGS: route=normal
+
+TURN 14
+  STT     : '124205757' | lang=Hindi logprob=-0.6309645| prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : FAIL(unknown) | degrade: -
+  reply   : 'maine suna: one two four two zero five seven five seven. yeh hi na, co' | 16w/81c
+  TTS     : fish audio=5.94s playback=5.95s
+  latency : stt=0.558s llm_ttft=0.001s tts_ttfa=0.565s speech->audio=1.13s
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 16
+  STT     : 'तू बोल मुझे, तूने क्या लिखा है।' | lang=Hindi logprob=-0.07549853 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : fused | decision: respond () | because: llm
+  head    : m=C c=0.99 s=SAFE | degrade: -
+  reply   : 'maine bola tha — zero do chhe, aur phir nau hazar. galat tha kya?' | 14w/65c
+  TTS     : fish audio=5.2s playback=5.2s
+  latency : stt=0.458s llm_ttft=1.652s tts_ttfa=2.172s speech->audio=3.22s
+  context : mem=25 hist=15 mode=VENT goal=reconcile_claim threads=0
+  FLAGS: route=normal
+
+TURN 17
+  STT     : '0269000' | lang=Hindi logprob=-0.39184037 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : 'maine suna: zero two six nine zero zero zero. yeh hi na, confirm karo.' | 14w/70c
+  TTS     : fish audio=5.2s playback=5.17s
+  latency : stt=0.342s llm_ttft=0.001s tts_ttfa=0.526s speech->audio=0.88s
+  context : deterministic (no LLM call)
+  ISSUES: INTERRUPTED at 5165ms
+  FLAGS: route=normal
+
+TURN 18
+  STT     : 'नहीं नाइन जीरो जीरो है बस उसके बाद जीरो नहीं है' | lang=Hindi logprob=-0.11954803 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: user_speech_ended
+  head    : - | degrade: -
+  reply   : 'haan, main suna: nine zero zero. sahi hai na?' | 9w/45c
+  TTS     : fish audio=4.23s playback=4.17s
+  latency : stt=0.517s llm_ttft=0.001s tts_ttfa=0.691s speech->audio=1.22s
+  context : deterministic (no LLM call)
+  ISSUES: INTERRUPTED at 4168ms
+  FLAGS: route=normal
+
+TURN 19
+  STT     : 'आगे हूँ' | lang=Hindi logprob=-0.44949466 | prov=groq | corr=0.3407
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=1.268s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 20
+  STT     : 'आगे' | lang=Hindi logprob=-0.2405071 | prov=groq | corr=0.2908
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.281s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 22
+  STT     : 'बोलो भाईया इसके बाद क्या है?' | lang=Hindi logprob=-0.09855834 | prov=groq | corr=0.2067
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.461s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 24
+  STT     : 'हाँ भीया, तल पर लो कर क्या?' | lang=Hindi logprob=-0.3850431 | prov=groq | corr=0.4213
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : - | degrade: -
+  reply   : 'haan, ho gaya — nine zero zero note ho gaya.' | 10w/44c
+  TTS     : fish audio=2.18s playback=2.19s
+  latency : stt=0.364s llm_ttft=0.0s tts_ttfa=0.641s speech->audio=1.03s
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 26
+  STT     : 'इसके बाद भी नंबर है ना, मैंने जो बोला था लिखा नहीं है क्या?' | lang=Hindi logprob=-0.09128902 | prov=groq
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: completed
+  head    : - | degrade: -
+  reply   : 'haan, bol number — main sun raha hoon.' | 8w/38c
+  TTS     : fish audio=2.74s playback=2.74s
+  latency : stt=0.448s llm_ttft=0.001s tts_ttfa=0.621s speech->audio=1.08s
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 27
+  STT     : 'तुम सले कवारों' | lang=Hindi logprob=-0.46786339999999993 | prov=groq | corr=0.2561
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.364s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 29
+  STT     : 'एक address लिखो' | lang=Hindi logprob=-0.17846370000000003 | prov=groq | corr=0.3277
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.325s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 31
+  STT     : 'सुना कुछ' | lang=Hindi logprob=-0.1546498 | prov=groq | corr=0.3444
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.331s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+TURN 32
+  STT     : 'कि यह कहां गए' | lang=Hindi logprob=-0.12360302000000001 | prov=groq | corr=0.393
+  valid   : True (accepted) | relation: content
+  engine  : precision_rail | decision: respond () | because: None
+  head    : - | degrade: -
+  reply   : ''
+  TTS     : None audio=Nones playback=Nones
+  latency : stt=0.624s llm_ttft=Nones tts_ttfa=Nones speech->audio=Nones
+  context : deterministic (no LLM call)
+  FLAGS: route=normal
+
+--- SESSION SUMMARY ---
+turns=32 replies=16 ctx_captured=6/16 heads=6 errors=0
+reply audio: avg=3.04s max=5.94s | speech->audio avg=1.64s max=3.34s
+flags: trimmed=0 gender=0 service-speak=0 legacy-brain=0
+engine paths: {'fused': 9, 'precision_rail': 23}
+owner(s): ['4da66eb5']
+replies cancelled BEFORE audio: 2
+response states: {'FULLY_PLAYED': 9, 'PARTIALLY_PLAYED': 5, 'UNHEARD': 4}
+echo corr (voice key): n=13 min=0.2067 med=0.3407 max=0.4734
+barge-in stop latency: avg=4.8ms max=18.3ms (n=14)
+stt providers: {'groq': 32}

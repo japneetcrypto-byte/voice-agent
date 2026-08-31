@@ -2,11 +2,18 @@ from typing import AsyncGenerator
 import os
 import asyncio
 import logging
+import time
 import numpy as np
 from livekit import rtc
 from livekit.agents import tts
 
+from agent.tts_warmup import WarmupPolicy
+
 logger = logging.getLogger(__name__)
+
+# Warmup text: one short word already in the ack vocabulary — minimal
+# audio, minimal quota burn, still exercises the voice model.
+WARMUP_TEXT = "haan"
 
 class TTSProvider:
     async def synthesize_stream(
@@ -34,6 +41,36 @@ class FishAudioTTSProvider(TTSProvider):
         }
         self.engine = FishTTS(**kwargs)
         self.last_provider = "fish"
+        self.warmup_policy = WarmupPolicy()
+
+    def note_synthesis_end(self) -> None:
+        """Call after a reply finishes (feeds the pre-warm decision)."""
+        self.warmup_policy.note_synthesis_end(time.monotonic())
+
+    async def warmup(self) -> bool:
+        """Best-effort background warmup of the cloned voice model.
+
+        CA3-approved add-on (2026-08-30). Policy-bounded (idle gap, per-
+        session quota budget) — see agent/tts_warmup.py. Never raises.
+        """
+        import time
+        if os.getenv("AIVA_TTS_PREWARM", "1") != "1":
+            return False
+        now = time.monotonic()
+        if not self.warmup_policy.should_warm(now):
+            return False
+        try:
+            async def _warm_text():
+                yield WARMUP_TEXT
+            async for _ in self.synthesize_stream(_warm_text()):
+                pass  # discard; we only need the model warm
+            self.warmup_policy.on_warmup_done(time.monotonic())
+            print("[TTS PreWarm] voice model warmed "
+                  f"({self.warmup_policy._warm_calls}/{self.warmup_policy.max_per_session})")
+            return True
+        except Exception as e:
+            logger.warning(f"[TTS PreWarm] failed (harmless): {type(e).__name__}: {e}")
+            return False
 
     async def synthesize_stream(
         self, text_stream: AsyncGenerator[str, None]
@@ -146,6 +183,13 @@ class FallbackTTSProvider(TTSProvider):
         self.fallback = EdgeTTSProvider()
         self.last_provider = None
         self.last_fallback_reason = None
+        self.warm_hit = None  # per-turn: was the voice model warm at TTS start?
+
+    async def warmup(self) -> bool:
+        """Background pre-warm of the Fish voice model (CA3 add-on)."""
+        if self.primary is None:
+            return False
+        return await self.primary.warmup()
 
     async def synthesize_stream(
         self, text_stream: AsyncGenerator[str, None]
@@ -182,11 +226,22 @@ class FallbackTTSProvider(TTSProvider):
             for chunk in list(text_chunks):
                 yield chunk
 
+        self.warm_hit = (self.primary.warmup_policy.is_warm(time.monotonic())
+                         if self.primary else None)
+
         try:
             if not self.primary:
                 await tee_task
-                async for chunk in self.fallback.synthesize_stream(make_stream()):
-                    yield chunk
+                try:
+                    async for chunk in self.fallback.synthesize_stream(make_stream()):
+                        yield chunk
+                except Exception as e:
+                    # Owner nuance (2026-08-30): if Edge ALSO fails, speaking
+                    # makes no sense — silence-with-log, never garbled audio.
+                    self.last_provider = "none"
+                    self.last_fallback_reason = f"edge_failed: {type(e).__name__}: {str(e)[:120]}"
+                    logger.error("[TTS] Edge fallback failed too — silent turn "
+                                 f"(logged): {e}")
                 return
 
             self.last_provider = "fish"
@@ -209,6 +264,7 @@ class FallbackTTSProvider(TTSProvider):
             await tee_task
             if samples < 4800:  # <0.1s of audio = silence
                 raise ValueError(f"fish_silent_stream ({samples} samples)")
+            self.primary.note_synthesis_end()  # feed the pre-warm decision
         except (asyncio.TimeoutError, StopAsyncIteration, Exception) as e:
             self.last_provider = "edge (fallback)"
             self.last_fallback_reason = f"{type(e).__name__}: {str(e)[:150]}"
@@ -218,8 +274,16 @@ class FallbackTTSProvider(TTSProvider):
                     "Switching to EdgeTTS."
                 )
             await src_done.wait()  # drain remaining text so Edge gets it all
-            async for audio in self.fallback.synthesize_stream(make_stream()):
-                yield audio
+            try:
+                async for audio in self.fallback.synthesize_stream(make_stream()):
+                    yield audio
+            except Exception as e2:
+                # Owner nuance (2026-08-30): Edge failing too -> silence-with-
+                # log. "Edge saying also does not make sense" when it fails.
+                self.last_provider = "none"
+                self.last_fallback_reason = f"edge_failed: {type(e2).__name__}: {str(e2)[:120]}"
+                logger.error("[TTS] Edge fallback failed too — silent turn "
+                             f"(logged): {e2}")
         finally:
             if not tee_task.done():
                 tee_task.cancel()
