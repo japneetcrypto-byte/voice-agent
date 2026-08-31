@@ -1828,6 +1828,25 @@ async def entrypoint(ctx: JobContext):
     async def _commit_session_memory():
         if engine and engine.get("sess"):
             try:
+                # SESSION-END CONSOLIDATION (Phase B, docs/SESSION_END_CONSOLIDATION_V1.md):
+                # additive best-effort LLM pass (bounded by CONSOLIDATION_BUDGET_S).
+                # On ANY failure/timeout it logs and continues — the deterministic
+                # path below is untouched and runs regardless.
+                try:
+                    from agent.session_consolidation import (consolidate_bounded,
+                                                             CONSOLIDATION_BUDGET_S)
+                    summary = await consolidate_bounded(
+                        owner_id=engine["sess"].owner_id,
+                        store=engine["store"],
+                        session_log_path=session_log_path,
+                        state_log_path=engine["sess"].log_path,
+                        layer2=(engine.get("lcm").get_layer2()
+                                if engine.get("lcm") else None),
+                        timeout=CONSOLIDATION_BUDGET_S)
+                    log_event("SESSION_CONSOLIDATION", details=summary)
+                except Exception as e:
+                    print(f"[SessionConsolidation] pass failed — deterministic "
+                          f"path continues: {type(e).__name__}: {e}")
                 engine["sess"].end_session(keep_pending=True)
                 print("[StateEngine] memory committed at session end")
             except Exception as e:

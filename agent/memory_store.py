@@ -127,6 +127,37 @@ class MemoryStore:
                 (owner_id, typ, content, criterion, now, now))
         self.db.commit()
 
+    def lookup(self, owner_id: str, content: str) -> dict | None:
+        """Phase-B read-only dedupe helper (session-end consolidation): exact
+        content lookup across ALL statuses (committed/pending/quarantined).
+        Never mutates — the caller uses it to decide whether a candidate
+        already exists before committing."""
+        row = self.db.execute(
+            "SELECT id, type, content, status, occurrences FROM memory "
+            "WHERE owner_id=? AND content=?",
+            (owner_id, content)).fetchone()
+        if not row:
+            return None
+        return {"id": row[0], "type": row[1], "content": row[2],
+                "status": row[3], "occurrences": row[4]}
+
+    def quarantine(self, owner_id: str, candidate: dict) -> None:
+        """Phase-B pass-forced quarantine for anchor-failed LLM candidates
+        (session-end consolidation). Same INSERT shape as the MemoryGate
+        quarantine path: status='quarantined', invisible to view(), never
+        auto-promoted. Deterministic; does not override the gate (the gate has
+        no anchor concept — the pass IS the upstream detector here)."""
+        typ = candidate.get("type", "semantic")
+        content = (candidate.get("content") or "").strip()[:200]
+        now = datetime.now(timezone.utc).isoformat()
+        if self.lookup(owner_id, content) is not None:
+            return  # already stored in any status — never duplicate
+        self.db.execute(
+            "INSERT INTO memory (owner_id, type, content, criterion, status, created_at, last_seen)"
+            " VALUES (?,?,?,?, 'quarantined', ?, ?)",
+            (owner_id, typ, content, "salient", now, now))
+        self.db.commit()
+
     def promote_pending(self, owner_id: str, keep: bool = True) -> None:
         """Session-end commit evaluation (D3), GUARDED (directive 2026-08-29):
         a pending row is promoted ONLY if seen >=2 times (repeated facts are
