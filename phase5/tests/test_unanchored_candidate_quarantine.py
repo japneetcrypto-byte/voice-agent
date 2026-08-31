@@ -45,5 +45,23 @@ rows = store.db.execute("SELECT status FROM memory WHERE owner_id=?", (OWNER,)).
 check("both rows quarantined", sorted(r[0] for r in rows), ["quarantined", "quarantined"])
 check("quarantined rows invisible to view()", store.view(OWNER), [])
 
+# ---- quarantine safety (owner battle-test): not promotable, not bumpable,
+# not committable by later passes, auditable-only ----
+store.promote_pending(OWNER, keep=True)   # any session end
+check("promote_pending cannot promote quarantined rows",
+      store.db.execute("SELECT status FROM memory WHERE owner_id=?", (OWNER,)).fetchall(),
+      [("quarantined",), ("quarantined",)])
+s2 = consolidate(owner_id=OWNER, store=store, session_turns=TURNS, llm_call=lambda p: RAW)
+check("later pass dedupes the same quarantined content (no commit path)",
+      s2["deduped"], 2)
+rows2 = store.db.execute(
+    "SELECT status, occurrences FROM memory WHERE owner_id=?", (OWNER,)).fetchall()
+check("quarantined rows unchanged: occ=1, never committed",
+      sorted(rows2), [("quarantined", 1), ("quarantined", 1)])
+check("still invisible to view() after later pass", store.view(OWNER), [])
+# auditable-only: the rows exist with the quarantine status and reason trail
+check("auditable: quarantine rows present in the store",
+      len(store.db.execute("SELECT * FROM memory WHERE status='quarantined'").fetchall()), 2)
+
 print("\n" + ("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)"))
 sys.exit(1 if fails else 0)

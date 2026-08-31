@@ -471,6 +471,13 @@ def consolidate(*, owner_id: str, store, session_log_path: str | None = None,
         anchored, unanchored = validate_anchors(bullets, dict(kept))
         base["anchored"] = len(anchored)
         for b in unanchored:
+            if store.lookup(owner_id, b["content"]) is not None:
+                # doc §5 rule 3: content already exists (any status incl.
+                # quarantined) -> dedupe, never re-quarantine / re-commit.
+                base["deduped"] += 1
+                log(f"[SessionConsolidation] bullet type={b['type']} status=dedupe "
+                    f"turn_ref={b['turn_ref']} content={b['content'][:40]!r}")
+                continue
             store.quarantine(owner_id, {"type": b["type"], "content": b["content"]})
             base["unanchored_quarantined"] += 1
             log(f"[SessionConsolidation] bullet type={b['type']} status=quarantine "
