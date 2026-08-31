@@ -34,6 +34,24 @@ from agent.prompt_fragments import (
 TAG_RE = re.compile(r"<perception>(.*?)</[^>]{1,24}>", re.DOTALL)
 OPEN_TAG = "<perception>"
 
+# GAP R (owner 2026-09-01): save/remember-intent detection for the honesty
+# note. Deterministic, prompt-layer (NOT a rail — no routing, no line pools).
+# Fires when the user asks Aiva to save/keep/remember something, or asks
+# whether something was saved. Pure recall queries ('क्या लिखा' excluded via
+# lookbehind; 'बताई थी' not in the set) keep the multisession pin: no note
+# when memory is present — the fact may already be in memory.
+_SAVE_INTENT_RE = re.compile(
+    r"\b(?:save|seve|store|remember|note|noted)\b"
+    r"|\b(?:सेप|सेव|सेफ|सेव्)\b"
+    r"|\bयाद\b"
+    r"|(?<!क्या )लिख"
+    r"|देख लिये|देख लिया|चेक किया",
+    re.IGNORECASE)
+
+
+def _save_intent(user_text: str) -> bool:
+    return bool(user_text and _SAVE_INTENT_RE.search(user_text))
+
 
 def salvage_unclosed_head(buf: str) -> tuple[dict | None, str]:
     """Recover from '<perception>{...}prose...' that never got closed.
@@ -117,6 +135,22 @@ class FusedLLM:
                 "you to recall past-session facts, places, names or numbers, "
                 "say 'hmm, yaad nahi hai — batao na' and NEVER invent them. "
                 "Use today's chat history normally.")
+        # GAP R (owner 2026-09-01): with memory PRESENT, a save/remember-
+        # intent turn gets the capability-honesty note instead — the model
+        # was falsely denying it can save at all ('address save toh main nahi
+        # kar sakta, system mein nahi hota' — session_20260831_202922) even
+        # though the system DOES save confirmed numbers and explicit facts.
+        # Pure recall queries with memory present keep NO note (multisession
+        # pin: the fact may be in memory — the note would be noise).
+        elif _save_intent(user_text):
+            payload["memory_note"] = (
+                "You DO save things the user explicitly shares (confirmed "
+                "numbers, stated facts, preferences, places, relationships) "
+                "and they persist across sessions. NEVER claim 'main save "
+                "nahi kar sakta' or 'system mein kuch nahi hota'. If the "
+                "specific thing they ask about has no record in today's chat "
+                "or memory, say 'hmm, yaad nahi hai — batao na' and never "
+                "invent it.")
         # Layer 2 (compressed session state) — only when it carries content,
         # per the approved 3-layer design (docs/LAYERED_CONTEXT_ARCHITECTURE.md).
         if layer2 and (layer2.get("people") or layer2.get("open_items")

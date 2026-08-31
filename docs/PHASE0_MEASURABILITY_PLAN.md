@@ -945,3 +945,52 @@ line. Live test protocol: same browser → session 1 dictate+confirm a mobile
 number ("मोबाइल नंबर लिख ले" → digits → "बस" → "हां") → log "[Memory]
 saved-number committed (mobile)" → close tab → session 2 "मैंने तुझे अपना
 नंबर सेव करवाया था" → agent speaks the digits.
+
+---
+
+**2026-09-01 (update) — OWNER BATTLE-TEST smokes (sessions 202628/202922 on
+f42d8cb) + GAP R (honest recall) — ROADMAP ALIGNMENT.** Owner realigned to
+the lifecycle: **Capture → Trust/Confirm → Persist → Retrieve → Recall**
+(session-end consolidation = Capture/completeness; L2→L3 = Persist;
+relevance retrieval = Retrieve; Gap R = Recall/honesty). No Phase C, no Gap W
+(address capture stays OUT — no more rail special-cases), no new scope.
+
+BATTLE-TEST FINDINGS (both sessions, verified against code + deterministic
+reconstruction):
+- The trust-boundary HELD: session 202628 produced zero deterministic
+  captures for the address (rail de-armed by DEARM_DETAIL_RE — smoke-6
+  ruling; extract_place_facts needs a travel signal; fact candidates need
+  "मेरा X है"; verified: all return [] on the address turns) and no confirmed
+  number → the consolidation pass could at most QUARANTINE/pending —
+  reconstruction over the real 25-turn log (both cases: with and without a
+  digit bullet) proves **committed=0, view() sees nothing**. No LLM output
+  became trusted memory. (Raw [SessionConsolidation] console line + DB dump
+  still owed by owner: see commands below.)
+- GAP R (real bug this round, session 202922 t5/t6): with mem=25 in context,
+  the LLM falsely denied the capability — 'address save toh main nahi kar
+  sakta, system mein nahi hota' / 'mere paas system mein save nahi hota na
+  kuch'. Root cause: rule 14 covers inventing CONTENT, not denying the
+  capability; memory_note only fired when memory was EMPTY (mem=25 → never).
+  FIXED tests-first (test_gap_r_no_false_save_denial.py, 15 checks):
+  - prompt_fragments rule 14 gains the NEVER-DENY clause ("you DO save
+    confirmed numbers, stated facts, preferences, places, relationships;
+    NEVER claim 'main save nahi kar sakta' / 'system mein kuch nahi hota'");
+    pins "yaad nahi"/"NEVER INVENT RECALL" preserved.
+  - fused_turn.build_contents injects a capability-honesty memory_note on
+    save/remember-intent turns even when memory is present (12-token
+    deterministic detector — prompt layer, NOT a rail); pure recall queries
+    with memory present keep NO note (multisession pin preserved).
+- SIDE NOTE (out of scope, pre-existing): session 202628 t4 — lone Hindi
+  digit word 'एक' spurious rail echo before the user said 'एक address...'
+  (rail owns numbers; harmless noise).
+
+GATES: 42/42 suites GREEN (30 existing + 11 Phase-B + gap_r); replay identity
+ALL PASS; real baseline UNCHANGED (pre-existing t1/t20/t11 profile).
+
+OWNER ACTIONS (close the last evidence — raw files stay out of chat):
+1. `grep -n "SessionConsolidation\|SESSION_CONSOLIDATION" logs/session_20260831_202628.log`
+   and paste the lines (console lines are in the worker log too).
+2. `sqlite3 logs/aiva_memory.db "SELECT type,status,occurrences,criterion FROM
+   memory WHERE owner_id='4da66eb5' ORDER BY id DESC LIMIT 10"`
+   → expected: NO new committed rows from 202628/202922 (only pre-existing
+   25 items); consolidation rows pending/quarantined at most.
