@@ -935,9 +935,13 @@ synthetic EMPTY DIFF; real baseline UNCHANGED.
 DEPLOY NOTE (this update): the working tree is a single interdependent blob
 (main.py imports greeting_line_for/pick_ack_for/validate_transcript/
 route_decision from the previously-uncommitted WIP + untracked modules), so
-the fix is committed as the whole tree + pushed to origin — the owner pulls
-and WORKER_COUNT=2 bash start_aiva.sh deploys it. Live test protocol: same
-browser → session 1 dictate+confirm a mobile number ("मोबाइल नंबर लिख ले" →
-digits → "बस" → "हां") → log "[Memory] saved-number committed (mobile)" →
-close tab → session 2 "मैंने तुझे अपना नंबर सेव करवाया था" → agent speaks
-the digits.
+the fix is committed as the whole tree — commit 49e0319 (67 files; the
+owner's history was already flattened to 4057092, so the old fcb6318 tip was
+superseded). PUSH STATUS: 49e0319 is now the origin tip of
+arena/01a05304-voice-agent (force-updated 2026-09-01; verified
+git ls-remote == local HEAD, working tree clean). The owner pulls
+(WORKER_COUNT=2 bash start_aiva.sh) and the new build deploys the memory
+line. Live test protocol: same browser → session 1 dictate+confirm a mobile
+number ("मोबाइल नंबर लिख ले" → digits → "बस" → "हां") → log "[Memory]
+saved-number committed (mobile)" → close tab → session 2 "मैंने तुझे अपना
+नंबर सेव करवाया था" → agent speaks the digits.
