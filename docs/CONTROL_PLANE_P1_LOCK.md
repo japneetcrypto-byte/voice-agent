@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-02 · **Status:** PENDING OWNER APPROVAL — no code until approved · **Base doc:** `docs/CONVERSATION_CONTROL_PLANE_V1.md` (proposal)
 
-**P1 scope (locked):** one pure `control_turn()` + the unified Decision schema + the state-conditioned precedence table over **existing** detectors, wired in **shadow mode only** (telemetry, zero behavior change). P2–P5, Phase C, memory patches, and broad refactor are all explicitly **not** part of P1.
+**P1 scope (locked):** one pure `control_turn()` + the unified Decision schema + the state-conditioned precedence table over **existing** detectors + a read-only **Decision Safety / Invariant gate** (§9), wired in **shadow mode only** (telemetry, zero behavior change). P2–P5, Phase C, memory patches, and broad refactor are all explicitly **not** part of P1.
 
 ---
 
@@ -157,7 +157,8 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
 
 ## 7. P1 shadow mode (telemetry only — cannot alter production)
 
-1. **Wiring:** in `main.py` `transcribe_and_respond`, after the existing `_rail`/`_greeting`/`turn_controller` computation, compute `decision = control_turn(text, turn_no, snapshot)` — inputs read-only, output written to `turn["control_shadow"] = asdict(decision)` + `tmark("DECISION_SHADOW", ...)`. Entirely inside `try/except` → on any error: log `control_shadow_error`, continue. **The existing chain runs byte-identical.**
+1. **Wiring:** in `main.py` `transcribe_and_respond`, after the existing `_rail`/`_greeting`/`turn_controller` computation, compute `signals = detect_signals(text, turn_no, snapshot)` → `decision = control_turn(signals, snapshot)` → `ok, violations = validate_decision(decision, signals, snapshot)` (inputs read-only; the whole block inside one `try/except` → on any error: log `control_shadow_error`, continue). **The existing chain runs byte-identical.**
+2. **Emission (fail-closed):** only a VALID decision is written to `turn["control_shadow"]` + `tmark("DECISION_SHADOW", ...)`. An INVALID one is written to `tmark("INVARIANT_VIOLATION", rule=..., decision=...)` and emits **no** shadow decision — the production chain (today's legacy path, running unchanged) is the fail-closed fallback by construction (§9.2).
 2. **Same shadow in `run_turn`** (`response_pipeline.py`) so the harness can exercise it. Both wiring points are the ONLY main-path touches; nothing else changes.
 3. **Replay:** `control_shadow` follows the established **compare-when-present** pattern (like `precise_detail`): synthetic fixtures regenerate WITH the key; the real baseline archives lack it → real gate stays EMPTY DIFF.
 4. **Divergence policy:** shadow-vs-chain divergence is **logged, never acted on**: `tmark("DECISION_SHADOW_DIVERGENCE", chain_action=..., shadow_action=...)` when `action` differs from the executed path. This is exactly what P1 exists to surface; a divergence is a finding to review, not a P1 failure.
@@ -175,6 +176,7 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
    - determinism (same input → same Decision);
    - no-crash on garbage / empty / Devanagari-punctuation / long input;
    - **structural pin: `control_plane.py` contains no `re.compile`** (zero new detectors by construction).
+   - **NEW (CTO): `test_control_plane_invariants.py`** — one test per invariant I1–I8 (§9.4) + fail-closed emission + validator robustness + no-second-authority structural pins.
 2. **Replay identity = EMPTY DIFF** on the synthetic gate (regenerated with `control_shadow`) AND the real baseline gate unchanged (compare-when-present).
 3. **All existing suites green (42 today).**
 4. **No behavior change:** `git diff` shows only `agent/control_plane.py` (new) + the two shadow wiring points + tests. No changes to `precision_rail.py`, `conversation_controller.py`, `turn_controller.py`, `turn_router.py`, `state_updater.py`, `fused_turn.py`, `memory_*`, `prompt_fragments.py`, or any rail/response behavior.
@@ -184,6 +186,98 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
 
 ---
 
-## 9. Explicitly deferred (locked OUT of P1)
+## 9. Decision Safety / Invariant layer (CTO addition — locked)
+
+**Position: validation, NOT a second authority.** The controller is the single authority
+that *chooses* the Decision. The invariant layer is a pure, read-only *gate on the
+Decision's output*: it never re-derives intent/state from the raw text, never emits or
+modifies a Decision, and has no store/LLM access. It exists so a wrong-but-well-formed
+Decision is caught structurally instead of silently shipped.
+
+```
+detect_signals (once) → control_turn (ONLY Decision authority) → Decision
+    → validate_decision (read-only gate) → valid: shadow telemetry
+                                          → invalid: INVARIANT_VIOLATION, no shadow decision (fail-closed)
+```
+
+```python
+def validate_decision(decision: Decision, signals: dict, state: AgentState) -> tuple[bool, list[str]]:
+    # inputs = the SAME signals dict + state snapshot control_turn consumed (never recomputed here)
+    # output = (ok, [violated rule names]); NEVER returns or mutates a Decision
+```
+
+**9.1 Locked invariants** (each becomes a test; checked in order; first violation reported set is the whole set):
+
+*Schema (always first):*
+- **S1** — every enum field ∈ its locked enum; `action` ∈ the locked action set
+  `{llm, greeting, rail_echo, rail_accumulate, rail_confirm, rail_recall, rail_repair,
+  rail_arm, suppress, drop, clarify, idle}`. An unknown action is itself a violation —
+  no invented action can ever ship.
+
+*Behavioral (Decision vs the shared snapshot — the snapshot is read, never re-derived):*
+- **I1** — `TASK_ACTIVE + digits` can never route to LLM: if `state.conv == TASK_ACTIVE`
+  and `signals["digits_present"]` ⇒ `action ∈ {rail_accumulate, rail_echo, rail_confirm,
+  rail_recall, rail_repair, rail_arm, suppress}` and `action != "llm"` and
+  `delivery_mode != "CONTINUE"`.
+- **I2** — `CONFIRMING + confirm` can only use the confirmation path: if `state.conv ==
+  CONFIRMING` and `turn_intent ∈ {CONFIRM, REJECT}` ⇒ `action ∈ {rail_confirm,
+  rail_repair}` — never `llm`, never `greeting`.
+- **I3** — `REJECT` can never become `CONFIRM`: if `turn_intent == REJECT` ⇒
+  `action != "rail_confirm"` and `memory_intent != "SAVE"` (a rejection never confirms
+  the pending value).
+- **I4** — `memory_intent == FORGET` never executes in P1: ⇒ `action == "llm"`
+  (conversational acknowledgment only) and `llm_instruction` present; P1 logs the intent
+  and routes no write/delete anywhere.
+- **I5** — `memory_intent` alone can never cause a memory write in P1: the Decision
+  carries no write action by construction (S1's action set has none) — any
+  `memory_intent != NONE` must still pair with a locked action (rail_* / llm). Actual
+  writes remain the existing extractors / ROW 51 / consolidation's job, untouched by the
+  Decision.
+- **I6** — `delivery_mode == CONTINUE` requires active delivery: ⇒
+  `state.delivery_active == True` and `action == "llm"`; otherwise the decision is
+  invalid (fail-closed target: NEW).
+- **I7** — `action == llm` never coexists with a system-owned action: ⇒
+  `conv_state ∉ {CONFIRMING, SAVING}` and not (`TASK_ACTIVE` + `digits_present`) and
+  `delivery_mode != "SILENT"`. Conversely: `action ∈ {rail_*, suppress, drop, greeting}`
+  ⇒ `turn_owner == "SYSTEM"`.
+- **I8** — fail-closed on unknown/invalid: any S1 or I1–I7 violation ⇒ the Decision is
+  **not** emitted as shadow telemetry; `INVARIANT_VIOLATION {rule, decision}` is logged;
+  production behavior is the existing legacy deterministic path (in P1 that path runs
+  unchanged by construction).
+
+**9.2 Fail-closed semantics (P1 vs after):**
+- **P1 (shadow):** the production chain already IS the safest existing deterministic
+  behavior. Fail-closed = the invalid Decision is dropped from telemetry, the violation
+  is logged, and nothing about production changes (it never did in P1).
+- **P2+ (when the Decision starts influencing behavior):** the same gate becomes the
+  enforcement point — a violating Decision causes the turn to fall back to the legacy
+  deterministic path (today's chain) for that turn. Validation-with-teeth, same single
+  authority, same invariants.
+
+**9.3 Why validation cannot become a second precedence/decision system (structural):**
+1. `validate_decision` returns `(bool, list[str])` — it *cannot* produce a Decision
+   (type-level).
+2. It performs zero pattern matching: it reads the already-computed `signals` dict and
+   never calls `detect_signals` / `control_turn` / any detector.
+3. Exactly ONE function in `control_plane.py` returns a `Decision` (`control_turn`);
+   the validator is the only other exported function and returns a tuple (pinned by
+   test).
+4. It has no store/LLM access and never mutates state — it cannot start a memory write,
+   an LLM call, or a state transition.
+
+**9.4 Invariant tests** (`phase5/tests/test_control_plane_invariants.py`):
+- one test per invariant (I1–I8): craft a violating `(decision, signals, state)` →
+  assert `ok=False` and the rule name present; craft a compliant one → `ok=True`.
+- fail-closed wiring: an invalid Decision ⇒ no `control_shadow` emitted + one
+  `INVARIANT_VIOLATION` event (unit-test the emission wrapper).
+- validator robustness: never raises on garbage / None / empty; unknown enum value → S1.
+- determinism: same inputs ⇒ same `(ok, violations)`.
+- structural pins (no-second-authority): validator returns tuple not Decision; exactly
+  one Decision-producing function in `control_plane.py`; no `re.compile` in the
+  validator; validator imports none of `memory_store` / `memory_gate` / `fused_turn`.
+
+---
+
+## 10. Explicitly deferred (locked OUT of P1)
 
 P2 AgentState first-class · P3 transition-table consolidation (rows 1–51 migrate) · P4 memory_intent routing (RECALL/CORRECT/FORGET execute) · P5 turn_owner + delivery_mode ownership · Phase C L2→L3 · memory patches (incl. the "50-60" range question) · sales/domain policy · new event-log system (extend `tmark` only).
