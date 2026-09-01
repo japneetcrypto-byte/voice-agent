@@ -37,6 +37,14 @@ echo "--- Adaptive endpointing regression ---"
 uv run python phase5/tests/test_adaptive_endpointing.py
 
 echo ""
+echo "--- Control Plane V1 P1 shadow (16-row table + conflicts + pins) ---"
+uv run python phase5/tests/test_control_plane_v1.py
+
+echo ""
+echo "--- Control Plane V1 invariants (S1 + I1-I9 + fail-closed) ---"
+uv run python phase5/tests/test_control_plane_invariants.py
+
+echo ""
 echo "--- Offline pipeline check ---"
 uv run python phase5/offline_pipeline_check.py
 

@@ -41,6 +41,7 @@ from agent.reply_guard import (feminine_self_reference, is_confirm_echo,
 from agent.response_pipeline import (build_policy_and_contract, process_piece,
                                      release_from, release_tail)
 from agent.precision_rail import decide as precision_rail_decide
+from agent.control_plane import shadow_turn, pre_state
 from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
@@ -1370,6 +1371,12 @@ async def entrypoint(ctx: JobContext):
                                 # off below. Drop turns (junk barged over agent
                                 # speech) never run the rail — a dropped
                                 # transcript is unreliable.
+                                # CONTROL PLANE V1 — P1 SHADOW: capture the
+                                # PRE-CHAIN engine state (precision_rail_decide
+                                # and the turn-gate below MUTATE engine
+                                # state as side effects; the shadow must
+                                # decide on the same inputs the chain saw).
+                                _shadow_engine = pre_state(engine) if engine else None
                                 _rail = (precision_rail_decide(transcript.text, engine, turn_number)
                                          if engine and action != "drop" else None)
                                 # Greeting gate: NO sess requirement — the
@@ -1583,6 +1590,20 @@ async def entrypoint(ctx: JobContext):
                                             print(f"[AckBridge] play failed: {e}")
                                     else:
                                         turn["ack_reason"] = ack_reason
+                                # CONTROL PLANE V1 — P1 SHADOW (owner-approved
+                                # lock, docs/CONTROL_PLANE_P1_LOCK.md): read-only
+                                # telemetry computed after the chain's own decision
+                                # (_rail/_greeting/turn_controller) — same inputs,
+                                # zero effect on the production path (which runs
+                                # byte-identical). Invalid/error -> telemetry only,
+                                # no control_shadow key (fail-closed).
+                                shadow_turn(turn, _shadow_engine, transcript.text, turn_number,
+                                            route_drop=bool(_routing.get("drop", False)),
+                                            route_action=_routing.get("action", "normal"),
+                                            rail=_rail, greeting=_greeting,
+                                            emit=lambda ev, details: tmark(
+                                                ev, turn=turn_number,
+                                                **{k: str(v) for k, v in details.items()}))
                                 await run_agent_response(transcript.text, turn,
                                                          rail=_rail, greeting=_greeting)
 

@@ -308,6 +308,10 @@ def _compare(replay: dict, archived: dict) -> dict:
     _exact_if_present(diffs, replay, archived, "precise_detail")
     _exact_if_present(diffs, replay, archived, "detail_state")
     _exact_if_present(diffs, replay, archived, "detail_continue")
+    # Control Plane V1 P1 shadow (lock §7.3): compare-when-present, like
+    # precise_detail — synthetic fixtures regenerate WITH the key; the real
+    # baseline archives lack it, so the real gate stays EMPTY DIFF.
+    _exact_if_present(diffs, replay, archived, "control_shadow")
 
     # policy DELTAS (base policy values are runtime state — not compared)
     arch_policy = archived.get("policy") if isinstance(archived.get("policy"), dict) else {}

@@ -43,6 +43,7 @@ from agent.turn_router import route_decision
 from agent.stt_validation import is_repetition_loop
 from agent.prompt_fragments import FILLER_LINES, pick_line
 from agent.precision_rail import decide as precision_rail_decide
+from agent.control_plane import shadow_turn, pre_state
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +451,11 @@ def run_turn(ctx: TurnContext) -> dict:
     # (build_policy_and_contract, which feeds lcm history, is skipped) and
     # never re-encodes it. Identical call in main.py's run_agent_response.
     rail_active = False
+    # CONTROL PLANE V1 — P1 SHADOW: capture the PRE-CHAIN engine state here —
+    # precision_rail_decide MUTATES engine["conv"]/["dictation"] as a side
+    # effect, so a snapshot taken after the chain would decide on the chain's
+    # own output, not on the inputs the chain saw. Same inputs, read-only.
+    _shadow_engine = pre_state(ctx.engine) if ctx.engine is not None else None
     if ctx.engine is not None:
         _rail = precision_rail_decide(ctx.user_text, ctx.engine, ctx.turn_no)
         if _rail is not None:
@@ -502,6 +508,20 @@ def run_turn(ctx: TurnContext) -> dict:
         turn["engine_path"] = "unbound_filler"
         turn["llm_called"] = False
         model_text = pick_line(FILLER_LINES, ctx.turn_no)
+
+    # CONTROL PLANE V1 — P1 SHADOW (owner-approved lock, docs/CONTROL_PLANE_P1_LOCK.md):
+    # read-only telemetry. The Decision is computed from the SAME inputs the
+    # chain already consumed, validated, and archived under control_shadow
+    # (compare-when-present in the replay gate). Fail-closed: an invalid or
+    # errored decision emits NO shadow key and logs INVARIANT_VIOLATION /
+    # CONTROL_SHADOW_ERROR — production ran byte-identical above and is
+    # untouched. Drop turns returned earlier (no shadow, like main.py).
+    shadow_turn(turn, _shadow_engine, ctx.user_text, ctx.turn_no,
+                route_drop=r.get("drop", False),
+                route_action=r.get("action", "normal"),
+                rail=_rail if rail_active else None,
+                greeting=greeting if not rail_active else None,
+                emit=ctx.log_event)
 
     # Mirrors main.py line 403 (fused_ref.meta.get("llm_called", True)): the
     # live path archives llm_called=True as soon as the fused LLM produces
