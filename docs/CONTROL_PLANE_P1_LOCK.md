@@ -20,8 +20,29 @@ class Decision:
     delivery_mode: str          # NEW|CONTINUE|HOLD|SILENT
     action: str                 # llm|greeting|rail_echo|rail_accumulate|rail_confirm|
                                 # rail_recall|rail_repair|rail_arm|suppress|drop|clarify|idle
-    llm_instruction: str | None # what the LLM is told to do; None = no LLM call
+    llm_instruction: str | None # CANONICAL semantic directive key (locked set below) —
+                                # rendered into the session language by the response layer;
+                                # the controller never emits language-specific prose
 ```
+
+**Locked `llm_instruction` directive-key set (enumerated — no `"..."`):**
+
+```
+None
+CONTINUE                # continue current delivery from delivery_state (pairs with engine["detail"] resume)
+RECALL_MEMORY           # answer from memory_view; if no record -> honest no-record (rule-14)
+ACKNOWLEDGE_SAVE        # explicit save accepted/confirmed
+ACKNOWLEDGE_STOP        # acknowledged stop (conversational)
+ACKNOWLEDGE_FORGET      # acknowledged forget (P1: conversational only; FORGET never executes)
+SUPERSEDE_MEMORY_HOOK   # memory-correction hook (Phase D — P1 only logs the intent)
+GREET                   # reserved (greeting action uses its own deterministic lines; no LLM)
+```
+
+Each key is **semantic and language-neutral**; the response layer renders it into the
+session language (e.g. `CONTINUE` → "aage badhte hain…" / "continue…", `RECALL_MEMORY` →
+the honest-recall rendering). A value outside this set is an **S1/I9 violation**. The
+delivery *content* (resume step/payload) lives in the existing `delivery_state`, never
+inside `llm_instruction`.
 
 **What the Decision carries (controller's domain):** intent, next conversation state, turn ownership, delivery mode, the concrete system action, and the LLM instruction.
 
@@ -152,12 +173,49 @@ SignalContract = {
    only: new regexes/digit maps/marker sets that emit the SAME contract. No change to
    `control_turn()`, the Decision schema, precedence, or validator. (This is what the
    owner's "future rework prevention" targets: the contract is the stable seam.)
-4. `llm_instruction` in the Decision is a **canonical semantic directive key**, not free
-   prose (locked set, invariant I9) — rendered by the response layer into the session
-   language. The controller never emits language-specific text.
+4. `llm_instruction` in the Decision is a **canonical semantic directive key** from the
+   enumerated locked set (§1, invariant I9) — rendered by the response layer into the
+   session language. The controller never emits language-specific text.
 5. A semantic rule change is still allowed to touch the core — but it must be a
    genuinely language-independent semantic change (e.g., "a confirmed value always
    routes to SAVE"), reviewed as such, never a "this language says it this way" change.
+
+**4.2 Language adapter seam + coverage-gap semantics (locked)**
+
+The detector layer is NOT a pile of language regexes in one file. It is a per-language
+adapter structure over the contract:
+
+```
+Language Adapter   (per language: hi / en / ta / …)
+   ├── Hindi   (today = the existing detectors: precision_rail, stt_validation,
+   │             turn_controller markers, fused_turn._SAVE_INTENT_RE, digit maps)
+   ├── English (future)
+   ├── Tamil   (future)
+   └── …
+        ↓  emit ONLY SignalContract keys (language-neutral)
+Canonical Signals
+        ↓
+Control Plane (unchanged — state + precedence → Decision)
+```
+
+Rules locked:
+1. **No detector sprawl:** a language's patterns live in that language's adapter module.
+   Adding Tamil = a new adapter against the SAME SignalContract — never dumping Tamil
+   regexes into `precision_rail.py` / any core file, never a control-plane rule change.
+2. **Coverage gap ≠ new rule:** if an adapter cannot detect a canonical signal
+   ("remember this" in Tamil), it emits the contract's not-detected default
+   (`save_intent=false`, `confirm=false`, …). It never invents a new rule, signal, or
+   enum value. The gap is a **language-adapter coverage gap** — surfaced by the
+   contract-conformance tests, fixed by improving the adapter; the control plane stays
+   stable.
+3. **Contract-conformance baseline:** the Hindi adapter's signal outputs for the §5 rows
+   are the conformance baseline (unit-tested). A future language adapter must pass the
+   same canonical cases (same expected signals) — the progressive-construction loop:
+   add language → map to canonical signals → test against the contract → fix the adapter;
+   core unchanged.
+4. **No multilingual framework in P1:** P1 does not build adapters for other languages or
+   an adapter framework — it proves the seam with Hindi (one language's existing
+   detectors → contract → language-neutral core → Decision → validator).
 
 ---
 
@@ -168,21 +226,21 @@ SignalContract = {
 | 1 | "हाँ" | NORMAL | NORMAL | NONE | NORMAL | USER | NEW | llm | None |
 | 2 | "हाँ" | CONFIRMING (value pending) | CONFIRM | SAVE | NORMAL | SYSTEM | NEW | rail_confirm | None |
 | 3 | "हाँ" | TASK_ACTIVE (dictating, no confirm pending) | NORMAL | NONE | TASK_ACTIVE | SYSTEM | SILENT | suppress | None |
-| 4 | "बस" | NORMAL | STOP | NONE | NORMAL | USER | NEW | llm | "acknowledge stop" |
+| 4 | "बस" | NORMAL | STOP | NONE | NORMAL | USER | NEW | llm | ACKNOWLEDGE_STOP |
 | 5 | "बस" | CONFIRMING | CONFIRM | SAVE | NORMAL | SYSTEM | NEW | rail_confirm | None |
 | 6 | "बस" | TASK_ACTIVE (value present) | CONFIRM | SAVE | CONFIRMING | SYSTEM | NEW | rail_confirm | None (echo full + ask) |
-| 7 | "आगे बताओ" | delivery active (detail.active) | CONTINUE | NONE | CONTINUING | USER | CONTINUE | llm | "continue current explanation from step N" |
+| 7 | "आगे बताओ" | delivery active (detail.active) | CONTINUE | NONE | CONTINUING | USER | CONTINUE | llm | CONTINUE |
 | 8 | "आगे बताओ" | no delivery | NORMAL | NONE | NORMAL | USER | NEW | llm | None |
-| 9 | "नहीं, वो नैनीताल नहीं था" | memory has Uttarakhand row | CORRECT | CORRECT | CORRECTING | USER | NEW | llm | "supersede stored memory (Phase D hook)" |
+| 9 | "नहीं, वो नैनीताल नहीं था" | memory has Uttarakhand row | CORRECT | CORRECT | CORRECTING | USER | NEW | llm | SUPERSEDE_MEMORY_HOOK |
 | 10 | "नहीं, वो नैनीताल नहीं था" | no memory | CORRECT | NONE | NORMAL | USER | NEW | llm | None (conversational only, honest) |
 | 11 | "9935" | TASK_ACTIVE (dictating) | NORMAL | POSSIBLE_SAVE | TASK_ACTIVE | SYSTEM | SILENT | rail_accumulate | None |
 | 12 | "9935" | NORMAL (unarmed) | NORMAL | POSSIBLE_SAVE | TASK_ACTIVE | SYSTEM | NEW | rail_echo | None |
 | 13 | "50-60 लोग" | NORMAL | NORMAL | POSSIBLE_SAVE | TASK_ACTIVE | SYSTEM | NEW | rail_echo | None (records current 5060 behavior; range-vs-ID is a separate decision, NOT P1) |
-| 14 | "याद रख लेना" | NORMAL | NORMAL | SAVE | SAVING | USER | NEW | llm | "acknowledge + capture (explicit path)" |
-| 15 | "मैंने कौन सी जगह बताई थी?" | NORMAL | NORMAL | RECALL | RECALLING | USER | NEW | llm | "answer from memory_view, else honest no-record" |
+| 14 | "याद रख लेना" | NORMAL | NORMAL | SAVE | SAVING | USER | NEW | llm | ACKNOWLEDGE_SAVE |
+| 15 | "मैंने कौन सी जगह बताई थी?" | NORMAL | NORMAL | RECALL | RECALLING | USER | NEW | llm | RECALL_MEMORY |
 | 16 | "हेलो" | NORMAL | NORMAL | NONE | NORMAL | SYSTEM | NEW | greeting | None |
 
-Rows 2, 6, 11, 12, 13 exercise the dictation/task axis; 7/8 the delivery axis; 9/10 the memory-correction axis with and without a record; 1/2/3 the "हाँ" state-conditioning the owner asked for. *(llm_instruction values above are shown as illustrative prose; the locked form is a canonical directive key per §4.1/I9, rendered by the response layer.)*
+Rows 2, 6, 11, 12, 13 exercise the dictation/task axis; 7/8 the delivery axis; 9/10 the memory-correction axis with and without a record; 1/2/3 the "हाँ" state-conditioning the owner asked for. *(`llm_instruction` values above are the locked directive keys from §1; the response layer renders them into the session language.)*
 
 ---
 
@@ -203,10 +261,10 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
 
 1. **Wiring:** in `main.py` `transcribe_and_respond`, after the existing `_rail`/`_greeting`/`turn_controller` computation, compute `signals = detect_signals(text, turn_no, snapshot)` → `decision = control_turn(signals, snapshot)` → `ok, violations = validate_decision(decision, signals, snapshot)` (inputs read-only; the whole block inside one `try/except` → on any error: log `control_shadow_error`, continue). **The existing chain runs byte-identical.**
 2. **Emission (fail-closed):** only a VALID decision is written to `turn["control_shadow"]` + `tmark("DECISION_SHADOW", ...)`. An INVALID one is written to `tmark("INVARIANT_VIOLATION", rule=..., decision=...)` and emits **no** shadow decision — the production chain (today's legacy path, running unchanged) is the fail-closed fallback by construction (§9.2).
-2. **Same shadow in `run_turn`** (`response_pipeline.py`) so the harness can exercise it. Both wiring points are the ONLY main-path touches; nothing else changes.
-3. **Replay:** `control_shadow` follows the established **compare-when-present** pattern (like `precise_detail`): synthetic fixtures regenerate WITH the key; the real baseline archives lack it → real gate stays EMPTY DIFF.
-4. **Divergence policy:** shadow-vs-chain divergence is **logged, never acted on**: `tmark("DECISION_SHADOW_DIVERGENCE", chain_action=..., shadow_action=...)` when `action` differs from the executed path. This is exactly what P1 exists to surface; a divergence is a finding to review, not a P1 failure.
-5. **Determinism:** same `(text, turn_no, snapshot)` ⇒ same Decision (unit-tested).
+3. **Same shadow in `run_turn`** (`response_pipeline.py`) so the harness can exercise it. Both wiring points are the ONLY main-path touches; nothing else changes.
+4. **Replay:** `control_shadow` follows the established **compare-when-present** pattern (like `precise_detail`): synthetic fixtures regenerate WITH the key; the real baseline archives lack it → real gate stays EMPTY DIFF.
+5. **Divergence policy:** shadow-vs-chain divergence is **logged, never acted on**: `tmark("DECISION_SHADOW_DIVERGENCE", chain_action=..., shadow_action=...)` when `action` differs from the executed path. This is exactly what P1 exists to surface; a divergence is a finding to review, not a P1 failure.
+6. **Determinism:** same `(text, turn_no, snapshot)` ⇒ same Decision (unit-tested).
 
 ---
 
@@ -224,6 +282,9 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
      content — no Devanagari/Indic characters, no language words/tokens, no regexes
      (pinned by test). A language-neutrality test asserts identical Decisions for
      equivalent signals from different-language adapters (in the invariant suite §9.4).
+   - **contract-conformance baseline (§4.2):** the Hindi adapter's signal outputs for
+     the §5 rows are the conformance baseline (unit-tested); no adapter restructuring in
+     P1 — the existing detectors are the Hindi adapter, reused as-is.
    - **NEW (CTO): `test_control_plane_invariants.py`** — one test per invariant I1–I8 (§9.4) + fail-closed emission + validator robustness + no-second-authority structural pins.
 2. **Replay identity = EMPTY DIFF** on the synthetic gate (regenerated with `control_shadow`) AND the real baseline gate unchanged (compare-when-present).
 3. **All existing suites green (42 today).**
@@ -292,10 +353,9 @@ def validate_decision(decision: Decision, signals: dict, state: AgentState) -> t
   **not** emitted as shadow telemetry; `INVARIANT_VIOLATION {rule, decision}` is logged;
   production behavior is the existing legacy deterministic path (in P1 that path runs
   unchanged by construction).
-- **I9** — language-agnostic Decision (§4.1): `llm_instruction` must be a canonical
-  directive key from the locked set (`CONTINUE`, `HONEST_NO_RECORD`, `ACKNOWLEDGE_SAVE`,
-  `ACKNOWLEDGE_STOP`, `SUPERSEDE_MEMORY_HOOK`, `GREET`, …); free-form prose or raw user
-  text in any Decision field is a violation. The Decision never carries transcript text.
+- **I9** — language-agnostic Decision (§1, §4.1): `llm_instruction` must be one of the
+  **enumerated locked directive keys in §1**; free-form prose or raw user text in any
+  Decision field is a violation. The Decision never carries transcript text.
 
 **9.2 Fail-closed semantics (P1 vs after):**
 - **P1 (shadow):** the production chain already IS the safest existing deterministic
@@ -336,4 +396,4 @@ def validate_decision(decision: Decision, signals: dict, state: AgentState) -> t
 
 ## 10. Explicitly deferred (locked OUT of P1)
 
-P2 AgentState first-class · P3 transition-table consolidation (rows 1–51 migrate) · P4 memory_intent routing (RECALL/CORRECT/FORGET execute) · P5 turn_owner + delivery_mode ownership · Phase C L2→L3 · memory patches (incl. the "50-60" range question) · sales/domain policy · new event-log system (extend `tmark` only).
+P2 AgentState first-class · P3 transition-table consolidation (rows 1–51 migrate) · P4 memory_intent routing (RECALL/CORRECT/FORGET execute) · P5 turn_owner + delivery_mode ownership · Phase C L2→L3 · memory patches (incl. the "50-60" range question) · sales/domain policy · new event-log system (extend `tmark` only) · multilingual framework / non-Hindi language adapters (English/Tamil — after P1 proves the seam with Hindi).
