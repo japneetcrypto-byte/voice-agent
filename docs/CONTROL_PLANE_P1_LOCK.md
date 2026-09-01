@@ -115,6 +115,50 @@ Decision = first_match(GUARDS, signals, state_snapshot)   # GUARDS: ordered list
 
 **State input = a read-only snapshot** of `engine["conv"]` / `engine["detail"]` / `engine["wait_streak"]` / policy.mode. The shadow never mutates them.
 
+**4.1 Language-agnostic control plane — canonical signal contract (locked principle)**
+
+> **The Control Plane is language-agnostic. Language-specific interpretation belongs
+> exclusively in the signal/detector adapter layer. All adapters must emit the same
+> canonical signal contract consumed by `control_turn()`. Adding a language must not
+> require changes to `control_turn()`, the Decision schema, the precedence rules, or the
+> validator — except where a genuinely language-independent semantic rule changes.**
+
+**The canonical signal contract** = a fixed set of keys + types, language-agnostic by
+definition (English names, no language content in the values beyond what the detector
+produced):
+
+```python
+SignalContract = {
+    "digits_present": bool, "digits_value": str, "digits_cluster": bool,
+    "confirm": bool, "reject": bool, "questionish": bool, "claim": bool, "complaint": bool,
+    "recall": bool, "saved_number_query": bool, "status_query": bool,
+    "query_stored": bool, "only_this": bool, "restart": bool, "abandon": bool,
+    "dearm_detail": bool, "continue_cue": bool, "write_command": bool,
+    "announce": bool, "topic_switch": bool, "save_intent": bool,
+    "greeting_first_word": bool, "continuation_fragment": bool,
+    "route": str, "turn_relation": str, "mode": str,
+    "correction_spec": object | None,   # parsed correction (from _parse_correction)
+}
+```
+
+**Implications (locked):**
+1. `detect_signals()` returns ONLY `SignalContract` keys. `control_turn()`, the Decision
+   schema, the precedence guards, and the validator consume ONLY this contract — they
+   contain **no language-specific logic, no language tokens, no language regexes**.
+2. The detectors are **language adapters**: `precision_rail`, `stt_validation`,
+   `turn_controller` markers, `fused_turn._SAVE_INTENT_RE`, digit-word maps — all emit
+   the contract. A language's morphology/vocabulary lives entirely here.
+3. **Adding a language** (e.g., Tamil, English-only mode) = adding/updating adapters
+   only: new regexes/digit maps/marker sets that emit the SAME contract. No change to
+   `control_turn()`, the Decision schema, precedence, or validator. (This is what the
+   owner's "future rework prevention" targets: the contract is the stable seam.)
+4. `llm_instruction` in the Decision is a **canonical semantic directive key**, not free
+   prose (locked set, invariant I9) — rendered by the response layer into the session
+   language. The controller never emits language-specific text.
+5. A semantic rule change is still allowed to touch the core — but it must be a
+   genuinely language-independent semantic change (e.g., "a confirmed value always
+   routes to SAVE"), reviewed as such, never a "this language says it this way" change.
+
 ---
 
 ## 5. Adversarial expected Decisions (locked — these become unit tests)
@@ -138,7 +182,7 @@ Decision = first_match(GUARDS, signals, state_snapshot)   # GUARDS: ordered list
 | 15 | "मैंने कौन सी जगह बताई थी?" | NORMAL | NORMAL | RECALL | RECALLING | USER | NEW | llm | "answer from memory_view, else honest no-record" |
 | 16 | "हेलो" | NORMAL | NORMAL | NONE | NORMAL | SYSTEM | NEW | greeting | None |
 
-Rows 2, 6, 11, 12, 13 exercise the dictation/task axis; 7/8 the delivery axis; 9/10 the memory-correction axis with and without a record; 1/2/3 the "हाँ" state-conditioning the owner asked for.
+Rows 2, 6, 11, 12, 13 exercise the dictation/task axis; 7/8 the delivery axis; 9/10 the memory-correction axis with and without a record; 1/2/3 the "हाँ" state-conditioning the owner asked for. *(llm_instruction values above are shown as illustrative prose; the locked form is a canonical directive key per §4.1/I9, rendered by the response layer.)*
 
 ---
 
@@ -176,6 +220,10 @@ The controller **routes** memory (`memory_intent` → which existing path) and *
    - determinism (same input → same Decision);
    - no-crash on garbage / empty / Devanagari-punctuation / long input;
    - **structural pin: `control_plane.py` contains no `re.compile`** (zero new detectors by construction).
+   - **language-agnostic pin (§4.1):** `control_plane.py` contains no language-specific
+     content — no Devanagari/Indic characters, no language words/tokens, no regexes
+     (pinned by test). A language-neutrality test asserts identical Decisions for
+     equivalent signals from different-language adapters (in the invariant suite §9.4).
    - **NEW (CTO): `test_control_plane_invariants.py`** — one test per invariant I1–I8 (§9.4) + fail-closed emission + validator robustness + no-second-authority structural pins.
 2. **Replay identity = EMPTY DIFF** on the synthetic gate (regenerated with `control_shadow`) AND the real baseline gate unchanged (compare-when-present).
 3. **All existing suites green (42 today).**
@@ -244,6 +292,10 @@ def validate_decision(decision: Decision, signals: dict, state: AgentState) -> t
   **not** emitted as shadow telemetry; `INVARIANT_VIOLATION {rule, decision}` is logged;
   production behavior is the existing legacy deterministic path (in P1 that path runs
   unchanged by construction).
+- **I9** — language-agnostic Decision (§4.1): `llm_instruction` must be a canonical
+  directive key from the locked set (`CONTINUE`, `HONEST_NO_RECORD`, `ACKNOWLEDGE_SAVE`,
+  `ACKNOWLEDGE_STOP`, `SUPERSEDE_MEMORY_HOOK`, `GREET`, …); free-form prose or raw user
+  text in any Decision field is a violation. The Decision never carries transcript text.
 
 **9.2 Fail-closed semantics (P1 vs after):**
 - **P1 (shadow):** the production chain already IS the safest existing deterministic
@@ -266,12 +318,16 @@ def validate_decision(decision: Decision, signals: dict, state: AgentState) -> t
    an LLM call, or a state transition.
 
 **9.4 Invariant tests** (`phase5/tests/test_control_plane_invariants.py`):
-- one test per invariant (I1–I8): craft a violating `(decision, signals, state)` →
+- one test per invariant (I1–I9): craft a violating `(decision, signals, state)` →
   assert `ok=False` and the rule name present; craft a compliant one → `ok=True`.
 - fail-closed wiring: an invalid Decision ⇒ no `control_shadow` emitted + one
   `INVARIANT_VIOLATION` event (unit-test the emission wrapper).
 - validator robustness: never raises on garbage / None / empty; unknown enum value → S1.
 - determinism: same inputs ⇒ same `(ok, violations)`.
+- **language-neutrality (§4.1):** the same canonical `SignalContract` produced by
+  different-language adapters (e.g., Hindi + English confirm/recall/greeting signals)
+  ⇒ identical Decision; and an `llm_instruction` not in the locked key set → S1/I9
+  violation. Proves the core is language-agnostic, not just declared so.
 - structural pins (no-second-authority): validator returns tuple not Decision; exactly
   one Decision-producing function in `control_plane.py`; no `re.compile` in the
   validator; validator imports none of `memory_store` / `memory_gate` / `fused_turn`.
