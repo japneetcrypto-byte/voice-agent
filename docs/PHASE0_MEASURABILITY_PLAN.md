@@ -994,3 +994,44 @@ OWNER ACTIONS (close the last evidence — raw files stay out of chat):
    memory WHERE owner_id='4da66eb5' ORDER BY id DESC LIMIT 10"`
    → expected: NO new committed rows from 202628/202922 (only pre-existing
    25 items); consolidation rows pending/quarantined at most.
+
+---
+
+**2026-09-01 (update) — OWNER SMOKE session_20260901_175645 (e2309c9) → three
+fixes, tests-first.** Owner: "not able to recall; remove btao as a filler that
+we have added; once it started with acha as a reply to hello".
+
+ROOT CAUSES (verified in code):
+1. **Recall** (t5 'मैंने कितने लोग का इंजाम करने के लिए कहा था' -> "yaar abhi
+   yaad nahi aa raha, kitne bataye the tune?"): no record existed (wedding
+   count never captured — conversational count, not dictation), so honest
+   "yaad nahi hai" was right, but rule 14's line ended with '— batao na',
+   which seeded the LLM's ask-back ("kitne bataye the tune?").
+2. **"btao filler we added"**: AckBridge ACK_POOL question category contained
+   imperative fillers "haan, bolo" / "achha, batao" / "haan, batata hoon" —
+   vocal cues with "batao/bolo" endings.
+3. **"acha as reply to hello"**: the "achha, batao" ack clip could open like
+   a reply on a turn whose first word was a greeting when the greeting rail
+   missed an STT variant (ack gate only checked _greeting is not None).
+
+FIXES (tests-first: test_ack_selection +8 checks, test_gap_r +4, test_turn_
+controller greeting pins):
+- ACK_POOL question -> ["haan, kya hua?", "haan", "achha, samjha"] — no
+  "batao/bolo" imperative in ANY pool (pinned).
+- main.py ack gate: added `not _first_is_greeting` (first-word greeting
+  marker, punctuation-stripped, GREETING_MARKERS) so a greeting turn never
+  plays an ack even when greeting_line_for misses (pinned structurally).
+- rule 14 + Gap-R note: honest line is now 'hmm, yaad nahi hai' and STOP —
+  never 'batao na', never ask back ('kitne bataye the tune?'); pinned.
+- persona 7 GOOD-example 'bata zara' -> 'kya hua?' (stop teaching the filler).
+- (test_turn_controller pin confirmed greeting_line_for is already
+  punctuation-robust — "Hello!" greets, lines never start with acha.)
+
+NOTE (flagged, not fixed — no new rail special-cases per owner): t6
+'50-60 लोग' -> rail echoed 'five zero six zero' (5060) — a RANGE misread as a
+dictated ID. If confirmed it would store 5060. Range-vs-ID is context
+(लोग/people), deliberately NOT added to the rail; open for Phase D (structured
+capture) instead.
+
+GATES: 42/42 suites GREEN; replay identity ALL PASS; real baseline UNCHANGED
+(pre-existing t1/t20/t11 profile, zero new divergence).

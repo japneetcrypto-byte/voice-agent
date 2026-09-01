@@ -33,8 +33,10 @@ import numpy as np
 # the project's pick_line discipline: no randomness).
 # ---------------------------------------------------------------------------
 ACK_POOL = {
-    # User asked something: invite the detail.
-    "question": ["haan, bolo", "achha, batao", "haan, batata hoon"],
+    # User asked something: acknowledge — never an imperative "batao/bolo"
+    # filler (owner 2026-09-01: "remove btao as a filler that we have added";
+    # the old 'achha, batao' clip also opened like a reply to "hello").
+    "question": ["haan, kya hua?", "haan", "achha, samjha"],
     # User is venting / distressed: attentive listening cues, NOT "theek hai".
     "venting": ["hmm", "achha", "haan, samajh raha hoon"],
     # User is happy / excited: match the energy lightly.

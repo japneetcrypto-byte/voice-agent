@@ -21,6 +21,22 @@ check("listen request -> no ack", pick_ack_for("chup yaar pehle meri baat sun", 
 check("backchannel -> no ack", pick_ack_for("haan", "backchannel", 1), (None, "no_ack:backchannel"))
 check("empty -> no ack", pick_ack_for("", "content", 1), (None, "no_ack:empty"))
 
+print("== GAP 2026-09-01: no 'batao/bolo' imperative filler in any ack pool ==")
+_banned = ("bata", "bolo")
+check("no 'batao/bata/bolo' filler in any pool",
+      all(not any(b in w.lower() for b in _banned)
+          for pool in ACK_POOL.values() for w in pool), True)
+check("'achha, batao' removed",
+      all("achha, batao" != w for pool in ACK_POOL.values() for w in pool), True)
+
+print("== main.py ack gate must skip first-word greeting turns ==")
+_main_py = open(os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "agent", "main.py")).read()
+_ack_idx = _main_py.index("_rail is None and _greeting is None")
+check("ack condition excludes first-word greeting turns",
+      "not _first_is_greeting" in _main_py[_ack_idx:_ack_idx + 300], True)
+check("_first_is_greeting defined from GREETING_MARKERS",
+      "GREETING_MARKERS" in _main_py and "_first_is_greeting" in _main_py, True)
+
 print("== semantic categories ==")
 w, r = pick_ack_for("kal kya plan hai bhai?", "content", 0)
 check("question category", r, "question")

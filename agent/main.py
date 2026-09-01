@@ -1542,8 +1542,20 @@ async def entrypoint(ctx: JobContext):
                                     turn.get("llm_ttft_s") is None  # not measured yet this turn
                                     or turn.get("llm_ttft_s", 0) < 3.0  # healthy
                                 ) or not ack_bridge.ready  # let it try anyway if no clips
+                                # GAP 2026-09-01 (owner: "once it started with
+                                # acha as a reply to hello"): even when the
+                                # greeting rail misses an STT variant, never
+                                # ack a first-word greeting turn — the user
+                                # would hear the ack clip ("achha") as the
+                                # reply to "hello".
+                                _first_is_greeting = bool(
+                                    transcript.text.strip() and
+                                    re.sub(r"[^A-Za-z\u0900-\u097F]", "",
+                                           transcript.text.strip().split()[0]).lower()
+                                    in GREETING_MARKERS)
                                 if (_rail is None and _greeting is None
                                         and ack_bridge.ready and _llm_healthy and
+                                        not _first_is_greeting and
                                         turn.get("route_action") in (None, "normal", "contextual_recovery")
                                         and not agent_was_speaking_at_detection):
                                     # Semantic ack (owner directive 2026-08-30):

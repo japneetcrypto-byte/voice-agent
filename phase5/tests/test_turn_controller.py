@@ -36,4 +36,19 @@ for text, was_wait, want in cases:
         ok = False
         print("FAIL:", text, action, reason)
 print("TURN CONTROLLER TESTS", "PASS" if ok else "FAIL")
-sys.exit(0 if ok else 1)
+
+# GAP 2026-09-01 (owner: "once it started with acha as a reply to hello"):
+# greeting detection must be robust to punctuation so a greeting turn gets
+# the deterministic greeting line (and the ack never plays before it), and
+# greeting lines themselves never open with "acha".
+from agent.turn_controller import greeting_line_for, GREETING_LINES
+_g_ok = True
+for _text in ("Hello!", "हेलो, आवा", "hello", "हैलो", "hi there"):
+    if greeting_line_for(_text, 0) is None:
+        _g_ok = False
+        print("FAIL: greeting miss:", _text)
+if any(l.lower().startswith(("acha", "achha")) for l in GREETING_LINES):
+    _g_ok = False
+    print("FAIL: greeting line starts with acha:", GREETING_LINES)
+print("GREETING GAP CHECKS", "PASS" if _g_ok else "FAIL")
+sys.exit(0 if (ok and _g_ok) else 1)

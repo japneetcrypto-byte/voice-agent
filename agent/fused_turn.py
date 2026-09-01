@@ -149,8 +149,8 @@ class FusedLLM:
                 "and they persist across sessions. NEVER claim 'main save "
                 "nahi kar sakta' or 'system mein kuch nahi hota'. If the "
                 "specific thing they ask about has no record in today's chat "
-                "or memory, say 'hmm, yaad nahi hai — batao na' and never "
-                "invent it.")
+                "or memory, say 'hmm, yaad nahi hai' and stop — never "
+                "'batao na', never ask them back — and never invent it.")
         # Layer 2 (compressed session state) — only when it carries content,
         # per the approved 3-layer design (docs/LAYERED_CONTEXT_ARCHITECTURE.md).
         if layer2 and (layer2.get("people") or layer2.get("open_items")

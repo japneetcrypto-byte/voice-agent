@@ -70,5 +70,12 @@ print("\n== save-intent + empty memory -> note present ==")
 p8 = FusedLLM().build_contents("देख लिये होगा तेरे पास", {"mode": "CALM"}, [], [], [])
 check("save-status query + empty memory -> note present", '"memory_note"' in p8, True)
 
+print("\n== 2026-09-01: honest line must not end with 'batao na' / ask back ==")
+check("rule 14 no longer ends with 'batao na'", "yaad nahi hai — batao na" not in PERSONA, True)
+check("honest line still present", "yaad nahi hai" in PERSONA, True)
+check("never-ask-back clause present", "kitne bataye" in PERSONA, True)
+p9 = FusedLLM().build_contents("देख लिये होगा तेरे पास", {"mode": "CALM"}, MEM, [], [])
+check("capability note no longer ends with 'batao na'", "yaad nahi hai — batao na" not in p9, True)
+
 print("\n" + ("ALL PASS" if fails == 0 else f"{fails} FAILURE(S)"))
 sys.exit(1 if fails else 0)
