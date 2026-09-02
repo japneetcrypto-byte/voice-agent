@@ -22,6 +22,33 @@ import numpy as np
 from livekit import rtc
 from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli
 
+
+def _print_build_stamp(tag: str = "") -> None:
+    """Best-effort [BUILD] git=<sha> stamp so a smoke can be matched to a
+    commit (owner smokes 4-8; deploy-verify 2026-09-02). Reads HEAD at
+    runtime; NEVER blocks startup."""
+    try:
+        _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        _head = open(os.path.join(_root, ".git", "HEAD")).read().strip()
+        if _head.startswith("ref:"):
+            _ref = _head[5:].strip()
+            _head = open(os.path.join(_root, ".git", _ref)).read().strip()
+        _stamp = f"[BUILD] git={_head[:12]}"
+        if tag:
+            _stamp += f" ({tag})"
+        print(f"{_stamp} — worker must match 'git log --oneline -1' on the "
+              f"checked-out branch)")
+    except Exception:
+        print("[BUILD] git=unknown (no .git at runtime root)")
+
+
+# BUILD STAMP at PROCESS STARTUP (module scope — before any engine/API-key
+# work). livekit-agents registers an idle worker WITHOUT running entrypoint(),
+# so the job-time stamp (inside entrypoint) is never printed for an idle
+# worker; with WORKER_COUNT>1 the deploy-verify gate needs a stamp that every
+# worker prints as soon as it boots, independent of job dispatch.
+_print_build_stamp("booted")
+
 from .session import ConversationSession
 from providers.vad import get_vad_provider, VADEvent
 from providers.stt import get_stt_provider, devanagari_to_roman
@@ -128,17 +155,11 @@ async def entrypoint(ctx: JobContext):
             # BUILD STAMP (2026-08-31, owner smokes 4-8): every stale-worker
             # report traced back to an unverifiable running version. The
             # worker now logs its git HEAD at startup so a smoke can be
-            # matched to a commit. Best-effort — never blocks startup.
-            try:
-                _root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-                _head = open(os.path.join(_root, ".git", "HEAD")).read().strip()
-                if _head.startswith("ref:"):
-                    _ref = _head[5:].strip()
-                    _head = open(os.path.join(_root, ".git", _ref)).read().strip()
-                print(f"[BUILD] git={_head[:12]} — worker must match "
-                      f"'git log --oneline -1' on the checked-out branch)")
-            except Exception:
-                print("[BUILD] git=unknown (no .git at runtime root)")
+            # matched to a commit. Best-effort — never blocks startup. (The
+            # module-scope boot stamp above already fired at process start;
+            # this re-prints at job dispatch so the stamp is near the session
+            # logs that follow it.)
+            _print_build_stamp("job")
         except Exception as e:
             print(f"[StateEngine] INIT FAILED: {type(e).__name__}: {e} — "
                   f"turns will speak a deterministic filler (legacy brain disabled)")
