@@ -1,6 +1,13 @@
 # Capture Design Lock v2 — topic-blind disclosure capture (owner 2026-09-02)
 
-Status: **DESIGN LOCK v2 — owner review pending. No chain code until approval.**
+Status: **DETECTION + GATE SHIPPED (2026-09-02, safe half — no behavior
+change).** `agent/disclosure_capture.py` (topic-blind detector + bounded
+confirm/reject answers) and the confirmation-gate write semantics are live
+and tested (`phase5/tests/test_capture_confirm.py`, 47/47 suites green).
+NOT yet wired: the SPOKEN same-turn ask ("note kar loon?") + its fused-seam
+wiring in main.py / run_turn (rail/greeting/dictation/vent precedence +
+capture_pending lifecycle) + the integration suite
+(disclosure → confirm → fact → episode → cross-session recall).
 Supersedes v1's घुमने-widening-only approach after the owner's challenge:
 *"we talked about ghumna — what if user talks something else — this shall
 fail. what to do to avoid this?"*
