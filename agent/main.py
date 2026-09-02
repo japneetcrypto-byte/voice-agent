@@ -1968,8 +1968,13 @@ async def entrypoint(ctx: JobContext):
                 asyncio.create_task(process_user_audio(publication.track, participant))
 
 if __name__ == "__main__":
-    cli.run_app(
-        WorkerOptions(
-            entrypoint_fnc=entrypoint,
-        )
-    )
+    # Agent HTTP-server port (livekit-agents 1.6): prod default is 8081, so
+    # TWO workers on one machine collide with OSError Errno 48 (deploy issue
+    # 2026-09-02). start_aiva.sh sets a distinct LIVEKIT_AGENT_PORT per worker
+    # (8081 + worker_id). Absent -> framework default (single-worker/manual
+    # runs keep working).
+    _opts = {"entrypoint_fnc": entrypoint}
+    _agent_port = os.environ.get("LIVEKIT_AGENT_PORT", "").strip()
+    if _agent_port.isdigit():
+        _opts["port"] = int(_agent_port)
+    cli.run_app(WorkerOptions(**_opts))

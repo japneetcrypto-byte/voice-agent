@@ -118,6 +118,7 @@ echo "  workers ($WORKER_COUNT) ..."
 for i in $(seq 1 "$WORKER_COUNT"); do
     WID=$((i-1))
     env AIVA_STATE_ENGINE=1 WORKER_TARGET=cloud WORKER_ID=$WID \
+        LIVEKIT_AGENT_PORT=$((8081 + WID)) \
         uv run python -m agent.main start > "logs/worker_$WID.out" 2>&1 &
     eval "T$((WID+2))=\$!"
 done
@@ -127,6 +128,17 @@ if [ -d frontend ]; then
     (cd frontend && exec npm run dev) > logs/frontend.out 2>&1 &
     T99=$!
 fi
+
+stop_all() {
+    # Kills everything this script starts (workers, token server, frontend)
+    # plus any stale agent.main/token_server from an earlier run.
+    pkill -9 -f "agent.main start" 2>/dev/null
+    pkill -9 -f "agent.token_server" 2>/dev/null
+    for pid in $T1 ${T2:-} ${T3:-} ${T99:-}; do
+        kill -9 "$pid" 2>/dev/null
+    done
+    sleep 1
+}
 
 # --- 4. VERIFY: every worker on the locked commit ---------------------------
 echo ""
@@ -164,6 +176,8 @@ if [ "$FAILED" = "0" ]; then
     echo "  Press Ctrl+C to stop everything."
 else
     echo "  DEPLOY FAILED — workers NOT verified. Do NOT smoke until fixed."
+    echo "  Cleaning up this run's processes so ports are free for the next attempt..."
+    stop_all
     exit 1
 fi
 echo "=============================================================="
@@ -171,11 +185,7 @@ echo "=============================================================="
 cleanup() {
     echo ""
     echo "Aiva stopped."
-    pkill -9 -f "agent.main start" 2>/dev/null
-    pkill -9 -f "agent.token_server" 2>/dev/null
-    for pid in $T1 ${T2:-} ${T3:-} ${T99:-}; do
-        kill -9 "$pid" 2>/dev/null
-    done
+    stop_all
     exit 0
 }
 trap cleanup INT TERM
