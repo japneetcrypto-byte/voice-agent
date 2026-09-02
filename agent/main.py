@@ -981,8 +981,17 @@ async def entrypoint(ctx: JobContext):
                 from agent.session_state import SessionState
                 owner = (getattr(participant, "identity", None) or "ephemeral-unknown")
                 engine["sess"] = SessionState(owner_id=owner, store=engine["store"])
+                # Episode-memory slice (2026-09-02): per-owner monotonic
+                # session id = the identity token for episode membership; the
+                # session-start timestamp is metadata (W_cross window) only.
+                try:
+                    engine["session_id"] = engine["store"].start_session(owner)
+                    engine["session_start"] = session_start.isoformat()
+                except Exception as e:
+                    print(f"[Memory] session id issue failed: {type(e).__name__}: {e}")
                 n_mem = len(engine["sess"].memory_view())
-                print(f"[StateEngine] SESSION BOUND owner={owner} memory_items={n_mem}")
+                print(f"[StateEngine] SESSION BOUND owner={owner} "
+                      f"session_id={engine.get('session_id')} memory_items={n_mem}")
                 log_event("SESSION_BOUND", details={"owner": owner, "memory_items": n_mem})
             except Exception as e:
                 # Deliberately NOT swallowed: without sess the turn layer must
@@ -1840,16 +1849,30 @@ async def entrypoint(ctx: JobContext):
         try:
             store = engine["store"]
             owner = engine["sess"].owner_id
+            # Episode-memory slice (2026-09-02): attach session context so a
+            # newly-committed row is grouped/annotated. Only groupable
+            # (episodic) content carries verbatim text for key/time derivation
+            # — place-fact content is the verbatim "user: <clause>" itself.
+            ctx = None
+            if engine.get("session_id") is not None:
+                text = None
+                if typ == "episodic" and isinstance(content, str):
+                    text = content[5:] if content.startswith("user: ") else content
+                if text:
+                    ctx = {"session_id": engine["session_id"],
+                           "session_start": engine.get("session_start"),
+                           "text": text}
             if criterion == "explicit":
                 store.commit(owner, {"type": typ, "content": content,
-                                     "criterion": "explicit"}, immediate=True)
+                                     "criterion": "explicit"}, immediate=True,
+                             context=ctx)
                 print(f"[Memory] committed (explicit): {typ} {content[:60]!r}")
                 return
             already = any(content in line for line in store.view(owner))
             store.commit(owner,
                 {"type": typ, "content": content,
                  "criterion": ("explicit" if already else "salient")},
-                immediate=bool(already))
+                immediate=bool(already), context=ctx)
             print(f"[Memory] {'committed' if already else 'pending'}: {typ} {content[:60]!r}")
         except Exception as e:
             print(f"[Memory] promotion failed: {e}")

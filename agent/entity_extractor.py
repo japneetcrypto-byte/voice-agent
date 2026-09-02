@@ -44,6 +44,58 @@ ALIAS_GROUPS = {
     "rimi": ["rimi", "rimmi", "रिमी", "रिम्मी", "rimmee"],
 }
 
+# PLACE mention-key vocabulary — SEED (episode-memory slice 2026-09-02,
+# docs/EPISODE_MEMORY_SLICE_LOCK.md). Powers deterministic place-mention keys
+# only: a recall ACCELERATOR. Keys never fire capture, never gate recall,
+# never interpret, and never enter live context. Both scripts map to one
+# Roman canonical key so cross-session restatements key-match regardless of
+# how the STT wrote the city. Extend deterministically; capture is untouched.
+_PLACE_ALIASES = {
+    "kanpur": ("kanpur", "कानपुर", "कानपूर"),
+    "jaipur": ("jaipur", "जयपुर"),
+    "delhi": ("delhi", "दिल्ली", "dilli"),
+    "nainital": ("nainital", "नैनीताल"),
+    "pune": ("pune", "पुणे"),
+    "mumbai": ("mumbai", "मुंबई", "bombay"),
+    "lucknow": ("lucknow", "लखनऊ"),
+    "gurgaon": ("gurgaon", "गुड़गांव", "गुडगांव"),
+    "bangalore": ("bangalore", "bengaluru", "बेंगलुरु", "बैंगलोर"),
+    "uttarakhand": ("uttarakhand", "उत्तराखंड"),
+    "kashmir": ("kashmir", "कश्मीर"),
+    "goa": ("goa", "गोवा"),
+    "agra": ("agra", "आगरा"),
+    "varanasi": ("varanasi", "वाराणसी", "banaras", "बनारस"),
+    "rishikesh": ("rishikesh", "ऋषिकेश"),
+    "dehradun": ("dehradun", "देहरादून"),
+    "chandigarh": ("chandigarh", "चंडीगढ़"),
+    "hyderabad": ("hyderabad", "हैदराबाद"),
+    "kolkata": ("kolkata", "कोलकाता", "calcutta"),
+    "amritsar": ("amritsar", "अमृतसर"),
+    "shimla": ("shimla", "शिमला"),
+    "mussoorie": ("mussoorie", "मसूरी"),
+}
+_PLACE_LOOKUP = {variant.lower(): canon
+                 for canon, variants in _PLACE_ALIASES.items()
+                 for variant in variants}
+
+
+def extract_place_mentions(text: str) -> list[str]:
+    """Deterministic place-mention keys (Roman canonical, lowercased).
+
+    Reuses the place alias vocabulary above; a token is a key ONLY if it is
+    in that vocabulary (unknown places -> no key -> fact still stored and
+    recallable by content). Never used for capture — annotation only."""
+    if not text:
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for tok in _WORD_RE.findall(text):
+        canon = _PLACE_LOOKUP.get(tok.lower())
+        if canon and canon not in seen:
+            seen.add(canon)
+            out.append(canon)
+    return out
+
 # Relation words as USERS say them (broader than RELATION_PATTERNS, which
 # match Aiva's replies). "ben/बेन" = Gujarati for behen (evidence: session
 # 20260829_083519 — 'नीतु बेन', 'Neetu Ben', 'नीतु भाइनों' garble).

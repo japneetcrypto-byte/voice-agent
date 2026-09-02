@@ -49,6 +49,10 @@ echo "--- Correction-repair package (number edits never wipe; live 20260902_1842
 uv run python phase5/tests/test_correction_repair.py
 
 echo ""
+echo "--- Episode-memory foundation (units: membership/keys/supersede; docs/EPISODE_MEMORY_SLICE_LOCK.md) ---"
+uv run python phase5/tests/test_memory_units.py
+
+echo ""
 echo "--- Offline pipeline check ---"
 uv run python phase5/offline_pipeline_check.py
 
