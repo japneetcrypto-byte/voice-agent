@@ -55,6 +55,7 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
     _is_pure_digit_utterance, _parse_correction, _apply_correction,
     _is_full_restatement, _is_reject, _is_confirm, _fragment_length,
     is_dictation_announcement,
+    _is_plain_reject, _is_change_frame, _val_aware_correction,
     RECALL_RE, STATUS_RE, CONTINUE_CUE_RE, CLAIM_RE, COMPLAINT_RE,
     ABANDON_RE, DEARM_DETAIL_RE, WRITE_COMMAND_RE, ONLY_THIS_RE,
     QUERY_STORED_RE, TOPIC_SWITCH_RE, _NUMBER_TOPIC_RE, SAVED_NUMBER_QUERY_RE,
@@ -144,6 +145,13 @@ def classify_turn(text: str, state: ConversationState, turn_no: int) -> Signals:
         sig.seg = normalize_span(t)
     sig.reject = _is_reject(t)
     sig.confirm = _is_confirm(t)
+    # M3 confirm-guard (owner session 20260902_184247 t11): a confirm word
+    # inside a CHANGE frame ('...900...बस एक जीरो कम हो ज') is an EDIT, not
+    # a confirmation of the pending value — never let "बस" hijack the turn
+    # into a full-value echo. Plain confirmations ("बस, यही है") have no
+    # frame and are untouched.
+    if sig.confirm and _is_change_frame(t):
+        sig.confirm = False
     # Row 44 (smoke-12 t29/t32): explicit topic-switch marker — unless the
     # topic IS the number ('अकाउंट नंबर के बारे में' stays a recall query).
     sig.topic_switch = bool(TOPIC_SWITCH_RE.search(t)) and not bool(
@@ -441,6 +449,20 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
 
 def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int, val: str) -> dict | None:
     """No digits, but a value is stored. Rows 17-28, 32-33, 42, 44, 46."""
+    # M1/M2/M4 (owner session 20260902_184247): an EDIT-INTENT turn over a
+    # stored value must repair, never wipe. When the text-only parse missed
+    # it, try the val-aware spec (removal '1242 नहीं है'; change-frame pair
+    # '9000...900...कम हो ज'). The existing correction branch below applies
+    # it; a value is cleared only by a PLAIN whole-turn rejection.
+    val_aware = False
+    if (sig.correction is None and val
+            and (sig.reject or sig.confirm or _is_change_frame(text))):
+        sig.correction = _val_aware_correction(text, val)
+        val_aware = sig.correction is not None
+    # NOTE: val_aware replace-pairs (9000 -> 900) must SKIP the smoke-13
+    # already-correct guard below — the 'new' digits are usually a substring
+    # of the stored value (900 ⊂ 9000), and the guard would echo the old
+    # value instead of applying the edit.
     if sig.topic_switch:
         # ROW 44 (smoke-12 t29/t32): explicit topic-switch while a value is
         # pending/confirming ('ज़िन के बारे में बताओ', 'वॉइस एजेंट के बारे
@@ -472,9 +494,11 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
     if sig.correction is not None:
         # already-correct guard FIRST (smoke-13 t30): a repeated instruction
         # whose 'correct' is already in the value -> confirm, never re-apply
-        # a wrong substring like '6' that would mangle every 6.
-        if (sig.correction[2] is not None and sig.correction[2].isdigit()
-                and sig.correction[2] in val):
+        # a wrong substring like '6' that would mangle every 6. SKIPPED for
+        # val-aware replace pairs (9000->900 — the new digits 900 ⊂ stored
+        # 9000 by construction; the guard must not echo the old value).
+        if (not val_aware and sig.correction[2] is not None
+                and sig.correction[2].isdigit() and sig.correction[2] in val):
             # ROW 46b (smoke-12 t15 / smoke-13 t30): 'correct' digits already
             # in the value -> confirm, never wipe.
             state.user_state, state.agent_state = "correcting", "echoing"
@@ -496,8 +520,15 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
         correct = sig.correction[2] or ""
         state.user_state, state.agent_state = "correcting", "asking"
         state.next_action = "retry"
-        state.task = Task(kind="dictation", value="", status="pending")
-        return {"action": "retry", "value": "", "status": "pending",
+        # M1: an edit-intent failure keeps the value — only a PLAIN rejection
+        # clears below. (Owner session 20260902_184247 t26-t28: the wipe made
+        # the follow-up corrections un-repairable and looped 15 turns.)
+        if not _is_plain_reject(text):
+            state.task = Task(kind="dictation", value=val,
+                              status=state.task.status or "pending")
+        else:
+            state.task = Task(kind="dictation", value="", status="pending")
+        return {"action": "retry", "value": state.task.value, "status": state.task.status,
                 "line": _correction_line(turn_no, wrong, correct)}
     if sig.complaint:
         # Rows 20/28: writing-complaint -> RECALL as PROOF, never clear
@@ -506,7 +537,14 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
         return {"action": "recall", "value": val, "status": state.task.status,
                 "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
     if sig.reject:
-        # Rows 18/26: plain rejection -> clear + retry
+        # Rows 18/26: a PLAIN whole-turn rejection -> clear + retry. M1: an
+        # edit-intent rejection (digits/digit-words/change frame present but
+        # unresolved) never wipes — keep the value and ask for the change.
+        if not _is_plain_reject(text):
+            state.user_state, state.agent_state = "dictating", "asking"
+            state.next_action = "clarify"
+            return {"action": "clarify", "value": val, "status": state.task.status,
+                    "line": _line(CLARIFY_LINES, turn_no)}
         state.user_state, state.agent_state = "confirming", "asking"
         state.next_action = "retry"
         state.task = Task(kind="dictation", value="", status="pending")

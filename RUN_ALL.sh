@@ -45,6 +45,10 @@ echo "--- Control Plane V1 invariants (S1 + I1-I9 + fail-closed) ---"
 uv run python phase5/tests/test_control_plane_invariants.py
 
 echo ""
+echo "--- Correction-repair package (number edits never wipe; live 20260902_184247) ---"
+uv run python phase5/tests/test_correction_repair.py
+
+echo ""
 echo "--- Offline pipeline check ---"
 uv run python phase5/offline_pipeline_check.py
 

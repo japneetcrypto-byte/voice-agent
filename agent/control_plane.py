@@ -124,6 +124,7 @@ def detect_signals(text: str | None, turn_no: int, snapshot: dict | None = None)
     from agent.stt_validation import classify_turn_relation, normalize_for_classify
     from agent.fused_turn import _SAVE_INTENT_RE
     from agent.state_updater import classify_mode
+    from agent.precision_rail import _CHANGE_FRAME_RE
 
     t = text or ""
     sig = default_signals()
@@ -136,7 +137,10 @@ def detect_signals(text: str | None, turn_no: int, snapshot: dict | None = None)
     sig["digits_value"] = digits_value
     sig["digits_cluster"] = bool(v_raw and any(ch in v_raw for ch in " -.,"))
 
-    sig["confirm"] = _is_confirm(t)
+    # Mirrors the rail's M3 confirm-guard (correction-repair fix 2026-09-02):
+    # a confirm word inside a change frame is an edit, not a confirm — keeps
+    # the shadow's Decision consistent with the fixed chain.
+    sig["confirm"] = _is_confirm(t) and not bool(_CHANGE_FRAME_RE.search(t))
     sig["reject"] = _is_reject(t)
     sig["questionish"] = bool(QUESTIONISH_RE.search(t))
     sig["claim"] = bool(CLAIM_RE.search(t))

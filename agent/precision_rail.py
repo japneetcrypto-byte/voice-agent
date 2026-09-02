@@ -465,6 +465,35 @@ REJECT_EN_RE = re.compile(
     r"\b(?:nahi|nhi|no|galat|galt|wrong|nope)\b", re.IGNORECASE)
 REJECT_DEV_WORDS = {"नहीं", "नही", "गलत"}
 
+# A CHANGE FRAME: conversational markers that mean the user is EDITING an
+# already-stored value, not confirming it (owner session 20260902_184247:
+# t11 '...9000...900...बस एक जीरो कम हो ज' — the confirm word "बस" next to a
+# change frame hijacked the turn into echo_full, and the change never
+# applied). A confirm word inside a change frame is NOT a confirm; and a
+# stored value is only cleared on a PLAIN whole-turn rejection (no digits,
+# no change frame).
+_CHANGE_FRAME_RE = re.compile(
+    r"कम|घट|बदल|बदला|बदलो|चेंज|change|जगह|सुधार|हटा|हटाओ", re.IGNORECASE)
+
+
+def _is_change_frame(text: str | None) -> bool:
+    return bool(_CHANGE_FRAME_RE.search(text or ""))
+
+
+def _is_plain_reject(text: str | None) -> bool:
+    """A whole-turn rejection that MAY clear the stored value: no digits, no
+    digit-words, no change frame — 'नहीं, गलत है'. An edit-intent turn
+    ('1242 नहीं है', '9000 कम करो', '9934 नहीं 9935 है') is NOT plain: the
+    stored value must survive so the correction can repair it."""
+    t = text or ""
+    if not t.strip():
+        return False
+    if _digit_tokens(t):
+        return False
+    if _is_change_frame(t):
+        return False
+    return True
+
 RECALL_RE = re.compile(
     r"repeat|kya likha|kya number|number kya|number bata|bol kya|"
     r"dobara bata|dubara bata|phir se bata|wapis bata|"
@@ -637,7 +666,17 @@ def _parse_correction(text: str) -> tuple[str | None, str | None, str | None] | 
         if anchor:
             return (anchor, wrong, anchor)
         return None
+    # Stray conversational single-digit tokens never poison the parse
+    # (owner session 20260902_184247 t40: 'इसमें एक चेंज नाइन नाइन थ्री फोन
+    # नहीं नाइन नाइन थ्री फाइव है' — the 'एक'->'1' group blocked 993->9935).
+    if len(rest) > 1 and any(len(r) >= 2 for r in rest):
+        rest = [r for r in rest if len(r) >= 2]
+    if not rest:
+        return None
     if len(set(rest)) == 1:
+        if wrong is not None and rest[0] == wrong:
+            return None  # 'wrong' repeated ('नाइन नाइन थी ... नाइन नाइन थी'
+            # garbled t41): no distinct correct value -> not resolvable
         return (anchor, wrong, rest[0])
     return None
 
@@ -647,10 +686,18 @@ def _apply_correction(val: str, corr: tuple) -> str | None:
     wrong substring; falls back to the longest prefix of the wrong substring
     that IS present (smoke-7 t14: wrong '420' -> the stored value has '42' ->
     replace '42' with '0000'); then to inserting the correct digits right
-    after the anchor (t9: '1, 2 के बाद' -> insert 0000 after 12). Returns
-    None when nothing can be applied deterministically."""
+    after the anchor (t9: '1, 2 के बाद' -> insert 0000 after 12). A removal
+    spec (correct=None, from _val_aware_correction: '1242 नहीं है' when 1242
+    is in the value) removes the wrong substring. Returns None when nothing
+    can be applied deterministically."""
     anchor, wrong, correct = corr
-    if not val or not correct:
+    if not val:
+        return None
+    if correct is None:
+        # val-aware REMOVAL spec ('1242 नहीं है भाईया' with 1242 stored —
+        # owner session 20260902_184247 t26): remove the named group.
+        if wrong and wrong in val:
+            return val.replace(wrong, "", 1)
         return None
     if correct == anchor:
         return None  # 'anchor is correct' -> remove-only correction, unsafe to
@@ -664,6 +711,60 @@ def _apply_correction(val: str, corr: tuple) -> str | None:
                 return val.replace(w, correct, 1)
     if anchor and anchor in val:
         return val.replace(anchor, anchor + correct, 1)
+    return None
+
+
+def _val_aware_correction(text: str, val: str) -> tuple | None:
+    """Val-aware repair spec for edit-intent turns the text-only
+    _parse_correction cannot resolve. Runs ONLY against a stored value:
+
+      1. removal: a negation-named group that IS in the stored value and has
+         no distinct 'correct' partner -> (None, wrong, None)  ('1242 नहीं
+         है भाईया' with 1242 stored -> remove it, never wipe the whole value)
+      2. change-frame pair: a change frame (कम/जगह/बदल/चेंज) mentioning an
+         old value that IS stored followed by its replacement -> (None, old,
+         new)  (t11 '...9000...900...बस एक जीरो कम हो ज' -> 9000->900)
+    Returns None when nothing applies deterministically (the caller keeps the
+    value and asks — an edit never wipes)."""
+    t = text or ""
+    if not val:
+        return None
+    groups = _digit_groups(t)          # [(digits, start, end)] — digit words
+    # included with their real spans (never re-located by literal search)
+    if not groups:
+        return None
+    negs = [m.start() for m in re.finditer(r"नहीं|nahi|गलत|galat", t, re.IGNORECASE)]
+    if negs:
+        # nearest-negation OCCURRENCE: min distance from that occurrence's END
+        # to any negation (two occurrences of the SAME digits are distinct —
+        # 'नाइन नाइन थी ... नहीं ... नाइन नाइन थी' has two '99' groups)
+        wrong = min(groups, key=lambda g: min(abs(g[2] - n) for n in negs))
+        wrong_digits = wrong[0]
+        others = [g[0] for g in groups
+                  if not (g[0] == wrong_digits and g[1] == wrong[1]
+                          and g[2] == wrong[2])]
+        # drop stray conversational singles
+        if len(others) > 1 and any(len(o) >= 2 for o in others):
+            others = [o for o in others if len(o) >= 2]
+        if not others:
+            if wrong_digits in val and wrong_digits != val:
+                return (None, wrong_digits, None)      # removal
+            return None
+        if len(set(others)) == 1:
+            if others[0] == wrong_digits:
+                return None
+            return (None, wrong_digits, others[0])
+        return None
+    # no negation -> change-frame old->new pair (mention order)
+    if not _is_change_frame(t):
+        return None
+    mention = [g[0] for g in groups]
+    for i, a in enumerate(mention):
+        if len(a) < 2 or a not in val:
+            continue
+        for b in mention[i + 1:]:
+            if b != a and len(b) >= 1:
+                return (None, a, b)
     return None
 STATUS_RE = re.compile(
     r"लिख लिया|लिख दिया|लिखा है|लिखा क्या|क्या लिखा|क्या लिखिया|क्या लिखी|"
