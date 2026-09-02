@@ -75,8 +75,11 @@ fi
 git checkout "$BRANCH" 2>/dev/null || { echo "FAIL: cannot checkout $BRANCH"; exit 1; }
 git reset --hard "origin/$BRANCH" || { echo "FAIL: git reset --hard"; exit 1; }
 
-HEAD_SHA=$(git rev-parse --short HEAD)
-if [ -n "$EXPECTED" ] && [ "$HEAD_SHA" != "$EXPECTED" ]; then
+# The worker build stamp is 12 hex chars (agent/main.py prints _head[:12]).
+# Compare on the SAME width, and accept a 7- or 12-char AIVA_EXPECTED.
+FULL_SHA=$(git rev-parse HEAD)
+HEAD_SHA=$(git rev-parse --short=12 HEAD)
+if [ -n "$EXPECTED" ] && [ "${FULL_SHA:0:${#EXPECTED}}" != "$EXPECTED" ]; then
     echo "FAIL: HEAD=$HEAD_SHA but AIVA_EXPECTED=$EXPECTED"
     exit 1
 fi
@@ -129,23 +132,26 @@ fi
 echo ""
 echo "[4/4] Waiting for workers to print their build stamp ..."
 FAILED=0
+WAIT_SECS=60
 for i in $(seq 0 $((WORKER_COUNT-1))); do
     out="logs/worker_$i.out"
     line=""
-    for _ in $(seq 1 30); do
+    for _ in $(seq 1 $WAIT_SECS); do
         line=$(grep -m1 '\[BUILD\] git=' "$out" 2>/dev/null || true)
         [ -n "$line" ] && break
         sleep 1
     done
     if [ -n "$line" ]; then
         sha=$(echo "$line" | sed -E 's/.*\[BUILD\] git=([0-9a-f]+).*/\1/')
-        if [ "$sha" = "$HEAD_SHA" ]; then
+        if [ "${sha:0:12}" = "$HEAD_SHA" ]; then
             echo "  worker $i OK   : $line"
         else
             echo "  worker $i MISMATCH: $line (expected $HEAD_SHA)"; FAILED=1
         fi
     else
-        echo "  worker $i NO STAMP in $out (stale code or failed start) — see $out"; FAILED=1
+        echo "  worker $i NO STAMP in $out after ${WAIT_SECS}s — stale code, failed start, or still booting. Last lines:"
+        tail -n 15 "$out" 2>/dev/null | sed 's/^/    /'
+        FAILED=1
     fi
 done
 
