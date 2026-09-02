@@ -53,6 +53,10 @@ echo "--- Episode-memory foundation (units: membership/keys/supersede; docs/EPIS
 uv run python phase5/tests/test_memory_units.py
 
 echo ""
+echo "--- Capture-confirm v2 detector + gate (topic-blind disclosure frames; detection only) ---"
+uv run python phase5/tests/test_capture_confirm.py
+
+echo ""
 echo "--- Offline pipeline check ---"
 uv run python phase5/offline_pipeline_check.py
 
