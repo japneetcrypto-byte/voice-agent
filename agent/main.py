@@ -62,12 +62,15 @@ from agent.ack_bridge import AckBridge
 from agent.response_state import classify as response_state_classify, \
      FULLY_PLAYED, PARTIALLY_PLAYED, UNHEARD
 from agent.call_supervisor import CallSupervisor, build_snapshot, RESCUE_GRACE_S
+from agent import response_supersession as rsup  # L6: delivery-boundary supersession
 from agent.reply_guard import (feminine_self_reference, is_confirm_echo,
                                shape_signature, is_repeat_of, cap_for,
                                remaining_text, SENT_END_RE, PLAN_CHUNK_CAP)
 from agent.response_pipeline import (build_policy_and_contract, process_piece,
                                      release_from, release_tail)
 from agent.precision_rail import decide as precision_rail_decide
+from agent.value_transaction import (mark_delivery as vt_mark_delivery,  # L2 write side
+                                     archive_precise_detail as vt_archive_precise_detail)
 from agent.control_plane import shadow_turn, pre_state
 from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
@@ -193,6 +196,11 @@ async def entrypoint(ctx: JobContext):
     await ctx.room.local_participant.publish_track(agent_track, options)
     
     agent_task = None  # Tracks the active response task so we can interrupt it
+    # L6 (response supersession): the pending supervisor rescue is a
+    # CANCELLABLE task; a newer user turn supersedes it before its delivery
+    # boundary. user_turn_seq counts user-turn task creations so the rescue
+    # can detect a turn created after it was scheduled (the t17 race).
+    supersession = {"rescue_task": None, "user_turn_seq": 0}
     agent_speaking_event = asyncio.Event()
 
     import json
@@ -358,11 +366,7 @@ async def entrypoint(ctx: JobContext):
         if rail is not None:
             turn["engine_path"] = "precision_rail"
             turn["llm_called"] = False
-            turn["precise_detail"] = {"action": rail["action"],
-                                      "value": rail["value"],
-                                      "status": rail["status"]}
-            if rail.get("raw"):
-                turn["precise_detail"]["raw"] = rail["raw"]
+            turn["precise_detail"] = vt_archive_precise_detail(rail, engine)
             log_event("PRECISION_RAIL", turn_id=turn.get("turn"), details={
                 "action": rail["action"], "value": rail["value"]})
             print(f"[PrecisionRail] {rail['action']}: {rail['value']}")
@@ -662,6 +666,13 @@ async def entrypoint(ctx: JobContext):
                 except Exception:
                     pass
                 if not ttfa_logged:
+                    # L6 delivery boundary: a supervisor rescue re-checks
+                    # supersession at its FIRST audio frame (not only at
+                    # grace end) — a user reply created meanwhile wins.
+                    _bc = turn.get("_boundary_check")
+                    if _bc is not None and _bc():
+                        turn["superseded_at_boundary"] = True
+                        raise asyncio.CancelledError()
                     ttfa_s = time.time() - tts_start
                     turn["tts_first_audio_s"] = round(ttfa_s, 3)
                     try:
@@ -744,6 +755,12 @@ async def entrypoint(ctx: JobContext):
                 engine["last_response"] = {"status": FULLY_PLAYED,
                                             "turn": turn.get("turn"),
                                             "heard_text": "".join(spoken_text)}
+                # L2 delivery gate (VALUE_TRANSACTION_LOCK): the playback
+                # layer records whether a rail echo actually reached the user.
+                _vt_d = vt_mark_delivery(engine, turn)
+                if _vt_d:
+                    log_event("PROPOSAL_DELIVERY", turn_id=turn.get("turn"),
+                              details={"delivery": _vt_d})
                 turn.get("head_plan") and engine.__setitem__("last_head_plan", turn["head_plan"])
                 # System-owned detail state (approved fix ③): remember the
                 # spoken chunk as the next continuation's resume point; the
@@ -884,6 +901,12 @@ async def entrypoint(ctx: JobContext):
                                             "turn": turn.get("turn"),
                                             "heard_text": _spoken,
                                             "remaining_text": _remainder}
+                # L2 delivery gate: a cancelled/unheard rail echo never
+                # becomes confirmable (session_20260903_103339 t8).
+                _vt_d = vt_mark_delivery(engine, turn)
+                if _vt_d:
+                    log_event("PROPOSAL_DELIVERY", turn_id=turn.get("turn"),
+                              details={"delivery": _vt_d, "cancelled": True})
             turn["tts_text"] = _spoken[:600]
             if engine and engine.get("fused"):
                 turn["prompt_version"] = engine["fused"].meta.get("prompt_version")
@@ -1407,7 +1430,8 @@ async def entrypoint(ctx: JobContext):
                                 # state as side effects; the shadow must
                                 # decide on the same inputs the chain saw).
                                 _shadow_engine = pre_state(engine) if engine else None
-                                _rail = (precision_rail_decide(transcript.text, engine, turn_number)
+                                _rail = (precision_rail_decide(transcript.text, engine, turn_number,
+                                                               {"premature_resume": turn.get("premature_resume")})
                                          if engine and action != "drop" else None)
                                 # Greeting gate: NO sess requirement — the
                                 # owner's live smokes 4+5+6 all showed the
@@ -1663,6 +1687,12 @@ async def entrypoint(ctx: JobContext):
                                 (time.monotonic() - agent_audio_ended_at) * 1000, 1
                             )
                         previous_task = agent_task
+                        # L6: a user reply outranks a pending supervisor rescue —
+                        # supersede it now, before it can reach the speaker.
+                        supersession["user_turn_seq"] += 1
+                        _rt = supersession.get("rescue_task")
+                        if _rt is not None and not _rt.done() and not agent_speaking_event.is_set():
+                            _rt.cancel()
                         agent_task = asyncio.create_task(
                             transcribe_and_respond(
                                 float_audio, speech_duration_ms, speech_start_ts, speech_end_ts,
@@ -1728,12 +1758,30 @@ async def entrypoint(ctx: JobContext):
             print(f"[Supervisor] alert delivery failed: {type(e).__name__}: {e}")
 
     def schedule_supervisor_rescue(outcome: dict):
+        scheduled_seq = supersession["user_turn_seq"]
+
+        def _stand_down_now() -> bool:
+            # L6 gate at GRACE END (the rescue has not started speaking yet,
+            # so the speaking event IS evidence of the primary pipeline).
+            return rsup.should_stand_down(
+                agent_speaking=agent_speaking_event.is_set(),
+                user_turn_in_flight=bool(agent_task and not agent_task.done()),
+                newer_user_turn_since=supersession["user_turn_seq"] != scheduled_seq)
+
+        def _superseded_at_boundary() -> bool:
+            # L6 gate at the rescue's OWN first-audio boundary. NOT the
+            # speaking event: run_agent_response sets it at "Agent speaking..."
+            # before the first frame, i.e. the rescue holds it itself.
+            return rsup.should_stand_down_at_boundary(
+                user_turn_in_flight=bool(agent_task and not agent_task.done()),
+                newer_user_turn_since=supersession["user_turn_seq"] != scheduled_seq)
+
         async def _rescue():
             await asyncio.sleep(RESCUE_GRACE_S)
             # Stand down if the primary pipeline became audible meanwhile OR
             # a newer user turn is already being processed (its reply will
             # answer the user — never race it).
-            if agent_speaking_event.is_set() or (agent_task and not agent_task.done()):
+            if _stand_down_now():
                 supervisor.stand_down()
                 return
             decision = supervisor.evaluate(outcome)
@@ -1743,7 +1791,8 @@ async def entrypoint(ctx: JobContext):
             rescue_turn = {"turn": idle_state["seq"],
                             "turn_type": "supervisor_rescue",
                             "response_trigger_reason": f"supervisor_{decision['reason']}",
-                            "engine_path": "supervisor"}
+                            "engine_path": "supervisor",
+                            "_boundary_check": _superseded_at_boundary}
             snapshot = build_snapshot(decision["reason"], outcome, {
                 "engine_bound": bool(engine and engine.get("sess")),
                 "last_engine_path": _last_engine_path["v"],
@@ -1761,8 +1810,20 @@ async def entrypoint(ctx: JobContext):
                 log_event("SUPERVISOR_ESCALATE", turn_id=rescue_turn["turn"], details=esc)
                 print("[Supervisor] ESCALATED — repeat engagement, paging channel fired")
                 asyncio.create_task(_send_supervisor_alert(esc))
-            await run_agent_response("", rescue_turn)
-        asyncio.create_task(_rescue())
+            try:
+                await run_agent_response("", rescue_turn)
+            except asyncio.CancelledError:
+                # superseded by a user turn before its delivery boundary
+                log_event("RESPONSE_SUPERSEDED", turn_id=rescue_turn["turn"],
+                          details={"superseded": "supervisor_rescue", "by": "user_reply"})
+                print("[Supervisor] rescue SUPERSEDED by a newer user turn (no audio)")
+                supervisor.stand_down()
+            finally:
+                rescue_turn.pop("_boundary_check", None)
+        prev = supersession.get("rescue_task")
+        if prev is not None and not prev.done():
+            prev.cancel()
+        supersession["rescue_task"] = asyncio.create_task(_rescue())
 
     def supervisor_check_after_turn(turn: dict, user_text: str):
         """Called at user-turn completion. Decides whether THIS turn left the
