@@ -103,6 +103,25 @@ class _FakeLCM:
         return {"active_topic": None}
 
 
+def _dictation_from_archived(pd: dict, carrier: dict | None) -> dict:
+    """Re-sync the compat dictation dict from an archived precise_detail.
+    VALUE_TRANSACTION_LOCK archives (2026-09-04+) carry the L1 BASE under
+    precise_detail['base'] plus proposal/pending_edit/delivery; pre-lock
+    archives carry only the decision value (== the stored value then)."""
+    if "base" in pd:
+        d = {"value": pd.get("base") or "", "status": pd.get("status") or "pending"}
+        if pd.get("proposal"):
+            d["proposal"] = dict(pd["proposal"])
+            if pd.get("delivery"):
+                d["proposal"]["delivery"] = pd["delivery"]
+        elif pd.get("delivery"):
+            d["echo_delivery"] = pd["delivery"]
+        if pd.get("pending_edit"):
+            d["pending_edit"] = dict(pd["pending_edit"])
+        return d
+    return {"value": pd.get("value"), "status": pd.get("status") or "pending"}
+
+
 def context_from_archived(turn: dict, *, prior_state: dict,
                           prior_reply: str | None,
                           carrier_engine: dict | None = None) -> TurnContext:
@@ -151,8 +170,7 @@ def context_from_archived(turn: dict, *, prior_state: dict,
         # through (a rail turn is a normal turn — it mutates the carrier).
         pd = prior_state.get("precise_detail")
         if pd:
-            engine["dictation"] = {"value": pd.get("value"),
-                                   "status": pd.get("status") or "pending"}
+            engine["dictation"] = _dictation_from_archived(pd, engine.get("dictation"))
         # SYSTEM-OWNED DETAIL STATE (approved fix ③): re-sync engine["detail"]
         # from the prior turn's archived detail_state (active+step) and the
         # prior spoken chunk (the continuation resume point); absent key =
@@ -173,8 +191,7 @@ def context_from_archived(turn: dict, *, prior_state: dict,
         engine_bound = bool(engine.get("sess"))
         pd = prior_state.get("precise_detail")
         if pd:
-            engine["dictation"] = {"value": pd.get("value"),
-                                   "status": pd.get("status") or "pending"}
+            engine["dictation"] = _dictation_from_archived(pd, engine.get("dictation"))
         ds = prior_state.get("detail_state")
         if ds:
             engine["detail"] = {"active": bool(ds.get("active")),
@@ -231,6 +248,7 @@ def context_from_archived(turn: dict, *, prior_state: dict,
         head_plan=turn.get("head_plan"),
         interrupted=bool(turn.get("interrupted")),
         played_any_audio=(turn.get("response_state") not in (None, "UNHEARD")),
+        premature_resume=turn.get("premature_resume"),
         log_event=lambda *a, **k: None,
     )
 
@@ -350,8 +368,16 @@ def replay_turn(turn: dict, *, prior_reply: str | None, prior_state: dict,
     dict to thread into the next turn (approved fixes ①+③, 2026-08-31)."""
     if not isinstance(turn, dict) or turn.get("turn_type") in SKIP_TURN_TYPES:
         return {}, carrier_engine
-    if turn.get("response_suppressed") or turn.get("engine_path") == "legacy":
-        return {}, carrier_engine  # turn-controller decision / legacy brain not extracted
+    if turn.get("engine_path") == "legacy":
+        return {}, carrier_engine  # legacy brain not extracted
+    if turn.get("response_suppressed") and turn.get("engine_path") != "precision_rail":
+        return {}, carrier_engine  # turn-controller WAIT decision not extracted
+    # A SILENT rail turn (response_suppressed + precision_rail: accumulate,
+    # edit-continuation, bounded-silence count) still ADVANCES the session
+    # task state (VALUE_TRANSACTION_LOCK carrier: base / proposal /
+    # pending_edit / silent_streak). It is replayed like any rail turn so the
+    # carrier reaches the next spoken turn in the live state; its
+    # precise_detail compares when present like every rail turn.
     ctx = context_from_archived(turn, prior_state=prior_state,
                                 prior_reply=prior_reply,
                                 carrier_engine=carrier_engine)
@@ -418,7 +444,8 @@ def replay_session(session_path) -> tuple[dict, int, int]:
                 continue  # non-turn log line (manifest noise etc.)
             if not isinstance(turn, dict) or "turn" not in turn:
                 continue
-            if turn.get("turn_type") in SKIP_TURN_TYPES or turn.get("response_suppressed"):
+            if turn.get("turn_type") in SKIP_TURN_TYPES or (
+                    turn.get("response_suppressed") and turn.get("engine_path") != "precision_rail"):
                 turns_skipped += 1
                 continue
             d, out_engine = replay_turn(turn, prior_reply=prior_reply,

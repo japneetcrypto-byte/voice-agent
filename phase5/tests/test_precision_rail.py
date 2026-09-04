@@ -15,7 +15,7 @@ Regression test FIRST (2026-08-31). Run: python3 phase5/tests/test_precision_rai
 """
 import sys, os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from agent.precision_rail import (dictation_value, normalize_span, decide,
+from agent.precision_rail import (dictation_value, normalize_span, decide as _decide_raw,
                                   speak_value, _parse_correction,
                                   ECHO_LINES, ACK_LINES, RETRY_LINES, FULL_LINES,
                                   RECALL_LINES, ARM_LINES)
@@ -23,6 +23,12 @@ from agent.turn_controller import greeting_line_for, GREETING_LINES
 from agent.response_pipeline import run_turn, TurnContext
 from agent.response_state import FULLY_PLAYED
 from agent.reply_guard import feminine_self_reference
+
+# VALUE_TRANSACTION_LOCK (2026-09-04): decide() no longer commits an echo by
+# itself — the PLAYBACK layer marks delivery (L2). This offline suite uses the
+# stand-in that marks every spoken decision as fully heard, i.e. the live
+# behaviour when nothing is interrupted.
+from agent.value_transaction import decide_heard as decide
 
 fails = 0
 def check(label, got, want):
@@ -558,16 +564,23 @@ check("pending stays pending", r["status"], "pending")
 r = decide("डबल जीरो, वन, तू, चार बार जीरो, पाइट सेविन, जीरो त्री.", engine2, 34)
 check("long re-dictation replaces (not appends)", r["action"], "echo_confirm")
 check("re-dictation value is the new number only", r["value"], "001200005703")
+# VALUE_TRANSACTION_LOCK L1 (2026-09-04, declared pin change): the replace is
+# a PROPOSAL — the base stays until the user confirms; later digits append to
+# the PROPOSAL (the user is dictating the new number), 'bas' speaks it in
+# full, 'haan' commits it. Spoken behaviour identical; storage two-phase.
+check("L1: base untouched by the re-dictation proposal",
+      engine2["dictation"]["value"], "026900124205703")
 check("short segment still accumulates",
       decide("5, 7, 0, 3", engine2, 35)["action"], "silent_accumulate")
-check("accumulated after re-dictation",
-      engine2["dictation"]["value"], "0012000057035703")
+check("accumulated after re-dictation (on the proposal)",
+      engine2["dictation"]["proposal"]["derived"], "0012000057035703")
 r = decide("bas", engine2, 36)
 check("'bas' finalizes -> echo_full (speak the FULL number)", r["action"], "echo_full")
 check("echo_full speaks the full accumulated value", "zero zero one two zero zero zero zero five seven zero three five seven zero three" in r["line"], True)
 r = decide("haan", engine2, 32)
 check("confirm after full echo -> ack", r["action"], "confirm_ack")
 check("confirmed", engine2["dictation"]["status"], "confirmed")
+check("L1 commit: base <- derived on confirm", engine2["dictation"]["value"], "0012000057035703")
 
 print("== decide(): SILENT while dictating (owner: 'speaking in between') ==")
 engine3 = {"dictation": {"value": "690012", "status": "pending"}}
@@ -591,7 +604,11 @@ print("== fresh dictation overrides a stale one ==")
 engine6 = {"dictation": {"value": "111", "status": "confirming"}}
 r = decide("nahi, account number 222 hai", engine6, 2)
 check("fresh dictation re-echoes (new value wins)", r["action"], "echo_confirm")
-check("fresh value captured", engine6["dictation"]["value"], "222")
+# L1 (declared pin change): proposed until confirmed; base kept meanwhile
+check("fresh value proposed (echo speaks it)", r["value"], "222")
+check("L1: base kept until confirm", engine6["dictation"]["value"], "111")
+r = decide("haan", engine6, 3)
+check("confirm commits the fresh value", (r["action"], engine6["dictation"]["value"]), ("confirm_ack", "222"))
 
 print("== normal turns never intercepted ==")
 check("normal turn not intercepted", decide("haan bhai, kya scene hai", {}, 1), None)
@@ -769,10 +786,21 @@ eng12h = {"dictation": {"value": "01212012000001203", "status": "confirming"},
           "conv": {"accum_gap": 14}}
 r = decide("7398", eng12h, 26)
 check("t26 cold-gap span -> silent_accumulate (fresh, never append)", r["action"], "silent_accumulate")
-check("t26 old value REPLACED (not glued)", eng12h["dictation"]["value"], "7398")
+# VALUE_TRANSACTION_LOCK L1 / owner ruling Q2 (2026-09-04) — DECLARED PIN
+# CHANGE: the cold-gap fresh number is a silent FRESH PROPOSAL. The base is
+# kept until the new number is heard + confirmed; the proposal (not the base)
+# collects the following digits. Was: immediate silent replace.
+check("t26 decision value is the fresh number", r["value"], "7398")
+check("t26 base KEPT (fresh proposal, not a replace)", eng12h["dictation"]["value"], "01212012000001203")
+check("t26 fresh proposal opened", eng12h["dictation"]["proposal"]["derived"], "7398")
 r = decide("438138", eng12h, 27)
 check("t27 next span -> append (gap=1)", r["action"], "silent_accumulate")
-check("t27 final value", eng12h["dictation"]["value"], "7398438138")
+check("t27 appended to the PROPOSAL", eng12h["dictation"]["proposal"]["derived"], "7398438138")
+check("t27 base still kept", eng12h["dictation"]["value"], "01212012000001203")
+r = decide("bas", eng12h, 28)
+check("t28 'bas' speaks the proposed number in full", (r["action"], r["value"]), ("echo_full", "7398438138"))
+r = decide("haan", eng12h, 29)
+check("t29 confirm commits the fresh number", (r["action"], eng12h["dictation"]["value"]), ("confirm_ack", "7398438138"))
 eng12h2 = {"dictation": {"value": "01212012000001203", "status": "confirming"},
            "conv": {"accum_gap": 0}}
 r = decide("7, 0, 3", eng12h2, 26)
@@ -804,7 +832,12 @@ check("t29 correction parsed (wrong=620, correct=000000)", c29, (None, "620", "0
 eng13a = {"dictation": {"value": "026900126205703", "status": "confirming"}}
 r = decide("620 नहीं है, 6 बार 0 लिखने है, 6 को replace करो 6 बार 0 से.", eng13a, 29)
 check("t29 -> echo_confirm of REPAIRED value", r["action"], "echo_confirm")
-check("t29 repaired value (6-baar-0 replaces 620)", eng13a["dictation"]["value"], "026900120000005703")
+# L1 (declared pin change): the repair is PROPOSED (echoed), base kept until confirm
+check("t29 repaired value proposed (6-baar-0 replaces 620)", r["value"], "026900120000005703")
+check("t29 base kept until confirm", eng13a["dictation"]["value"], "026900126205703")
+r = decide("हाँ", eng13a, 30)
+check("t29 confirm commits the repair", (r["action"], eng13a["dictation"]["value"]),
+      ("confirm_ack", "026900120000005703"))
 c30 = _parse_correction("6 को replace करना है 6 बार 0 से")
 check("t30 replace-form parsed", c30, (None, "6", "000000"))
 eng13b = {"dictation": {"value": "026900120000005703", "status": "confirming"}}

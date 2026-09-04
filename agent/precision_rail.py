@@ -944,6 +944,39 @@ CORRECT_ALREADY_LINES = [           # correction already satisfied by stored
     "{correct} sahi hai — poora number: {spoken}.",
 ]
 
+# --- VALUE TRANSACTION LOCK line pools (docs/VALUE_TRANSACTION_LOCK.md) ---
+HOLD_EDIT_LINES = [                 # L3: edit fragment parsed to nothing yet —
+    # hold the instruction open, ask for the rest (never mutate, never silent)
+    "haan — kya badalna hai? poora bolo.",
+    "haan, bol — kaunsa hissa badalna hai?",
+]
+HOLD_REMOVAL_LINES = [              # L3: removal-only fragment ('520 नहीं है') —
+    # the prefix of a replace; ask whether something goes in its place
+    "{wrong} — hata doon, ya uski jagah kuch aayega?",
+    "theek, {wrong} nahi — uski jagah kuch hai, ya bas hataana hai?",
+]
+REECHO_LINES = [                    # L1/L2: speak the PROPOSAL (unheard echo,
+    # recall while a proposal is open, L4 status with a proposal open)
+    "maine yeh samjha: {spoken}. sahi hai na?",
+    "yeh samjha maine: {spoken} — sahi hai na?",
+]
+PROPOSAL_RECALL_LINES = [           # L1: recall distinguishes proposal from base
+    "maine yeh samjha: {spoken} — pehle wala {base} tha. sahi hai na?",
+    "naya: {spoken} — pehle wala {base} tha. yeh naya sahi hai na?",
+]
+REVERT_LINES = [                    # L1: plain reject of a proposal -> back to base
+    "theek hai, pehle wala rakha: {spoken}. kya badalna hai?",
+    "achha, wapas pehle wala: {spoken}. bolo kya galat hai?",
+]
+STATUS_ACTIVE_LINES = [             # L4: bounded silence -> status + escape
+    "abhi mere paas {spoken} hai — aage bolo, ya 'bas' bolo.",
+    "abhi yeh hai: {spoken}. aage bolo, ya 'bas' bol do.",
+]
+EDIT_CLARIFY_LINES = [              # L3: buffer closed with nothing usable
+    "samjha nahi kya badalna hai — abhi yeh hai: {spoken}. kaunsa hissa galat hai, uski jagah kya?",
+    "abhi yeh hai: {spoken}. isme kya badalna hai — kaunsa hissa, uski jagah kya?",
+]
+
 
 def _line(lines: list[str], turn_no: int) -> str:
     return lines[turn_no % len(lines)]
@@ -970,7 +1003,8 @@ def _already_correct_line(turn_no: int, correct: str, spoken: str) -> str:
 # ---------------------------------------------------------------------------
 # State machine
 # ---------------------------------------------------------------------------
-def decide(user_text: str, engine: dict | None, turn_no: int) -> dict | None:
+def decide(user_text: str, engine: dict | None, turn_no: int,
+           turn_meta: dict | None = None) -> dict | None:
     """One turn's rail decision. Pure + deterministic over (user_text, engine,
     turn_no). Returns None (normal LLM flow) or a dict:
         {"action": "echo_confirm"|"silent_accumulate"|"echo_full"|
@@ -991,5 +1025,5 @@ def decide(user_text: str, engine: dict | None, turn_no: int) -> dict | None:
     normalizers, deterministic line pools) + the rail's enforcement entry.
     """
     from agent.conversation_controller import controller_decide
-    return controller_decide(user_text, engine, turn_no)
+    return controller_decide(user_text, engine, turn_no, turn_meta)
 

@@ -36,6 +36,7 @@ def derive_constraints(
     detail_mode: bool = False,
     is_recovery: bool = False,
     memory_count: int = 0,
+    task_active: bool = False,
 ) -> list[str]:
     """Return MUST_NOT prohibitions based on current state.
     Deterministic: same state → same constraints."""
@@ -47,6 +48,13 @@ def derive_constraints(
         "fabricate completing real-world actions (sending, booking, ordering, calling)",
         "expose internal system/memory/policy details",
     ]
+    if task_active:
+        # VALUE_TRANSACTION_LOCK L5 (owner Q6): while a dictation task is
+        # active the model may clarify, never claim an edit was performed —
+        # the deterministic path is the only writer of the value.
+        constraints.append(
+            "claim you changed, added, removed or saved any digits of the number "
+            "— you cannot edit it; ask what should change and let the system confirm")
 
     if last_claim:
         constraints.append(f"contradict your previous statement: '{last_claim[:80]}'")
@@ -83,9 +91,11 @@ def build_contract(
     interrupted_state: str | None = None,
     memory_count: int = 0,
     route_action: str | None = None,
+    task_state: dict | None = None,
 ) -> dict:
     """Build the compact Response Contract for this turn.
-    Returns a dict for the LLM's context (~40-80 tokens serialized)."""
+    Returns a dict for the LLM's context (~40-80 tokens serialized).
+    task_state (L5): {kind,status,has_value,proposal_open} — NEVER digits."""
     goal = (policy or {}).get("response_goal", "respond")
     mode = "casual"
     if detail_mode:
@@ -98,10 +108,11 @@ def build_contract(
         mode = "reconcile"
 
     is_rec = (route_action == 'contextual_recovery')
+    task_active = bool(task_state and task_state.get("status") in ("pending", "confirming"))
     must_not = derive_constraints(
         policy=policy, active_topic=active_topic, last_reply=last_reply,
         last_claim=last_claim, detail_mode=detail_mode,
-        is_recovery=is_rec, memory_count=memory_count)
+        is_recovery=is_rec, memory_count=memory_count, task_active=task_active)
 
     contract = {
         "GOAL": goal,
@@ -109,6 +120,10 @@ def build_contract(
         "MODE": mode,
         "MUST_NOT": must_not,
     }
+    if task_active:
+        # L5: the LLM sees THAT a task is active, never its digits.
+        contract["TASK_STATE"] = {k: task_state.get(k) for k in
+                                  ("kind", "status", "has_value", "proposal_open")}
     # Relevant context / previous claim line (locked task item 1). Only when
     # it exists — keeps the contract surgically compact.
     if last_claim:
@@ -164,6 +179,28 @@ _GATE_PATTERNS = {
         (r"\b(?:I(?:'ve| have)? (?:already )?(?:sent|ordered|booked|called"
          r"|emailed|done)\s+(?:the|it|that))\b",
          "claimed action without tool result", "block"),
+    ],
+    # VALUE_TRANSACTION_LOCK L5 (owner Q6, 2026-09-04): the LLM may propose or
+    # clarify an operation, but it must NEVER claim that a mutation of the
+    # dictated value was performed — only the deterministic mutation path
+    # commits. Agent-output gate (not user-speech parsing): a first-person
+    # mutation verb (Hinglish/Devanagari) in the same sentence as a digit or
+    # digit word. session_20260903_103339 t17: "5 ki jagah 50 add kar deta hoon".
+    "claim_mutation": [
+        (r"(?i)(?:\d|\b(?:zero|one|two|three|four|five|six|seven|eight|nine|ek|do|teen|"
+         r"char|paanch|panch|chhe|che|saat|aath|nau|das|shunya|"
+         r"\u0936\u0942\u0928\u094d\u092f|\u090f\u0915|\u0926\u094b|\u0924\u0940\u0928|\u091a\u093e\u0930|\u092a\u093e\u0902\u091a|\u091b\u0939|\u0938\u093e\u0924|\u0906\u0920|\u0928\u094c|\u0926\u0938)\b|[\u0966-\u096f])"
+         r"[^.!?\n]{0,60}?"
+         r"\b(?:add|hata|hataa|badal|replace|update|likh|daal|dal|nikaal|nikal|kaat|kat|ghata|jod|badla|likha)"
+         r"(?:\s+(?:kar|kiya|diya|deta|deti|liya|di|do))*"
+         r"\s+(?:kar\s+)?(?:deta|deti|diya|diyaa|dia|liya|kiya|raha|rahi|chuka|chuki|dunga|dungi|lunga|lungi)"
+         r"(?:\s+(?:hoon|hu|hun|hai|h))?\b",
+         "claimed value mutation (agent may only propose)", "block"),
+        (r"(?:\d|[\u0966-\u096f])[^.!?\n]{0,60}?"
+         r"(?:\u0939\u091f\u093e|\u092c\u0926\u0932|\u091c\u094b\u0921\u093c|\u091c\u094b\u0921|\u0932\u093f\u0916|\u0921\u093e\u0932|\u0928\u093f\u0915\u093e\u0932|\u0915\u093e\u091f)"
+         r"\s*(?:\u0915\u0930\s*)?(?:\u0926\u093f\u092f\u093e|\u0926\u0947\u0924\u093e|\u0926\u0947\u0924\u0940|\u0932\u093f\u092f\u093e|\u0915\u093f\u092f\u093e|\u0926\u0942\u0902\u0917\u093e|\u0926\u0942\u0901\u0917\u093e|\u0930\u0939\u093e|\u0930\u0939\u0940)"
+         r"(?:\s*(?:\u0939\u0942\u0902|\u0939\u0942\u0901|\u0939\u0948))?",
+         "claimed value mutation (agent may only propose)", "block"),
     ],
 }
 

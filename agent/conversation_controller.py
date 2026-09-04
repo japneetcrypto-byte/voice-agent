@@ -62,8 +62,11 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
     ECHO_LINES, ACK_LINES, RETRY_LINES, FULL_LINES, RECALL_LINES,
     ARM_LINES, STATUS_LINES, HOLD_LINES, CORRECTION_LINES,
     COMPLAINT_EMPTY_LINES, CLARIFY_LINES, NUDGE_LINES,
+    HOLD_EDIT_LINES, HOLD_REMOVAL_LINES, REECHO_LINES, PROPOSAL_RECALL_LINES,
+    REVERT_LINES, STATUS_ACTIVE_LINES, EDIT_CLARIFY_LINES,
     _line, _correction_line, _already_correct_line,
 )
+from agent import value_transaction as vt  # L1-L4 lifecycle primitives (lock)
 
 
 # ---------------------------------------------------------------------------
@@ -71,21 +74,41 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
 # ---------------------------------------------------------------------------
 @dataclass
 class Task:
-    """The active structured-detail task (dictation for now)."""
+    """The active structured-detail task (dictation for now).
+
+    VALUE TRANSACTION LOCK (docs/VALUE_TRANSACTION_LOCK.md, owner-approved
+    2026-09-04): `value` is the BASE — the last value the user accepted. A
+    destructive row never writes it; it writes `proposal` (L1). The base
+    moves only on commit = explicit confirm of a proposal whose echo crossed
+    the delivery boundary (L2). `pending_edit` is the L3 instruction buffer.
+    """
     kind: str = "dictation"
-    value: str = ""               # canonical digits (LLM never the source of truth)
+    value: str = ""               # BASE digits (LLM never the source of truth)
     status: str = "pending"       # pending | confirming | confirmed | discarded
     topic: str = ""               # e.g. "mobile_number" | "account_number" | ""
+    proposal: dict | None = None  # L1 {base, spec, derived, mode, created_turn,
+                                  #     delivery: unspoken|spoken|unheard}
+    pending_edit: dict | None = None  # L3 {fragments, since_turn, base}
 
     def to_compat(self) -> dict:
-        # engine["dictation"] compat shape (replay archives unchanged)
-        return {"value": self.value, "status": self.status}
+        # engine["dictation"] compat shape (replay archives unchanged): the
+        # L1/L3 keys are ADDITIVE and only present while open.
+        d = {"value": self.value, "status": self.status}
+        if self.proposal:
+            d["proposal"] = dict(self.proposal)
+        if self.pending_edit:
+            d["pending_edit"] = dict(self.pending_edit)
+        return d
 
     @classmethod
     def from_compat(cls, d: dict | None) -> "Task | None":
         if not d:
             return None
-        return cls(value=d.get("value") or "", status=d.get("status") or "pending")
+        prop = d.get("proposal")
+        pe = d.get("pending_edit")
+        return cls(value=d.get("value") or "", status=d.get("status") or "pending",
+                   proposal=dict(prop) if isinstance(prop, dict) else None,
+                   pending_edit=dict(pe) if isinstance(pe, dict) else None)
 
 
 @dataclass
@@ -106,6 +129,11 @@ class ConversationState:
     accum_gap: int = 0                  # non-digit turns since the last digit
                                         # span (a span after a COLD GAP is a
                                         # fresh number — smoke-12 t26)
+    silent_streak: int = 0              # L4: consecutive SILENT decisions on
+                                        # non-digit turns while a task is active
+                                        # (bounded by SILENT_STREAK_MAX policy)
+    echo_delivery: str | None = None    # L2: playback-owned delivery of the last
+                                        # base echo (rows 2/3/17): spoken|unheard
 
 
 # ---------------------------------------------------------------------------
@@ -192,12 +220,16 @@ def classify_turn(text: str, state: ConversationState, turn_no: int) -> Signals:
 # ---------------------------------------------------------------------------
 # Transition — the explicit table (rows 1-43, docs/CONVERSATION_CONTROLLER_DESIGN.md)
 # ---------------------------------------------------------------------------
-def controller_decide(user_text: str, engine: dict | None, turn_no: int) -> dict | None:
+def controller_decide(user_text: str, engine: dict | None, turn_no: int,
+                      turn_meta: dict | None = None) -> dict | None:
     """One turn's controller decision. Pure + deterministic over
-    (user_text, engine, turn_no). Returns None (normal LLM flow) or the
-    decision dict — the SAME shape decide() always returned, so the
+    (user_text, engine, turn_no, turn_meta). Returns None (normal LLM flow)
+    or the decision dict — the SAME shape decide() always returned, so the
     harness/replay identity holds. Mutates engine["conv"] (explicit state)
-    and engine["dictation"] (legacy compat backing store)."""
+    and engine["dictation"] (legacy compat backing store).
+
+    turn_meta (optional, read-only): endpoint evidence the transport already
+    archives per turn — {"premature_resume": {...}} — consumed by L3 only."""
     eng = engine if engine is not None else {}
     conv = eng.get("conv") or {}
     state = ConversationState(
@@ -208,14 +240,23 @@ def controller_decide(user_text: str, engine: dict | None, turn_no: int) -> dict
         interrupted=bool(conv.get("interrupted", False)),
         armed_streak=int(conv.get("armed_streak", 0)),
         accum_gap=int(conv.get("accum_gap", 0)),
+        silent_streak=int(conv.get("silent_streak", 0)),
     )
     state.task = Task.from_compat(eng.get("dictation"))
+    if isinstance(eng.get("dictation"), dict):
+        state.echo_delivery = eng["dictation"].get("echo_delivery")
     if state.task is not None and conv.get("task_topic"):
         state.task.topic = conv["task_topic"]
     if state.task is not None and state.task.status in ("pending", "confirming"):
         state.accum_gap += 1   # one more non-digit turn since the last span
     sig = classify_turn(user_text, state, turn_no)
-    decision = _transition(state, sig, user_text, turn_no, eng)
+    decision = _transition(state, sig, user_text, turn_no, eng,
+                           premature=vt.premature_from_turn_meta(turn_meta))
+    # L4 (lock §5): bounded silence while a task is active. Digit turns
+    # (genuine dictation) reset the streak and are never forced to speak;
+    # a silent decision on a non-digit turn counts; reaching the policy bound
+    # turns the NEXT silent non-digit decision into a deterministic status.
+    decision = _l4_addressability(state, sig, decision, turn_no)
     # Topic continuity: _with_digits/_val_present recreate the Task without a
     # topic (arm-time kind was 'mobile'/'account'); restore it from conv so
     # the persisted saved-number keeps the right kind.
@@ -238,24 +279,324 @@ def controller_decide(user_text: str, engine: dict | None, turn_no: int) -> dict
         "interrupted": state.interrupted,
         "armed_streak": state.armed_streak,
         "accum_gap": state.accum_gap,
+        "silent_streak": state.silent_streak,
         "task_topic": state.task.topic if state.task else "",
     }
     if state.task is not None:
-        eng["dictation"] = state.task.to_compat()
+        prev = eng.get("dictation") if isinstance(eng.get("dictation"), dict) else {}
+        compat = state.task.to_compat()
+        # L2: the base-echo delivery mark (rows 2/3/17) is PLAYBACK-owned
+        # state on the compat dict. It is carried only while the same base is
+        # still awaiting confirmation and this turn did not echo it again (a
+        # new echo gets a fresh mark from the playback layer).
+        if decision is not None and decision.get("action") in ("echo_full", "echo_confirm") \
+                and not compat.get("proposal") and compat.get("status") == "confirming" \
+                and decision.get("value") == compat.get("value"):
+            # L2: a fresh echo of the base has not crossed the delivery
+            # boundary yet. The PLAYBACK layer (main.py / run_turn via
+            # value_transaction.mark_delivery) upgrades it to spoken/unheard
+            # once the response actually played (or was cancelled).
+            compat["echo_delivery"] = vt.UNSPOKEN
+        elif prev.get("echo_delivery") and compat.get("status") == "confirming" \
+                and compat.get("value") == prev.get("value"):
+            compat["echo_delivery"] = prev["echo_delivery"]
+        eng["dictation"] = compat
     return decision
 
 
+def _l4_addressability(state: ConversationState, sig: Signals, decision: dict | None,
+                       turn_no: int) -> dict | None:
+    """L4 (lock §5): an armed task must remain addressable — consecutive
+    silent decisions on non-digit turns are bounded by SILENT_STREAK_MAX
+    (policy). At the bound the turn speaks a status: the open proposal is
+    re-echoed if one exists (L2 rule 2), else the base with the escape offer.
+    Never touches digit turns (smoke-7: the agent listens while the user
+    dictates) and never touches the armed-empty phase (row 47 owns it)."""
+    task = state.task
+    active = task is not None and task.status in ("pending", "confirming")
+    if not active:
+        state.silent_streak = 0
+        return decision
+    if sig.seg:
+        state.silent_streak = 0
+        return decision
+    silent = decision is not None and decision.get("action") == "silent" \
+        and decision.get("line") is None
+    if not silent:
+        state.silent_streak = 0
+        return decision
+    if not (task.value or task.proposal):
+        return decision                 # armed-empty: row 47 nudge owns it
+    state.silent_streak += 1
+    if state.silent_streak <= vt.SILENT_STREAK_MAX:
+        return decision
+    state.silent_streak = 0
+    state.user_state, state.agent_state = "dictating", "answering"
+    if task.proposal:
+        state.next_action = "reecho"
+        return _reecho_decision(task, turn_no, trigger="status")
+    state.next_action = "status"
+    return {"action": "status", "value": task.value, "status": task.status,
+            "line": _line(STATUS_ACTIVE_LINES, turn_no).format(spoken=speak_value(task.value)),
+            "trigger": "l4_status"}
+
+
+def eng_echo_unheard(state: ConversationState) -> bool:
+    """L2 rule 4: the last echo of the BASE (rows 2/3/17) has not crossed the
+    delivery boundary (unspoken: the playback layer has not marked it yet;
+    unheard: it marked it cancelled/UNHEARD) -> a confirm re-echoes instead
+    of committing. No record at all (states seeded from archives that predate
+    the lock) = legacy, treated as heard."""
+    return state.echo_delivery is not None and state.echo_delivery != vt.SPOKEN
+
+
+def _reecho_decision(task: Task, turn_no: int, *, trigger: str) -> dict:
+    """Speak the open proposal (L1/L2). The decision carries the DERIVED value
+    (what is being proposed) while the base stays in task.value."""
+    prop = task.proposal or {}
+    derived = prop.get("derived") or task.value
+    return {"action": "echo_confirm", "value": derived, "status": "confirming",
+            "line": _line(REECHO_LINES, turn_no).format(spoken=speak_value(derived)),
+            "trigger": trigger, "proposal": dict(prop)}
+
+
 def _transition(state: ConversationState, sig: Signals, text: str, turn_no: int,
-                 eng: dict | None = None) -> dict | None:
+                 eng: dict | None = None, *, premature: bool = False) -> dict | None:
     task = state.task
     if task is None or task.status not in ("pending", "confirming"):
         return _idle(state, sig, text, turn_no, eng)
     val = task.value or ""
+    # L3 (lock §4): an OPEN instruction buffer absorbs continuations before
+    # any row can act on a fragment; it closes into one L1 proposal (or a
+    # clarify) — never a mutation of the base.
+    if task.pending_edit:
+        d = _edit_buffer_turn(state, sig, text, turn_no, val, premature)
+        if d is not _FALLTHROUGH:
+            return d
     if sig.seg:
         return _with_digits(state, sig, text, turn_no, val)
     if val:
         return _val_present(state, sig, text, turn_no, val)
     return _armed_empty(state, sig, text, turn_no)
+
+
+_FALLTHROUGH = object()
+
+
+# ---------------------------------------------------------------------------
+# L1 helpers — proposals never touch the base
+# ---------------------------------------------------------------------------
+def _propose_correction(state: ConversationState, val: str, derived: str, spec,
+                        turn_no: int, *, user_state: str = "correcting",
+                        line_pool=ECHO_LINES, raw=None) -> dict:
+    """Destructive row -> PROPOSAL + echo of the derived value. task.value
+    (the base) is byte-identical after this call (L1.1)."""
+    task = state.task
+    task.proposal = vt.propose(val, derived, spec=spec, mode="correction", turn_no=turn_no)
+    task.pending_edit = None
+    task.status = "confirming"
+    state.user_state, state.agent_state = user_state, "echoing"
+    state.next_action = "echo_confirm"
+    state.waiting_confirmation = True
+    d = {"action": "echo_confirm", "value": derived, "status": "confirming",
+         "line": _line(line_pool, turn_no).format(spoken=speak_value(derived)),
+         "proposal": dict(task.proposal)}
+    if raw:
+        d["raw"] = raw
+    return d
+
+
+def _commit(state: ConversationState, turn_no: int) -> dict:
+    """L1 commit: base <- derived, proposal cleared, status confirmed (row 25
+    semantics). Only reachable through a confirm of a SPOKEN proposal (L2)."""
+    task = state.task
+    derived = (task.proposal or {}).get("derived") or task.value
+    task.value = derived
+    task.proposal = None
+    task.pending_edit = None
+    task.status = "confirmed"
+    state.user_state, state.agent_state = "confirming", "speaking"
+    state.next_action = "confirm_ack"
+    state.waiting_confirmation = False
+    return {"action": "confirm_ack", "value": derived, "status": "confirmed",
+            "line": _line(ACK_LINES, turn_no).format(spoken=speak_value(derived))}
+
+
+def _revert(state: ConversationState, turn_no: int) -> dict:
+    """L1.4: plain reject of an open proposal -> back to the base, spoken.
+    Never a wipe."""
+    task = state.task
+    task.proposal = None
+    task.pending_edit = None
+    task.status = "pending"
+    state.user_state, state.agent_state = "correcting", "asking"
+    state.next_action = "revert"
+    state.waiting_confirmation = False
+    return {"action": "retry", "value": task.value, "status": "pending",
+            "line": _line(REVERT_LINES, turn_no).format(spoken=speak_value(task.value)),
+            "trigger": "proposal_reverted"}
+
+
+# ---------------------------------------------------------------------------
+# L3 — instruction buffer rows (hold_edit / continuation / close)
+# ---------------------------------------------------------------------------
+def _open_edit(state: ConversationState, text: str, turn_no: int, val: str,
+               *, removal_wrong: str | None = None, spec: tuple | None = None) -> dict:
+    """First edit fragment: open the buffer, HOLD (spoken), mutate nothing.
+    A parsed-but-unapplicable spec keeps the existing correction-ack wording
+    (smoke-7 t12 pin: the line names the correct digits)."""
+    task = state.task
+    task.pending_edit = vt.open_edit(text, val, turn_no)
+    state.user_state, state.agent_state = "correcting", "holding"
+    state.next_action = "hold_edit"
+    action = "hold_edit"
+    if removal_wrong:
+        line = _line(HOLD_REMOVAL_LINES, turn_no).format(wrong=removal_wrong)
+    elif spec is not None and spec[2]:
+        # parsed spec that cannot be applied: the existing correction-ack
+        # wording + action name (smoke-7 t12 pin) — but the value is KEPT
+        # and the instruction stays open for the continuation (L3), instead
+        # of the old retry-WIPE.
+        line = _correction_line(turn_no, spec[1] or "", spec[2] or "")
+        action = "retry"
+    else:
+        line = _line(HOLD_EDIT_LINES, turn_no)
+    return {"action": action, "value": val, "status": task.status,
+            "line": line, "pending_edit": dict(task.pending_edit)}
+
+
+def _close_edit(state: ConversationState, sig: Signals, text: str, turn_no: int,
+                val: str) -> dict:
+    """Close the buffer: parse the JOINED text ONCE against the base -> L1
+    proposal, or a clarify that names what was understood. The base is never
+    written here."""
+    task = state.task
+    buf = task.pending_edit or vt.open_edit(text, val, turn_no)
+    joined_text = vt.joined(buf)
+    # C5: a fresh whole number inside the joined text (removal fragment + a
+    # full re-dictation) is a row-14 REPLACE proposal, not a replace-spec.
+    v_raw = dictation_value(joined_text)
+    seg = normalize_span(v_raw) if v_raw else ""
+    spec, derived = vt.resolve_edit(buf, val)
+    if spec is not None and spec[2] is not None and spec[2].isdigit() \
+            and spec[2] in val and not (spec[1] and spec[1] in val):
+        # 46b already-correct guard on the joined instruction (smoke-13 t30)
+        task.pending_edit = None
+        task.status = "confirming"
+        state.user_state, state.agent_state = "correcting", "echoing"
+        state.next_action = "echo_confirm"
+        state.waiting_confirmation = True
+        return {"action": "echo_confirm", "value": val, "status": "confirming",
+                "line": _already_correct_line(turn_no, spec[2], speak_value(val))}
+    if seg and spec is not None and spec[2] == seg and len(seg) >= len(val) and seg != val:
+        # C5 precedence (controller, not a parser rule): a "replace X with
+        # <whole number>" whose replacement IS a whole-number restatement is
+        # the restatement itself (row 14) — never X spliced into the old
+        # value (the 30-digit glue). Only reachable at a buffer close.
+        return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
+                                   user_state="dictating", raw=v_raw)
+    if derived is not None and derived != val:
+        return _propose_correction(state, val, derived, spec, turn_no, raw=v_raw)
+    if seg and (_is_full_restatement(joined_text, len(seg)) or len(seg) >= len(val)) \
+            and seg != val:
+        return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
+                                   user_state="dictating", raw=v_raw)
+    # nothing usable -> clarify naming the base (M1: never wipe)
+    task.pending_edit = None
+    state.user_state, state.agent_state = "correcting", "asking"
+    state.next_action = "clarify"
+    if task.proposal:
+        # an older proposal stays open (lock L1.4): clarify by re-speaking it
+        d = _reecho_decision(task, turn_no, trigger="edit_unresolved")
+        d["action"] = "clarify"
+        return d
+    return {"action": "clarify", "value": val, "status": task.status,
+            "line": _line(EDIT_CLARIFY_LINES, turn_no).format(spoken=speak_value(val)),
+            "trigger": "edit_unresolved"}
+
+
+def _edit_buffer_turn(state: ConversationState, sig: Signals, text: str, turn_no: int,
+                      val: str, premature: bool):
+    """A turn while the L3 buffer is open.
+      continuation (edit-intent / digits / premature resume) -> extend; close
+        into ONE proposal when the joined instruction is complete, a whole
+        number was given, or the policy bound is reached;
+      confirm-handoff ('बस'/'हाँ')  -> close: proposal if resolvable, else a
+        clarify naming what was understood (the user thinks they finished);
+      other handoff (recall/status/complaint/plain reject) -> close silently
+        (proposal echo if resolvable) else drop the buffer and let the turn's
+        own intent run;
+      task switch / abandon / topic switch -> buffer discarded (C10);
+      greeting -> answered, buffer stays open (C8);
+      anything else -> buffer stays open until the bound, turn runs normally."""
+    task = state.task
+    buf = dict(task.pending_edit)
+    buf["turns"] = int(buf.get("turns") or 0) + 1
+    task.pending_edit = buf
+    if sig.announcement and sig.write_command:
+        task.pending_edit = None            # C10: task switch discards the buffer
+        return _FALLTHROUGH
+    if sig.abandon or sig.dearm or sig.topic_switch:
+        task.pending_edit = None
+        return _FALLTHROUGH
+    if sig.greeting_line and not sig.seg:
+        return _FALLTHROUGH                 # C8: greeting answered, buffer stays open
+    plain_reject = sig.reject and _is_plain_reject(text) and not sig.seg
+    if vt.is_continuation(text, val, premature) and not plain_reject:
+        prop = task.proposal
+        if prop and sig.seg and sig.seg == prop.get("derived"):
+            # the continuation restates the OPEN proposal ('मतलब 00000 एड
+            # होगा' with 00000 proposed) -> the instruction is already
+            # satisfied by the proposal: close the buffer, re-echo it (46b
+            # against derived; lock §8 t19).
+            task.pending_edit = None
+            state.user_state, state.agent_state = "correcting", "echoing"
+            state.waiting_confirmation = True
+            return _reecho_decision(task, turn_no, trigger="already_in_proposal")
+        task.pending_edit = vt.extend_edit(buf, text)
+        spec, derived = vt.resolve_edit(task.pending_edit, val)
+        complete = derived is not None
+        v_raw = dictation_value(vt.joined(task.pending_edit))
+        full = bool(v_raw) and len(normalize_span(v_raw)) >= max(len(val), 1) and not premature
+        if (complete and not premature) or full \
+                or len(task.pending_edit["fragments"]) - 1 >= vt.EDIT_BUFFER_MAX_TURNS:
+            return _close_edit(state, sig, text, turn_no, val)
+        state.user_state, state.agent_state = "correcting", "listening"
+        state.next_action = "hold_edit"
+        return {"action": "silent", "value": val, "status": task.status, "line": None,
+                "trigger": "edit_continuation", "pending_edit": dict(task.pending_edit)}
+    if sig.confirm:
+        return _close_edit(state, sig, text, turn_no, val)
+    if sig.recall or sig.status or sig.complaint or plain_reject:
+        d = _close_edit_silent(state, sig, text, turn_no, val)
+        if d is not None:
+            return d
+        task.pending_edit = None
+        return _FALLTHROUGH
+    if buf["turns"] >= vt.EDIT_BUFFER_MAX_TURNS + 1:
+        return _close_edit(state, sig, text, turn_no, val)
+    return _FALLTHROUGH
+
+
+def _close_edit_silent(state: ConversationState, sig: Signals, text: str, turn_no: int,
+                       val: str) -> dict | None:
+    """Close the buffer only if it resolves into a proposal (spoken echo);
+    otherwise None (caller drops the buffer and runs the turn's own intent)."""
+    task = state.task
+    buf = task.pending_edit or {}
+    spec, derived = vt.resolve_edit(buf, val)
+    joined_text = vt.joined(buf)
+    v_raw = dictation_value(joined_text)
+    seg = normalize_span(v_raw) if v_raw else ""
+    if seg and spec is not None and spec[2] == seg and len(seg) >= len(val) and seg != val:
+        return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
+                                   user_state="dictating", raw=v_raw)   # C5 precedence
+    if derived is not None and derived != val:
+        return _propose_correction(state, val, derived, spec, turn_no)
+    if seg and seg != val and (_is_full_restatement(joined_text, len(seg)) or len(seg) >= len(val)):
+        return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
+                                   user_state="dictating", raw=v_raw)
+    return None
 
 
 def _idle(state: ConversationState, sig: Signals, text: str, turn_no: int,
@@ -329,9 +670,11 @@ def _idle(state: ConversationState, sig: Signals, text: str, turn_no: int,
 def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int, val: str) -> dict | None:
     """A digit span was heard while a task is active. Rows 4, 8, 13-16, 29-31, 36-38, 40-41, 48."""
     seg = sig.seg
+    task = state.task
     state.armed_streak = 0       # digits arrived -> the armed-empty phase is over
     cold = state.accum_gap >= GAP_FRESH_TURNS  # fresh-after-gap span? (ROW 48)
     state.accum_gap = 0          # any digit turn ends the cold phase
+    prop = task.proposal
     if not val:
         # Row 4: first real digits after an announcement arm -> accumulate
         # SILENTLY (state-aware: while the user dictates, the agent listens,
@@ -344,9 +687,9 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
     if sig.announcement and sig.write_command:
         # ROW 40 (smoke-11 t8): a NEW dictation announced with a WRITE
         # COMMAND + digits while a value is stored -> the user SWITCHED
-        # tasks ('...ab account number likho jara, 026-900-1262'). REPLACE
-        # the stored value with the new number — never append a new task's
-        # digits onto the old one.
+        # tasks ('...ab account number likho jara, 026-900-1262'). A NEW
+        # task — never append a new task's digits onto the old one. The old
+        # task (and any open proposal) is discarded with the switch (L1 A4).
         state.user_state, state.agent_state = "changing_task", "echoing"
         state.next_action = "echo_confirm"
         state.task = Task(kind="dictation", value=seg, status="confirming",
@@ -356,64 +699,59 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
                 "line": _line(ECHO_LINES, turn_no).format(spoken=speak_value(seg)),
                 "raw": sig.raw}
     if sig.correction is not None:
-        # Rows 8/16/29/36/37: structured correction -> REPAIR the stored value.
+        # Rows 8/16/29/36/37: structured correction -> PROPOSE the repaired
+        # value (L1: the base is never written here; L3: a correction that
+        # carries digits AND resolves completely closes in one turn — lock
+        # C3 — so the one-turn corrections of smokes 7/10/13 are unchanged).
         # The already-correct guard comes FIRST (smoke-13 t30: '6 को replace
         # करना है 6 बार 0 से' repeats an already-applied instruction; applying
         # wrong='6' would replace EVERY 6 and mangle the value).
+        against = (prop.get("derived") if prop and prop.get("mode") == "correction" else None)
         if (sig.correction[2] is not None and sig.correction[2].isdigit()
-                and sig.correction[2] in val):
+                and (sig.correction[2] in val
+                     or (against and sig.correction[2] in against))):
             # ROW 46b (smoke-12 t15 / smoke-13 t30): the 'correct' digits are
-            # ALREADY in the stored value ('5 बार 0' when 00000 is there) ->
-            # confirm the whole number, NEVER wipe it (was: retry-wipe).
+            # ALREADY in the value ('5 बार 0' when 00000 is there) -> confirm
+            # the whole number, NEVER wipe it (was: retry-wipe). With an open
+            # proposal that already satisfies it -> re-echo the proposal.
+            if against and sig.correction[2] in against and sig.correction[2] not in val:
+                state.user_state, state.agent_state = "correcting", "echoing"
+                state.next_action = "echo_confirm"
+                state.waiting_confirmation = True
+                task.pending_edit = None
+                return _reecho_decision(task, turn_no, trigger="already_in_proposal")
             state.user_state, state.agent_state = "correcting", "echoing"
             state.next_action = "echo_confirm"
-            state.task = Task(kind="dictation", value=val, status="confirming")
+            task.status = "confirming"
+            task.pending_edit = None
             state.waiting_confirmation = True
             return {"action": "echo_confirm", "value": val, "status": "confirming",
                     "line": _already_correct_line(turn_no, sig.correction[2],
                                                   speak_value(val))}
         applied = _apply_correction(val, sig.correction)
         if applied is not None:
-            state.user_state, state.agent_state = "correcting", "echoing"
-            state.next_action = "echo_confirm"
-            state.task = Task(kind="dictation", value=applied, status="confirming")
-            state.waiting_confirmation = True
-            return {"action": "echo_confirm", "value": applied, "status": "confirming",
-                    "line": _line(ECHO_LINES, turn_no).format(spoken=speak_value(applied)),
-                    "raw": sig.raw}
-        # cannot apply deterministically -> ack + ask (never silent)
-        wrong = sig.correction[1] or ""
-        correct = sig.correction[2] or ""
-        state.user_state, state.agent_state = "correcting", "asking"
-        state.next_action = "retry"
-        state.task = Task(kind="dictation", value="", status="pending")
-        return {"action": "retry", "value": "", "status": "pending",
-                "line": _correction_line(turn_no, wrong, correct)}
+            return _propose_correction(state, val, applied, sig.correction, turn_no,
+                                       raw=sig.raw)
+        # cannot apply deterministically -> L3: hold the instruction open
+        # (was: retry-WIPE of the value). The base survives (M1 + L1).
+        return _open_edit(state, text, turn_no, val, spec=sig.correction)
     if sig.full_restatement:
-        # Row 14: whole-number re-dictation -> REPLACE + echo
-        state.user_state, state.agent_state = "dictating", "echoing"
-        state.next_action = "echo_confirm"
-        state.task = Task(kind="dictation", value=seg, status="confirming")
-        state.waiting_confirmation = True
-        return {"action": "echo_confirm", "value": seg, "status": "confirming",
-                "line": _line(ECHO_LINES, turn_no).format(spoken=speak_value(seg)),
-                "raw": sig.raw}
+        # Row 14: whole-number re-dictation -> REPLACE proposal + echo
+        return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
+                                   user_state="dictating", raw=sig.raw)
     if sig.only_this:
         # ROW 41 (smoke-11 t11): '...sirf itna number, theek hai?' — the
-        # user states THE number and trims everything else -> replace + echo
-        state.user_state, state.agent_state = "correcting", "echoing"
-        state.next_action = "echo_confirm"
-        state.task = Task(kind="dictation", value=seg, status="confirming")
-        state.waiting_confirmation = True
-        return {"action": "echo_confirm", "value": seg, "status": "confirming",
-                "line": _line(ECHO_LINES, turn_no).format(spoken=speak_value(seg)),
-                "raw": sig.raw}
-    if seg == val:
+        # user states THE number and trims everything else -> replace proposal
+        return _propose_correction(state, val, seg, ("only_this", None, seg), turn_no,
+                                   raw=sig.raw)
+    if seg == val or (prop and seg == prop.get("derived")):
         # Rows 15/31: exact re-statement of the stored value -> confirm or keep
         if sig.confirm:
+            if prop:
+                return _confirm_proposal(state, turn_no)
             state.user_state, state.agent_state = "confirming", "echoing"
             state.next_action = "echo_full"
-            state.task = Task(kind="dictation", value=val, status="confirming")
+            task.status = "confirming"
             return {"action": "echo_full", "value": val, "status": "confirming",
                     "line": _line(FULL_LINES, turn_no).format(spoken=speak_value(val))}
         state.next_action = "silent"
@@ -423,28 +761,85 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
         # ROW 45 (smoke-12 t14): a query about the stored value that ALSO has
         # digit-ish words ('मैंने बोला था 5 बट 0 उसका क्या किया तुमने') ->
         # recall as proof, NEVER silently append the span.
-        state.user_state, state.agent_state = "querying", "answering"
-        state.next_action = "recall"
-        return {"action": "recall", "value": val, "status": state.task.status,
-                "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
+        return _recall_decision(state, turn_no)
+    if _is_change_frame(text) and not (sig.announcement and sig.write_command):
+        # L3: digits inside a change frame that parsed to no spec ('पाइप की
+        # जगह 5 बार 0 लिखना है' alone) -> hold the instruction open. Never a
+        # silent append/replace of an edit fragment (the t9 mechanism).
+        return _open_edit(state, text, turn_no, val)
+    if prop:
+        # L1: digits while a proposal is open append to the PROPOSAL's
+        # derived value (row 30 semantics, moved off the base): the user is
+        # still dictating the proposed number. The appended derived has not
+        # been heard -> delivery resets to unspoken, so a later confirm
+        # speaks the full proposal before anything commits (L2).
+        prop = dict(prop)
+        prop["derived"] = (prop.get("derived") or "") + seg
+        prop["delivery"] = vt.UNSPOKEN
+        task.proposal = prop
+        task.status = "pending"
+        state.user_state, state.agent_state = "dictating", "listening"
+        state.next_action = "silent_accumulate"
+        return {"action": "silent_accumulate", "value": prop["derived"], "status": "pending",
+                "line": None, "raw": sig.raw, "proposal": dict(prop)}
     if cold:
         # ROW 48 (smoke-12 t26): a digit span after a COLD GAP is a FRESH
         # number, not a continuation — the old value was abandoned (t12's
         # fumbled '012...' then 14 turns of grumbling, then '7398' afresh).
-        # Silent replace: same semantics as the first-digits row 4 (never
-        # speak over the user while they dictate).
+        # L1 (owner Q2, 2026-09-04): a silent FRESH PROPOSAL — the base is
+        # kept until the new number is heard and confirmed; further digits
+        # append to the proposal (row 4 silence semantics preserved).
+        task.proposal = vt.propose(val, seg, spec=None, mode="fresh", turn_no=turn_no)
+        task.pending_edit = None
+        task.status = "pending"
         state.user_state, state.agent_state = "dictating", "listening"
         state.next_action = "silent_accumulate"
-        state.task = Task(kind="dictation", value=seg, status="pending")
         return {"action": "silent_accumulate", "value": seg, "status": "pending",
-                "line": None, "raw": sig.raw}
-    # Rows 13/30: continuation segment -> append SILENTLY
+                "line": None, "raw": sig.raw, "proposal": dict(task.proposal)}
+    # Rows 13/30: continuation segment -> append SILENTLY (non-destructive,
+    # reversible by rejection — stays immediate under L1, owner Q1)
     new_val = val + seg
     state.user_state, state.agent_state = "dictating", "listening"
     state.next_action = "silent_accumulate"
-    state.task = Task(kind="dictation", value=new_val, status="pending")
+    task.value = new_val
+    task.status = "pending"
+    task.proposal = None
     return {"action": "silent_accumulate", "value": new_val, "status": "pending",
             "line": None, "raw": sig.raw}
+
+
+def _recall_decision(state: ConversationState, turn_no: int) -> dict:
+    """Recall distinguishes an open proposal from the base (L1.2)."""
+    task = state.task
+    val = task.value or ""
+    state.user_state, state.agent_state = "querying", "answering"
+    state.next_action = "recall"
+    prop = task.proposal
+    if prop and prop.get("derived") and prop.get("derived") != val:
+        return {"action": "recall", "value": prop["derived"], "status": task.status,
+                "line": _line(PROPOSAL_RECALL_LINES, turn_no).format(
+                    spoken=speak_value(prop["derived"]), base=speak_value(val)),
+                "proposal": dict(prop)}
+    return {"action": "recall", "value": val, "status": task.status,
+            "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
+
+
+def _confirm_proposal(state: ConversationState, turn_no: int) -> dict:
+    """Confirm while a proposal is open: COMMIT only if its echo was actually
+    delivered (L2); otherwise speak the FULL proposed number (row 17
+    semantics on the proposal) — never a silent commit."""
+    task = state.task
+    prop = task.proposal or {}
+    if vt.confirmable(prop):
+        return _commit(state, turn_no)
+    state.user_state, state.agent_state = "confirming", "echoing"
+    state.next_action = "echo_full"
+    task.status = "confirming"
+    derived = prop.get("derived") or task.value
+    trigger = "proposal_echo" if prop.get("delivery") == vt.UNSPOKEN else "unheard_echo"
+    return {"action": "echo_full", "value": derived, "status": "confirming",
+            "line": _line(FULL_LINES, turn_no).format(spoken=speak_value(derived)),
+            "trigger": trigger, "proposal": dict(prop)}
 
 
 def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int, val: str) -> dict | None:
@@ -485,91 +880,98 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
                           topic=_detect_kind(text))
         return {"action": "arm", "value": "", "status": "pending",
                 "line": _line(ARM_LINES, turn_no)}
+    task = state.task
+    prop = task.proposal
     if sig.recall:
-        # Rows 19/27/43: query/recall -> re-speak the stored value
-        state.user_state, state.agent_state = "querying", "answering"
-        state.next_action = "recall"
-        return {"action": "recall", "value": val, "status": state.task.status,
-                "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
+        # Rows 19/27/43: query/recall -> re-speak the stored value (an open
+        # proposal is spoken AS a proposal, distinct from the base — L1.2)
+        return _recall_decision(state, turn_no)
     if sig.correction is not None:
         # already-correct guard FIRST (smoke-13 t30): a repeated instruction
         # whose 'correct' is already in the value -> confirm, never re-apply
         # a wrong substring like '6' that would mangle every 6. SKIPPED for
         # val-aware replace pairs (9000->900 — the new digits 900 ⊂ stored
         # 9000 by construction; the guard must not echo the old value).
+        against = (prop.get("derived") if prop and prop.get("mode") == "correction" else None)
         if (not val_aware and sig.correction[2] is not None
-                and sig.correction[2].isdigit() and sig.correction[2] in val):
+                and sig.correction[2].isdigit()
+                and (sig.correction[2] in val or (against and sig.correction[2] in against))):
+            if against and sig.correction[2] in against and sig.correction[2] not in val:
+                state.user_state, state.agent_state = "correcting", "echoing"
+                state.next_action = "echo_confirm"
+                state.waiting_confirmation = True
+                task.pending_edit = None
+                return _reecho_decision(task, turn_no, trigger="already_in_proposal")
             # ROW 46b (smoke-12 t15 / smoke-13 t30): 'correct' digits already
             # in the value -> confirm, never wipe.
             state.user_state, state.agent_state = "correcting", "echoing"
             state.next_action = "echo_confirm"
-            state.task = Task(kind="dictation", value=val, status="confirming")
+            task.status = "confirming"
+            task.pending_edit = None
             state.waiting_confirmation = True
             return {"action": "echo_confirm", "value": val, "status": "confirming",
                     "line": _already_correct_line(turn_no, sig.correction[2],
                                                   speak_value(val))}
+        if sig.correction[2] is None:
+            # L3 (lock §4, the t8 trace): a REMOVAL-only spec is by
+            # construction the prefix of a replacement — hold the instruction
+            # open instead of applying it; the continuation ('...की जगह 5 बार
+            # 0') closes it into ONE proposal. The base is untouched.
+            return _open_edit(state, text, turn_no, val, removal_wrong=sig.correction[1])
         applied = _apply_correction(val, sig.correction)
         if applied is not None:
-            state.user_state, state.agent_state = "correcting", "echoing"
-            state.next_action = "echo_confirm"
-            state.task = Task(kind="dictation", value=applied, status="confirming")
-            state.waiting_confirmation = True
-            return {"action": "echo_confirm", "value": applied, "status": "confirming",
-                    "line": _line(ECHO_LINES, turn_no).format(spoken=speak_value(applied))}
-        wrong = sig.correction[1] or ""
-        correct = sig.correction[2] or ""
-        state.user_state, state.agent_state = "correcting", "asking"
-        state.next_action = "retry"
-        # M1: an edit-intent failure keeps the value — only a PLAIN rejection
-        # clears below. (Owner session 20260902_184247 t26-t28: the wipe made
-        # the follow-up corrections un-repairable and looped 15 turns.)
-        if not _is_plain_reject(text):
-            state.task = Task(kind="dictation", value=val,
-                              status=state.task.status or "pending")
-        else:
-            state.task = Task(kind="dictation", value="", status="pending")
-        return {"action": "retry", "value": state.task.value, "status": state.task.status,
-                "line": _correction_line(turn_no, wrong, correct)}
+            # complete single-turn correction -> proposal (L1), closes at once (C3)
+            return _propose_correction(state, val, applied, sig.correction, turn_no)
+        # M1 + L3: an edit-intent turn that cannot be applied keeps the value
+        # and holds the instruction open (was: retry with correction line).
+        return _open_edit(state, text, turn_no, val, spec=sig.correction)
     if sig.complaint:
         # Rows 20/28: writing-complaint -> RECALL as PROOF, never clear
         state.user_state, state.agent_state = "complaining", "answering"
+        d = _recall_decision(state, turn_no)
         state.next_action = "recall"
-        return {"action": "recall", "value": val, "status": state.task.status,
-                "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
+        return d
     if sig.reject:
-        # Rows 18/26: a PLAIN whole-turn rejection -> clear + retry. M1: an
+        # Rows 18/26: a PLAIN whole-turn rejection -> clear + retry (of an
+        # accumulation) or REVERT to the base (of a proposal — L1.4). M1: an
         # edit-intent rejection (digits/digit-words/change frame present but
-        # unresolved) never wipes — keep the value and ask for the change.
+        # unresolved) never wipes — L3 holds the instruction open.
         if not _is_plain_reject(text):
-            state.user_state, state.agent_state = "dictating", "asking"
-            state.next_action = "clarify"
-            return {"action": "clarify", "value": val, "status": state.task.status,
-                    "line": _line(CLARIFY_LINES, turn_no)}
+            return _open_edit(state, text, turn_no, val)
+        if prop:
+            return _revert(state, turn_no)
         state.user_state, state.agent_state = "confirming", "asking"
         state.next_action = "retry"
         state.task = Task(kind="dictation", value="", status="pending")
         return {"action": "retry", "value": "", "status": "pending",
                 "line": _line(RETRY_LINES, turn_no)}
     if sig.confirm:
+        if prop:
+            return _confirm_proposal(state, turn_no)
         if state.task.status == "pending":
             # Row 17: 'bas / haan / theek' while accumulating -> speak FULL value
             state.user_state, state.agent_state = "confirming", "echoing"
             state.next_action = "echo_full"
-            state.task = Task(kind="dictation", value=val, status="confirming")
+            task.status = "confirming"
             return {"action": "echo_full", "value": val, "status": "confirming",
                     "line": _line(FULL_LINES, turn_no).format(spoken=speak_value(val))}
-        # Row 25: confirming -> confirm -> ack
+        # Row 25: confirming -> confirm -> ack — L2: only if the echo of the
+        # base was actually heard; an unheard echo re-speaks the full value.
+        if eng_echo_unheard(state):
+            state.user_state, state.agent_state = "confirming", "echoing"
+            state.next_action = "echo_full"
+            return {"action": "echo_full", "value": val, "status": "confirming",
+                    "line": _line(FULL_LINES, turn_no).format(spoken=speak_value(val)),
+                    "trigger": "unheard_echo"}
         state.user_state, state.agent_state = "confirming", "speaking"
         state.next_action = "confirm_ack"
-        state.task = Task(kind="dictation", value=val, status="confirmed")
+        task.status = "confirmed"
         state.waiting_confirmation = False
         return {"action": "confirm_ack", "value": val, "status": "confirmed",
                 "line": _line(ACK_LINES, turn_no).format(spoken=speak_value(val))}
     if sig.status:
-        state.user_state, state.agent_state = "querying", "answering"
-        state.next_action = "recall"
-        return {"action": "recall", "value": val, "status": state.task.status,
-                "line": _line(RECALL_LINES, turn_no).format(spoken=speak_value(val))}
+        d = _recall_decision(state, turn_no)
+        return d
     if sig.cont:
         # Rows 21/32: continuation cue -> hold line
         state.user_state, state.agent_state = "continuing", "holding"
@@ -589,6 +991,11 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
         state.next_action = "greet"
         return {"action": "greet", "value": val, "status": state.task.status,
                 "line": sig.greeting_line}
+    if _is_change_frame(text):
+        # L5 rule 1 / L3: an EDIT-INTENT turn (change frame, no resolvable
+        # spec — the t15-t17 class) is never released to the LLM by word
+        # count; it holds the instruction open (the LLM never sees it).
+        return _open_edit(state, text, turn_no, val)
     if sig.filler_len <= 6:
         if sig.number_talk and sig.filler_len >= 3:
             # ROW 50 (owner T10): short speech ABOUT the stored number that

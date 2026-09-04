@@ -43,6 +43,9 @@ from agent.turn_router import route_decision
 from agent.stt_validation import is_repetition_loop
 from agent.prompt_fragments import FILLER_LINES, pick_line
 from agent.precision_rail import decide as precision_rail_decide
+from agent.value_transaction import (mark_delivery as vt_mark_delivery,  # L2 write side
+                                     archive_precise_detail as vt_archive_precise_detail,
+                                     task_state_view as vt_task_state_view)  # L5
 from agent.control_plane import shadow_turn, pre_state
 
 
@@ -107,6 +110,7 @@ def build_policy_and_contract(
             is_recovery=turn.get("route_action") == "contextual_recovery",
             memory_count=len(sess.memory_view()) if sess else 0,
             route_action=turn.get("route_action"),
+            task_state=vt_task_state_view(engine),   # L5: no digits
         )
         turn["policy"]["contract"] = _contract
     except Exception as e:
@@ -383,6 +387,7 @@ class TurnContext:
     head_plan: dict | None = None
     interrupted: bool = False
     played_any_audio: bool = True  # for response_state classification
+    premature_resume: dict | None = None  # endpoint evidence (L3, read-only)
     acoustic: dict | None = None
     user_speech_start: str | None = None
     user_speech_end: str | None = None
@@ -457,16 +462,13 @@ def run_turn(ctx: TurnContext) -> dict:
     # own output, not on the inputs the chain saw. Same inputs, read-only.
     _shadow_engine = pre_state(ctx.engine) if ctx.engine is not None else None
     if ctx.engine is not None:
-        _rail = precision_rail_decide(ctx.user_text, ctx.engine, ctx.turn_no)
+        _rail = precision_rail_decide(ctx.user_text, ctx.engine, ctx.turn_no,
+                                      {"premature_resume": ctx.premature_resume})
         if _rail is not None:
             rail_active = True
             turn["engine_path"] = "precision_rail"
             turn["llm_called"] = False
-            turn["precise_detail"] = {"action": _rail["action"],
-                                      "value": _rail["value"],
-                                      "status": _rail["status"]}
-            if _rail.get("raw"):
-                turn["precise_detail"]["raw"] = _rail["raw"]
+            turn["precise_detail"] = vt_archive_precise_detail(_rail, ctx.engine)
     sess_bound = bool(ctx.engine and ctx.engine.get("sess"))
     model_text = ctx.model_text
     # GREETING RAIL (owner smoke 3, 2026-08-31): a first-word greeting gets a
@@ -615,10 +617,13 @@ def run_turn(ctx: TurnContext) -> dict:
         turn["heard_text"] = _spoken[:200]
         _remainder = remaining_text(model_text, _spoken)
         turn["remaining_text"] = _remainder[:300]
+        if not ctx.played_any_audio:
+            turn["cancel_pre_audio"] = True   # mirrors main.py (no TTFA before cancel)
         if ctx.engine is not None:
             ctx.engine["last_response"] = {
                 "status": _state, "turn": ctx.turn_no,
                 "heard_text": _spoken, "remaining_text": _remainder}
+            vt_mark_delivery(ctx.engine, turn)   # L2 (identical to main.py)
     else:
         turn["response_state"] = FULLY_PLAYED
         turn["response_trigger_reason"] = "completed"
@@ -626,6 +631,7 @@ def run_turn(ctx: TurnContext) -> dict:
             ctx.engine["last_response"] = {
                 "status": FULLY_PLAYED, "turn": ctx.turn_no,
                 "heard_text": turn["llm_response"]}
+            vt_mark_delivery(ctx.engine, turn)   # L2 (identical to main.py)
             if plan:
                 ctx.engine["last_head_plan"] = plan
             # System-owned detail state (fix ③): remember the spoken chunk as

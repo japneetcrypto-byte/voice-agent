@@ -26,10 +26,16 @@ Run: python3 phase5/tests/test_saved_number_recall.py
 """
 import sys, os, tempfile
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-from agent.precision_rail import decide
+from agent.precision_rail import decide as _decide_raw
 from agent.memory_store import MemoryStore
 from agent.session_state import SessionState
 from agent.entity_extractor import _WORD_RE
+
+# VALUE_TRANSACTION_LOCK (2026-09-04): decide() no longer commits an echo by
+# itself — the PLAYBACK layer marks delivery (L2). These offline suites use the
+# stand-in that marks every spoken decision as fully heard, i.e. the live
+# behaviour when nothing is interrupted.
+from agent.value_transaction import decide_heard as decide
 
 fails = 0
 def check(label, got, want):

@@ -1,0 +1,20 @@
+{
+  "fixture": "session_103339_rail",
+  "kind": "RECONSTRUCTED rail session (first rail fixture)",
+  "note": "Rebuilt from the STT texts + playback outcomes of owner session session_20260903_103339 (docs/VALUE_TRANSACTION_LOCK.md §0) through run_turn under the VALUE_TRANSACTION_LOCK build. The raw live archive is not in the repo, so this is NOT a byte-copy: same user texts, turn numbers and playback facts (t8 cancelled pre-audio, t14/t16/t18 barged), pipeline outputs are the LOCK's. Coverage it gives: replay-identity of the rail path (proposal/base/delivery carrier). Coverage it does NOT give: proof of live behaviour — that is the next owner smoke. Written by phase5/tests/test_session_103339_trace.py.",
+  "session": "session_20260903_103339_reconstructed.log",
+  "turns": 21,
+  "rail_turns": 21,
+  "fused_turns": 0,
+  "base_after_t5": "026900125205203",
+  "proposal_at_end": "02690012000005203",
+  "properties": [
+    "P1 t8 no mutation",
+    "P2 t8+t9 one proposal",
+    "P3 unheard never confirmable",
+    "P4 commit only via proposal+delivery+confirm",
+    "P5 t15-t17 clarify not LLM claim",
+    "P6 supersession at boundary",
+    "P7 non-rail unchanged except §H"
+  ]
+}

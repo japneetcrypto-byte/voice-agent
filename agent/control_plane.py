@@ -31,6 +31,8 @@ unchanged (P1 shadow never influences it).
 """
 from __future__ import annotations
 
+import copy
+
 from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
@@ -211,9 +213,12 @@ def pre_state(engine: dict | None) -> dict:
     the SAME inputs the chain saw — never on the chain's side effects.
     Call this BEFORE precision_rail_decide / the turn-gate mutations."""
     eng = engine or {}
+    # VALUE_TRANSACTION_LOCK: the compat dict now nests proposal/pending_edit
+    # (mutable dicts the controller rewrites in place) — deep-copy so the
+    # shadow's pre-state can never alias the chain's side effects.
     return {
         "conv": dict(eng["conv"]) if isinstance(eng.get("conv"), dict) else None,
-        "dictation": (dict(eng["dictation"]) if isinstance(eng.get("dictation"), dict)
+        "dictation": (copy.deepcopy(eng["dictation"]) if isinstance(eng.get("dictation"), dict)
                       else None),
         "detail": dict(eng["detail"]) if isinstance(eng.get("detail"), dict) else None,
         "wait_streak": eng.get("wait_streak"),
@@ -499,6 +504,7 @@ _RAIL_ACTION_MAP = {
     "status": "rail_recall", "echo_full": "rail_confirm",
     "confirm_ack": "rail_confirm", "silent": "suppress", "greet": "greeting",
     "hold": "clarify", "nudge": "clarify", "clarify": "clarify",
+    "hold_edit": "clarify",   # L3 (VALUE_TRANSACTION_LOCK): instruction held open
 }
 
 

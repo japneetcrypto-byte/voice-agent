@@ -49,6 +49,17 @@ echo "--- Correction-repair package (number edits never wipe; live 20260902_1842
 uv run python phase5/tests/test_correction_repair.py
 
 echo ""
+echo "--- VALUE TRANSACTION LOCK L1-L6 (docs/VALUE_TRANSACTION_LOCK.md; live 20260903_103339) ---"
+uv run python phase5/tests/test_value_transaction.py          # L1 two-phase mutation
+uv run python phase5/tests/test_delivery_gate.py              # L2 delivery gate
+uv run python phase5/tests/test_edit_coalescing.py            # L3 instruction buffer
+uv run python phase5/tests/test_llm_authority.py              # L5 LLM authority boundary
+uv run python phase5/tests/test_addressability.py             # L4 bounded silence (policy)
+uv run python phase5/tests/test_response_supersession.py      # L6 supersession at the boundary
+uv run python phase5/tests/test_value_transaction_adversarial.py  # 45k random decisions, 0 violations
+uv run python phase5/tests/test_session_103339_trace.py       # 7 owner properties + writes the rail fixture
+
+echo ""
 echo "--- Episode-memory foundation (units: membership/keys/supersede; docs/EPISODE_MEMORY_SLICE_LOCK.md) ---"
 uv run python phase5/tests/test_memory_units.py
 

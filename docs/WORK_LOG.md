@@ -9,6 +9,31 @@ We started with a voice agent that technically worked (mic → speech-to-text �
 
 ---
 
+## VALUE TRANSACTION LOCK L1–L6 shipped (2026-09-04)
+
+Root cause (session_20260903_103339): a removal fragment (t8 "नहीं 520 नहीं है")
+was applied at once and its echo was cancelled before audio, then the second
+half of the same sentence (t9 "पाइप की जगह 5 बार 0") hit the cold-gap row and
+silently replaced the whole number with `00000`; the user's long complaints
+(t15–t17) were released to the LLM, which fabricated "5 ki jagah 50 add kar
+deta hoon" while a supervisor rescue played over it.
+
+Shipped, one commit per invariant, tests-first (see
+docs/VALUE_TRANSACTION_LOCK.md §14 for the table): L1 destructive rows write a
+PROPOSAL, the base moves only on confirm; L2 a proposal is confirmable only
+after its echo crossed the delivery boundary (playback layer writes it); L3
+edit fragments HOLD and coalesce into one proposal; L5 edit-intent never
+reaches the LLM, the LLM sees task state without digits, `claim_mutation`
+blocks "I changed the digits" output; L4 bounded silence (policy constant);
+L6 a user reply supersedes a pending rescue at the delivery boundary.
+55 suites green; 45,000-decision adversarial sweep, 0 violations; first rail
+replay fixture (reconstructed, labelled) replays to identity. Declared pin
+change: `test_precision_rail §H` (row 48 = fresh proposal) + the value-after-
+correction reads listed in §14. Not done (by ruling): feeder (L7), new
+user-speech parsing, `accum_gap` change, name-call markers.
+
+---
+
 ## Timeline of everything we fought
 
 ### 1. Phase 1 — Ground truth & planning (before touching behavior)
