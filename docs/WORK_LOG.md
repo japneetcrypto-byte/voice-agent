@@ -1071,3 +1071,41 @@ frozen 3/3; `test_tiers.py full --jobs 2` FULL PASS. Temperature question
 answered to the owner: the LLM runs at 0.7 (`providers/llm.py:43`,
 `agent/fused_turn.py:244`), STT at 0.0; the digits never pass through the
 LLM, so temperature is not what decides the number.
+
+## 2026-09-05 — "memory is not persisting across sessions": diagnosis tool only
+
+Owner question after `1ede190`. Read-only read-through of the whole chain
+(`frontend/src/App.tsx` device UUID → `agent/token_server.py` identity →
+`agent/main.py` SESSION BOUND / extractors / `_promote_memory` /
+`_commit_session_memory` → `agent/memory_store.py` → `agent/memory_gate.py`
+→ `agent/session_consolidation.py`). NO behaviour change; no rule added.
+
+What "remembering" requires today (all four at once):
+1. same browser identity (`localStorage['aiva_device_id']` UUID; a different
+   browser/origin/port, incognito, cleared site data or the "Reset memory"
+   button ⇒ fresh identity ⇒ empty memory; a malformed/missing id ⇒
+   `ephemeral-…` identity, new every session);
+2. a sentence one of the deterministic catchers recognises
+   (`extract_fact_candidates` name/job/likes/no-advice, `extract_place_facts`,
+   `extract_entities_from_user_text` relations) — probed: `मेरा नाम X है`,
+   `मैं इंजीनियर हूँ`, `मुझे चाय पसंद है`, `X मेरा भाई है`, `मैं कानपुर से हूँ`
+   are caught; `मैं X हूँ`, `मेरे भाई का नाम X है`, `मेरा जन्मदिन …`, Roman
+   `mujhe chai pasand hai` / `main Kanpur mein rehta hoon` are NOT — plus the
+   turn must be STT-valid with `avg_logprob >= -0.6`;
+3. a caught EXPLICIT fact or a confirmed number is committed immediately;
+   anything else (L2 people, consolidation bullets) is `pending` and only
+   becomes visible after a 2nd sighting (`occurrences>=2`) — one-off facts
+   never surface;
+4. the LLM sees memory only through `memory_view()` (committed rows, last
+   40); with none it is told to say "yaad nahi hai".
+Clean session end (shutdown callback) only matters for promoting pending
+rows; explicit commits are written mid-session. `start_aiva.sh` step 3
+`pkill -9` skips the callback.
+
+Added `mem_report.py` (read-only, stdlib, digits masked): memory file
+identities/status counts, per-session identity + facts loaded + facts
+caught + clean end, state-file starts, and the memory log lines from
+`logs/worker_*.out` / `logs/token_server.out`. Owner runs
+`python3 mem_report.py` and pastes the output; fixes only after evidence.
+Tests: `test_tiers.py plan --changed mem_report.py` → no suites affected
+(docs/other); pyflakes clean. No full run (owner: critical tests only).
