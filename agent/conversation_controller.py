@@ -63,7 +63,7 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
     ARM_LINES, STATUS_LINES, HOLD_LINES, CORRECTION_LINES,
     COMPLAINT_EMPTY_LINES, CLARIFY_LINES, NUDGE_LINES,
     HOLD_EDIT_LINES, HOLD_REMOVAL_LINES, REECHO_LINES, PROPOSAL_RECALL_LINES,
-    REVERT_LINES, STATUS_ACTIVE_LINES, EDIT_CLARIFY_LINES,
+    REVERT_LINES, STATUS_ACTIVE_LINES, EDIT_CLARIFY_LINES, MIXED_CLARIFY_LINES,
     _line, _correction_line, _already_correct_line,
 )
 from agent import value_transaction as vt  # L1-L4 lifecycle primitives (lock)
@@ -707,7 +707,10 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
         # करना है 6 बार 0 से' repeats an already-applied instruction; applying
         # wrong='6' would replace EVERY 6 and mangle the value).
         against = (prop.get("derived") if prop and prop.get("mode") == "correction" else None)
-        if (sig.correction[2] is not None and sig.correction[2].isdigit()
+        # M5: a guard for REPEATED instructions only — never when the wrong
+        # group is still in the value (that is a repair; see _val_present).
+        wrong_present = bool(sig.correction[1]) and sig.correction[1] in val
+        if (not wrong_present and sig.correction[2] is not None and sig.correction[2].isdigit()
                 and (sig.correction[2] in val
                      or (against and sig.correction[2] in against))):
             # ROW 46b (smoke-12 t15 / smoke-13 t30): the 'correct' digits are
@@ -893,7 +896,13 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
         # val-aware replace pairs (9000->900 — the new digits 900 ⊂ stored
         # 9000 by construction; the guard must not echo the old value).
         against = (prop.get("derived") if prop and prop.get("mode") == "correction" else None)
-        if (not val_aware and sig.correction[2] is not None
+        # M5 (owner session 20260905_102221 t9): the guard is for a REPEATED
+        # instruction — its 'wrong' group is already gone from the value. When
+        # the wrong group IS still in the value ('9000 नहीं है, 900 है' with
+        # 9000 stored) the user is asking for a repair, and the 'correct'
+        # digits being a substring of the value (900 ⊂ 9000) proves nothing.
+        wrong_present = bool(sig.correction[1]) and sig.correction[1] in val
+        if (not val_aware and not wrong_present and sig.correction[2] is not None
                 and sig.correction[2].isdigit()
                 and (sig.correction[2] in val or (against and sig.correction[2] in against))):
             if against and sig.correction[2] in against and sig.correction[2] not in val:
@@ -932,6 +941,19 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
         state.next_action = "recall"
         return d
     if sig.reject:
+        # M6 (owner session 20260905_102221 t21): confirm AND reject words in
+        # the same breath ('ठीक है, ओके, चलो कोई नहीं') is UNCLEAR — neither a
+        # confirmation nor a rejection. The value stays; ask which it was.
+        # (Was: _is_plain_reject -> retry wiped the base, then the retry line
+        # was cancelled before audio — the number vanished in silence.)
+        if sig.confirm:
+            state.user_state, state.agent_state = "confirming", "asking"
+            state.next_action = "clarify"
+            task.pending_edit = None
+            state.waiting_confirmation = True
+            return {"action": "clarify", "value": val, "status": task.status,
+                    "line": _line(MIXED_CLARIFY_LINES, turn_no).format(spoken=speak_value(val)),
+                    "trigger": "mixed_confirm_reject"}
         # Rows 18/26: a PLAIN whole-turn rejection -> clear + retry (of an
         # accumulation) or REVERT to the base (of a proposal — L1.4). M1: an
         # edit-intent rejection (digits/digit-words/change frame present but

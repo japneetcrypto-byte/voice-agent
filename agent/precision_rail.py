@@ -484,13 +484,18 @@ def _is_plain_reject(text: str | None) -> bool:
     """A whole-turn rejection that MAY clear the stored value: no digits, no
     digit-words, no change frame — 'नहीं, गलत है'. An edit-intent turn
     ('1242 नहीं है', '9000 कम करो', '9934 नहीं 9935 है') is NOT plain: the
-    stored value must survive so the correction can repair it."""
+    stored value must survive so the correction can repair it. M6 (owner
+    session 20260905_102221 t21 'ठीक है, ओके, चलो कोई नहीं'): a turn that
+    ALSO carries a confirm word is not a whole-turn rejection either — it is
+    unclear, and unclear never clears."""
     t = text or ""
     if not t.strip():
         return False
     if _digit_tokens(t):
         return False
     if _is_change_frame(t):
+        return False
+    if _is_confirm(t):
         return False
     return True
 
@@ -975,6 +980,12 @@ STATUS_ACTIVE_LINES = [             # L4: bounded silence -> status + escape
 EDIT_CLARIFY_LINES = [              # L3: buffer closed with nothing usable
     "samjha nahi kya badalna hai — abhi yeh hai: {spoken}. kaunsa hissa galat hai, uski jagah kya?",
     "abhi yeh hai: {spoken}. isme kya badalna hai — kaunsa hissa, uski jagah kya?",
+]
+MIXED_CLARIFY_LINES = [             # M6: confirm + reject in ONE breath ('ठीक है,
+    # ओके, चलो कोई नहीं' — owner session 20260905_102221 t21) -> the value
+    # stays; ask which it was instead of wiping on the 'नहीं'
+    "haan ya nahi? abhi yeh hai: {spoken}. sahi hai, ya kuch badalna hai?",
+    "ek baar saaf bolo — abhi likha hai: {spoken}. rakhun, ya galat hai?",
 ]
 
 

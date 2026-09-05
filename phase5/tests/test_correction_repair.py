@@ -124,6 +124,63 @@ check("re-dictation with नहीं still REPLACES the whole value (dv path) �
 d, val, _, _ = out[1]
 check("confirm commits the re-dictation", (d["action"], val), ("confirm_ack", "02690001245703"))
 
+print("== M5 (owner session 20260905_102221 t9): 'X नहीं है, Y है' with Y ⊂ X must REPAIR, never 'already correct' ==")
+# Live: base 0269000125201203, user said '9000 नहीं है, 900 है।' -> the rail
+# answered "900 sahi hai — poora number ...9000..." (the already-correct guard
+# fired because the new digits 900 are a substring of the stored 9000) and
+# the value never changed. The wrong group 9000 IS in the value: that is a
+# repair, and the guard must only fire when the wrong group is NOT there.
+out = run_turn([(9, "9000 नहीं है, 900 है।"), (10, "हाँ")], "0269000125201203")
+d, val, _, prop = out[0]
+check("t9 9000->900 is PROPOSED (echo_confirm of the repaired value), not 'already correct'",
+      (d["action"], prop), ("echo_confirm", "026900125201203"))
+check("t9 base kept until confirm (L1)", val, "0269000125201203")
+check("t9 spoken line is NOT the already-correct line", "sahi hai — poora" in (d.get("line") or ""), False)
+d, val, _, _ = out[1]
+check("t10 confirm commits 026900125201203", (d["action"], val), ("confirm_ack", "026900125201203"))
+# same shape, English negation + other substring pairs
+out = run_turn([(9, "1200 nahi, 120 hai")], "02690012000001203")
+d, val, _, prop = out[0]
+check("'1200 nahi, 120 hai' with 1200 stored -> repair proposed", (d["action"], prop), ("echo_confirm", "0269001200001203"))
+# the guard STILL protects a repeated instruction whose wrong group is gone
+# (smoke-13 t30 shape: '6 -> 000000' when the 6 was already replaced and
+# 000000 is present) — it must keep confirming, never re-apply.
+eng = {"dictation": {"value": "026900120000005703", "status": "confirming"}, "conv": {}}
+d = decide("6 को replace करना है 6 बार 0 से", eng, 30)
+check("smoke-13 t30 repeated instruction still -> already-correct confirm", d["action"], "echo_confirm")
+check("smoke-13 t30 value untouched", eng["dictation"]["value"], "026900120000005703")
+# and smoke-12 t15 ('5 वाला नहीं, 5 बार 0' with 00000 already there): the
+# wrong group '5' IS in the value (…5703) but 'correct' 00000 is present too
+# -> stays a confirm (the digits asked for are already there, whole group).
+eng = {"dictation": {"value": "01212012000001203", "status": "confirming"}, "conv": {}}
+d = decide("वो 5 वाला नमबर नहीं है वो 5 बार 0 मैंने बोला है", eng, 15)
+check("smoke-12 t15 still -> already-correct confirm", d["action"], "echo_confirm")
+check("smoke-12 t15 value untouched", eng["dictation"]["value"], "01212012000001203")
+
+print("== M6 (owner session 20260905_102221 t21): confirm + reject in ONE breath is UNCLEAR -> clarify, never wipe ==")
+# Live: 'ठीक है, ओके, चलो कोई नहीं' on an unconfirmed base -> _is_plain_reject
+# was True -> retry_wipe erased 0269000125201203 and the retry line was
+# cancelled before audio. A turn that carries BOTH a confirm word and a
+# reject word is not a whole-turn rejection: the value must survive and the
+# rail must ask.
+eng = {"dictation": {"value": "0269000125201203", "status": "pending"}, "conv": {}}
+d = decide("ठीक है, ओके, चलो कोई नहीं", eng, 21)
+check("t21 mixed confirm+reject -> clarify (asks), not retry", d["action"], "clarify")
+check("t21 value KEPT", eng["dictation"]["value"], "0269000125201203")
+check("t21 line names the stored number", "zero two six nine" in (d.get("line") or ""), True)
+eng = {"dictation": {"value": "0269000125201203", "status": "confirming"}, "conv": {}}
+d = decide("haan theek hai, nahi nahi", eng, 22)
+check("English mixed confirm+reject while confirming -> clarify", d["action"], "clarify")
+check("...value KEPT", eng["dictation"]["value"], "0269000125201203")
+# a plain rejection with NO confirm word still wipes (regression pin above
+# stays true) and a plain confirm still confirms.
+eng = {"dictation": {"value": "0269000125201203", "status": "pending"}, "conv": {}}
+d = decide("नहीं, गलत है", eng, 23)
+check("plain reject still clears + retries", (d["action"], eng["dictation"]["value"]), ("retry", ""))
+eng = {"dictation": {"value": "0269000125201203", "status": "pending"}, "conv": {}}
+d = decide("ठीक है", eng, 24)
+check("plain confirm while pending still -> echo_full", d["action"], "echo_full")
+
 print()
 if fails:
     print(f"FAIL ({fails})")
