@@ -72,6 +72,12 @@ echo "--- Offline pipeline check ---"
 uv run python phase5/offline_pipeline_check.py
 
 echo ""
+echo "== STEP 1b: FULL deterministic tier (merge gate, no API key) =="
+echo "--- every phase5 suite + COMPLETE archive replay + frozen-input verify + accepted divergence profile ---"
+echo "--- (QUICK/TARGETED: python3 phase5/harness/test_tiers.py quick|targeted — developer feedback, never a gate) ---"
+uv run python phase5/harness/test_tiers.py full
+
+echo ""
 echo "== STEP 2: transport check (1 real Gemini call) =="
 uv run python phase5/transport_check.py
 

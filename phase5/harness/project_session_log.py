@@ -29,26 +29,22 @@ script: it imports only the stdlib and is never imported by agent code.
 """
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 # Every key the replay gate reads, on either side of the comparison, or when
 # rebuilding the TurnContext (context_from_archived) / prior-turn state.
 # Keep-if-present: the live archive sets several of these only when an event
 # occurs (contract_*, script_transliterated, tag_leak_stripped, ...); absent
 # keys must STAY absent for the byte-exact None==None comparison.
-GATE_KEYS = [
-    "turn", "turn_type", "acoustic", "user_speech_start", "user_speech_end",
-    "agent_was_speaking", "stt_transcript", "stt_valid", "stt_rejection_reason",
-    "stt_avg_logprob", "response_state", "route_action", "route_reason",
-    "dropped_reason", "response_trigger_reason", "recovery_mode", "engine_path",
-    "llm_called", "head_plan", "llm_response_full", "llm_response",
-    "reply_trimmed", "contract_block_count", "contract_violations",
-    "repeat_guarded", "script_transliterated", "tag_leak_stripped",
-    "interrupted", "heard_text", "remaining_text", "reconciles_previous",
-    "previous_plan", "challenge_detected", "detail_mode", "detail_complete",
-    "detail_latch_after", "policy",
-]
+# 2026-09-05: ONE contract — the same FROZEN_KEYS the test tiers freeze and
+# verify (phase5/harness/frozen_inputs.py, stdlib-only). The pre-Phase-1 list
+# lacked precise_detail / detail_state / numeric_observation / endpoint /
+# premature_resume / stt_* evidence, so a projected log replayed differently
+# from the raw one on rail + observation turns.
+from phase5.harness.frozen_inputs import FROZEN_KEYS as GATE_KEYS  # noqa: E402
 
 
 def project_line(line: str) -> str | None:

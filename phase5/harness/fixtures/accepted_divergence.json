@@ -1,0 +1,42 @@
+{
+ "version": 1,
+ "pinned_at": "2026-09-05",
+ "build": "9a4fe4b249bd",
+ "note": "Accepted standing divergence profile of the FULL replay gate. Every hard divergence and documented note listed here is a known, reviewed live-vs-offline boundary (see docs/VALUE_TRANSACTION_LOCK.md: t1 greeting rail archived before the rail existed, t20 live cap-trim point, t11 stream-chunk repeat-guard note). FULL fails on ANY difference from this profile — new or vanished. Re-pin only deliberately: test_tiers.py freeze --pin-divergence, and say why in the commit.",
+ "profile": {
+  "phase5/harness/fixtures/baseline_20260830_1/session_20260830_175618.log": {
+   "hard": {
+    "1": {
+     "engine_path": [
+      "greeting",
+      "fused"
+     ],
+     "llm_called": [
+      false,
+      true
+     ],
+     "llm_response": [
+      "hello! bol kya scene hai?",
+      "bas yahin baitha hoon, bol kya scene hai?"
+     ]
+    },
+    "20": {
+     "llm_response": [
+      "Well, if I were in an interview, I'd say: \"A voice agent architecture typically integrates three core layers: STT for transcription, an LLM for intent processing and reasoning, and TTS for low-latency voice synthesis.\" aage?",
+      "Well, if I were in an interview, I'd say: \"A voice agent architecture typically integrates three core layers: STT for transcription, an LLM for intent processing and reasoning, and TTS for low-latency voice synthesis.\" "
+     ],
+     "reply_trimmed": [
+      null,
+      true
+     ]
+    }
+   },
+   "notes": {
+    "11": [
+     "repeat-guard outcome is stream-chunk-dependent (live piece segmentation not archived): llm_response differs only by the guard line"
+    ]
+   },
+   "checked": 23
+  }
+ }
+}

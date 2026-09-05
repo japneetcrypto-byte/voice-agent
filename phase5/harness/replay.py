@@ -459,9 +459,15 @@ def replay_turn(turn: dict, *, prior_reply: str | None, prior_state: dict,
     return diffs, out_engine
 
 
-def replay_session(session_path) -> tuple[dict, int, int]:
+def replay_session(session_path, *, stop_after: int | None = None) -> tuple[dict, int, int]:
     """Replay every turn in one archived session log. Returns
-    (per_turn_diffs, turns_checked, turns_skipped)."""
+    (per_turn_diffs, turns_checked, turns_skipped).
+
+    stop_after (test tiers, 2026-09-05): when given, stop AFTER the archived
+    turn with that number has been replayed. The prefix is replayed exactly
+    as the full run replays it (the carrier / prior state are threaded turn
+    to turn, so a mid-file start is impossible); only the remainder of the
+    file is skipped. Default None = the standing full-file gate, unchanged."""
     per_turn = {}
     prior_reply = None
     prior_state: dict = {}
@@ -479,6 +485,12 @@ def replay_session(session_path) -> tuple[dict, int, int]:
                 continue  # non-turn log line (manifest noise etc.)
             if not isinstance(turn, dict) or "turn" not in turn:
                 continue
+            if stop_after is not None:
+                try:
+                    if int(turn.get("turn")) > int(stop_after):
+                        break
+                except (TypeError, ValueError):
+                    pass
             if turn.get("turn_type") in SKIP_TURN_TYPES or (
                     turn.get("response_suppressed") and turn.get("engine_path") != "precision_rail"):
                 turns_skipped += 1
