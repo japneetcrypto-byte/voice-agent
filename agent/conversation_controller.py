@@ -56,6 +56,7 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
     _is_full_restatement, _is_reject, _is_confirm, _fragment_length,
     is_dictation_announcement,
     _is_plain_reject, _is_change_frame, _val_aware_correction,
+    _digit_tokens, _digit_groups, COUNT_QUESTION_RE,
     RECALL_RE, STATUS_RE, CONTINUE_CUE_RE, CLAIM_RE, COMPLAINT_RE,
     ABANDON_RE, DEARM_DETAIL_RE, WRITE_COMMAND_RE, ONLY_THIS_RE,
     QUERY_STORED_RE, TOPIC_SWITCH_RE, _NUMBER_TOPIC_RE, SAVED_NUMBER_QUERY_RE,
@@ -67,6 +68,9 @@ from agent.precision_rail import (  # signal layer (patterns stay, demoted)
     _line, _correction_line, _already_correct_line,
 )
 from agent import value_transaction as vt  # L1-L4 lifecycle primitives (lock)
+from agent.numeric_observation import (  # N6 gate (lock §8): certainty + slot provenance only
+    observe as _observe, digits_of as _obs_digits_of,
+    INCOMPLETE as _OBS_INCOMPLETE, _UNCERTAIN_REASONS as _OBS_UNCERTAIN_REASONS)
 
 
 # ---------------------------------------------------------------------------
@@ -162,6 +166,10 @@ class Signals:
     number_talk: bool = False           # speech ABOUT the number, no digits
                                         # (T10: 'काशिड नंबर आ गया' -> clarify)
     filler_len: int = 0
+    count_question: bool = False        # M7: 'कितने बार जीरो है?' — a how-many
+    number_talk_or_digit_words: bool = False  # question about the digits
+    observation: dict | None = None     # N6: the turn's NumericObservation (pure;
+                                        # certainty gates every digit-bearing row)
 
 
 def classify_turn(text: str, state: ConversationState, turn_no: int) -> Signals:
@@ -173,6 +181,22 @@ def classify_turn(text: str, state: ConversationState, turn_no: int) -> Signals:
         sig.seg = normalize_span(t)
     sig.reject = _is_reject(t)
     sig.confirm = _is_confirm(t)
+    # M7 (owner session 20260905_124658 t8/t13): a HOW-MANY question about
+    # the digits ('नहीं, one two के बाद कितने बार जीरो है', 'बन टू के बाद कितने
+    # जीरों आए हैं') is an INQUIRY about the stored value. The correction
+    # parser already refuses questionish text; the controller answers it by
+    # reading the number back (recall) instead of guessing an edit.
+    sig.count_question = bool(COUNT_QUESTION_RE.search(t))
+    sig.number_talk_or_digit_words = bool(
+        re.search(r"नंबर|नमबर|number|अकाउंट|खाता|मोबाइल|mobile|digit|अंक", t, re.IGNORECASE)
+        or _digit_tokens(t) or _digit_groups(t))
+    # NUMERIC OBSERVATION BOUNDARY (docs/NUMERIC_OBSERVATION_LOCK.md §8, N6;
+    # owner session 20260905_124658 t15): the pure observation of THIS turn.
+    # The controller reads only its certainty — an INCOMPLETE hearing
+    # ('पांच जीरो' = 50 or 00000, an unknown word inside the digits, an
+    # unbound 'do baar') must never become a proposal, an append or a
+    # commit. It is evidence, never a decision (lock N7/N8).
+    sig.observation = _observe(t, turn_no)
     # M3 confirm-guard (owner session 20260902_184247 t11): a confirm word
     # inside a CHANGE frame ('...900...बस एक जीरो कम हो ज') is an EDIT, not
     # a confirmation of the pending value — never let "बस" hijack the turn
@@ -360,6 +384,176 @@ def _reecho_decision(task: Task, turn_no: int, *, trigger: str) -> dict:
             "trigger": trigger, "proposal": dict(prop)}
 
 
+def _n6_blocks(obs: dict | None, seg: str, spec: tuple | None) -> bool:
+    """N6 core test (lock §8): may the legacy digits act? True = BLOCK.
+
+    Blocks when the observation is INCOMPLETE and the digits the rows would
+    consume (`seg`, the spec's anchor/wrong/correct groups) cannot be traced
+    to fully-known items — an item whose slots are all DIGIT, or a run of
+    consecutive such items. A group that crosses an AMBIGUOUS/UNKNOWN slot
+    is a guess ('12 00000 {50|00000}' -> '120000050'); an unbound 'baar' /
+    'double' makes every group of the turn uncertain. Groups that trace to
+    fully-known items (session 184247 t11: '9000 ... 900 ... एक जीरो कम' —
+    the spec 9000->900 never touches the ambiguous count phrase) pass."""
+    if not obs or obs.get("certainty") != _OBS_INCOMPLETE:
+        return False
+    groups = [g for g in ([seg] if seg else []) + [x for x in (spec or ()) if isinstance(x, str)]
+              if g and g.isdigit()]
+    if not groups:
+        return False                       # the rows would not touch digits
+    if any(r in _OBS_UNCERTAIN_REASONS for r in obs.get("reasons") or []):
+        return True
+    known: set[str] = set()
+    run: list[str] = []
+    for it in obs.get("items") or []:
+        d = _obs_digits_of(it)
+        if d is None:
+            run = []
+            continue
+        run.append(d)
+        acc = ""
+        for x in reversed(run):
+            acc = x + acc
+            known.add(acc)
+    return not all(g in known for g in groups)
+
+
+def _n6_slot_fill(instruction: str, answer: str, turn_no: int) -> str | None:
+    """Resolution of an N6 clarify BY THE USER'S ANSWER (lock §8: resolution
+    belongs to the operation layer only via clarification). When the
+    clarified instruction has exactly ONE ambiguous slot ('पांच जीरो' =
+    {50 | 00000}) and the answer is a fully-known digit string equal to one
+    of that slot's readings ('पांच बार जीरो' -> 00000, 'five zero' -> 50),
+    the reading is written into the instruction in place of the ambiguous
+    words and the substituted instruction is returned for the normal close.
+    Anything else -> None (no fill, no guess)."""
+    obs = _observe(instruction, turn_no)
+    amb = [sl for it in obs.get("items") or [] for sl in it.get("slots") or []
+           if sl.get("kind") != "DIGIT"]
+    if len(amb) != 1 or amb[0].get("kind") != "AMBIGUOUS":
+        return None
+    alts = [a.get("digits") for a in (amb[0].get("alternatives") or []) if a.get("digits")]
+    tok = amb[0].get("token") or {}
+    if not alts or tok.get("start") is None or tok.get("end") is None:
+        return None
+    ans = _observe(answer, turn_no)
+    d = _obs_digits_of(ans)
+    if not d or d not in alts:
+        return None
+    # substitute in the SAME surface as the words around the slot (the legacy
+    # span detector reads one contiguous form: digit-words stay digit-words —
+    # 'पांच जीरो' -> 'जीरो जीरो जीरो जीरो जीरो' / 'फाइव जीरो'; a numeral run
+    # stays numerals)
+    zero_word = ((amb[0].get("token") or {}).get("text") or "").split()[-1] if tok.get("text") else ""
+    words = {"0": zero_word or "जीरो", "1": "वन", "2": "टू", "3": "थ्री", "4": "फोर",
+             "5": "फाइव", "6": "सिक्स", "7": "सेवन", "8": "एट", "9": "नाइन"}
+    around = instruction[max(0, tok["start"] - 12):tok["start"]] + instruction[tok["end"]:tok["end"] + 12]
+    if re.search(r"[\u0900-\u097F]", around):
+        filled = " ".join(words.get(ch, ch) for ch in d)
+    else:
+        filled = " ".join(d)
+    return instruction[:tok["start"]] + filled + instruction[tok["end"]:]
+
+
+def _n6_uncertain(state: ConversationState, sig: Signals, text: str, turn_no: int,
+                  val: str, *, obs: dict | None = None, seg: str | None = None,
+                  spec: tuple | None = None, reopen: bool = True):
+    """N6 — uncertainty stops mutation (docs/NUMERIC_OBSERVATION_LOCK.md §8).
+
+    Runs in front of every row that could propose/append over a STORED value
+    (and at the L3 buffer close, on the joined instruction). When `_n6_blocks`
+    says the legacy digits are a guess over an INCOMPLETE hearing, the only
+    outcome is a spoken clarify that speaks the known digits as known and
+    names the uncertain part; the base and any open proposal are
+    byte-identical afterwards, no fresh proposal exists, the buffer is
+    closed. Everything else falls through untouched (zero change to the
+    rows). Owner session 20260905_124658 t15: 'पांच जीरो' (50 or 00000?)
+    became a 26-digit proposal — this is the boundary that was missing.
+    Fresh dictation with no base (rows 2-4) is NOT gated here: a slot
+    clarify there needs a slot-fill state (Phase 3), so it keeps its echo."""
+    obs = obs if obs is not None else sig.observation
+    seg = sig.seg if seg is None else seg
+    spec = sig.correction if spec is None else spec
+    if not val or not _n6_blocks(obs, seg, spec):
+        return _FALLTHROUGH
+    task = state.task
+    if seg and not spec and (seg == val or (task and task.proposal
+                                            and seg == task.proposal.get("derived"))):
+        # an exact restatement of the stored number ('फिर से एक बार <same
+        # digits>') mutates nothing whatever the dangling 'ek baar' meant —
+        # rows 15/31 keep it (silent / confirm); no clarify for a non-event
+        return _FALLTHROUGH
+    state.user_state, state.agent_state = "dictating", "asking"
+    state.next_action = "clarify"
+    if task is not None:
+        # The user's answer to the ask is part of the SAME instruction: keep
+        # it open in the L3 buffer (lock §8 'hold ... expected to resolve
+        # from an in-flight instruction'), so the next turn's digits are a
+        # continuation and NOT a silent append to the base. When the buffer
+        # closes and the joined text is still a guess, N6 runs again at the
+        # close (reopen=False there) and the clarify names the base.
+        task.pending_edit = vt.open_edit(text, val, turn_no) if reopen else None
+    d = {"action": "clarify", "value": val, "status": task.status if task else "pending",
+         "line": _n6_clarify_line(obs, turn_no),
+         "trigger": "numeric_uncertain",
+         "observation_reasons": list((obs or {}).get("reasons") or [])}
+    if task is not None and task.pending_edit:
+        d["pending_edit"] = dict(task.pending_edit)
+    return d
+
+
+_HI_COUNT = {"1": "ek", "2": "do", "3": "teen", "4": "char", "5": "paanch",
+             "6": "chhe", "7": "saat", "8": "aath", "9": "nau"}
+_HI_ORDINAL = {1: "pehla", 2: "doosra", 3: "teesra", 4: "chautha", 5: "paanchva",
+               6: "chhata", 7: "saatva", 8: "aathva", 9: "nauva", 10: "dasva"}
+
+
+def _n6_clarify_line(obs: dict, turn_no: int) -> str:
+    """Speak known digits as known and the unknown as unknown (lock §8):
+    never a guessed digit, never the whole number re-asked for one slot.
+    Roman only (the piece chain transliterates Devanagari for TTS, which
+    would mangle a quoted user word)."""
+    parts: list[str] = []
+    asks: list[str] = []
+    for it in obs.get("items") or []:
+        for pos, sl in enumerate(it.get("slots") or [], start=1):
+            kind = sl.get("kind")
+            if kind == "DIGIT":
+                parts.append(speak_value(sl.get("digit") or ""))
+                continue
+            alts = [a.get("digits") for a in (sl.get("alternatives") or [])]
+            # the count as a digit ('5' from 'पांच'/'5'): the observation's
+            # first alternative is 'digit N [then 0]' — its leading digit
+            digit_alt = next((a for a in alts if a), "")
+            cnum = digit_alt[0] if digit_alt else ""
+            cword = _HI_COUNT.get(cnum, "")
+            if kind == "AMBIGUOUS" and cword and "" in alts:
+                # count-or-digit before a run ('2 बार 026900'): digit 2, or twice?
+                parts.append(f"'{cword} baar'")
+                asks.append(f"'{cword} baar' — kaunsa digit {cword} baar tha?")
+            elif kind == "AMBIGUOUS" and cword:
+                # 'पांच जीरो' = 50 or 00000: name both readings, no guess
+                parts.append(f"'{cword} zero'")
+                asks.append(f"'{cword} zero' matlab {speak_value(cnum)} zero, ya {cword} baar zero?")
+            elif kind == "AMBIGUOUS":
+                parts.append("kuch")
+                asks.append(f"{_HI_ORDINAL.get(pos, str(pos) + ' number wala')} digit saaf nahi aaya — woh phir se bolo.")
+            else:
+                # UNKNOWN: an unreadable word inside the digits ('फोन' for four)
+                parts.append("kuch")
+                asks.append(f"{_HI_ORDINAL.get(pos, str(pos) + ' number wala')} digit samajh nahi aaya — woh digit phir se bolo.")
+    for r in obs.get("reasons") or []:
+        if r == "UNBOUND_DOUBLE" and not any("double" in a for a in asks):
+            asks.append("'double' kis digit ke liye tha?")
+        if r == "UNBOUND_MULTIPLIER" and not any("baar" in a for a in asks):
+            asks.append("'baar' kis digit ke liye tha?")
+    heard = " ".join(p for p in parts if p)
+    ask = " ".join(asks) if asks else "ek baar saaf bolo."
+    if turn_no % 2:
+        return f"maine suna: {heard} — {ask}"
+    return f"suna {heard}. {ask}"
+
+
 def _transition(state: ConversationState, sig: Signals, text: str, turn_no: int,
                  eng: dict | None = None, *, premature: bool = False) -> dict | None:
     task = state.task
@@ -373,6 +567,12 @@ def _transition(state: ConversationState, sig: Signals, text: str, turn_no: int,
         d = _edit_buffer_turn(state, sig, text, turn_no, val, premature)
         if d is not _FALLTHROUGH:
             return d
+    # N6 (lock §8): an INCOMPLETE hearing stops every mutating row FIRST.
+    # A hold (L3) is still permitted — an edit-intent fragment stays open so
+    # the continuation can complete it — but a proposal/append never is.
+    d = _n6_uncertain(state, sig, text, turn_no, val)
+    if d is not _FALLTHROUGH:
+        return d
     if sig.seg:
         return _with_digits(state, sig, text, turn_no, val)
     if val:
@@ -478,6 +678,35 @@ def _close_edit(state: ConversationState, sig: Signals, text: str, turn_no: int,
     v_raw = dictation_value(joined_text)
     seg = normalize_span(v_raw) if v_raw else ""
     spec, derived = vt.resolve_edit(buf, val)
+    # N6 on the JOINED instruction (lock §8): a buffer whose digits are a
+    # guess ('नहीं पांच जीरो' + 'one two के बाद' -> legacy '5012') never
+    # closes into a proposal. N6 is applied PER CANDIDATE, exactly as
+    # resolve_edit already tries the joined text first and the newest
+    # fragment alone second: when the joined reading is a guess, the newest
+    # fragment alone is used if IT is fully known (the user answered the
+    # clarify with 'one two ke baad paanch baar zero'); otherwise clarify.
+    if _n6_blocks(_observe(joined_text, turn_no), seg, spec or ()):
+        frags = [f for f in (buf.get("fragments") or []) if f]
+        frag = frags[-1] if frags else ""
+        filled = _n6_slot_fill(" ".join(frags[:-1]), frag, turn_no) if len(frags) >= 2 else None
+        f_raw = dictation_value(frag) if frag else None
+        f_seg = normalize_span(f_raw) if f_raw else ""
+        f_spec, f_derived = vt.resolve_edit({"fragments": [frag]}, val) if frag else (None, None)
+        f_whole = bool(f_seg) and len(f_seg) >= len(val) and f_seg != val
+        if filled is not None:
+            # the answer resolved the one ambiguous slot -> close on the
+            # substituted instruction (fully known by construction)
+            joined_text = filled
+            v_raw = dictation_value(joined_text)
+            seg = normalize_span(v_raw) if v_raw else ""
+            spec, derived = vt.resolve_edit({"fragments": [joined_text]}, val)
+        elif frag and (f_derived is not None or f_whole) \
+                and not _n6_blocks(_observe(frag, turn_no), f_seg, f_spec or ()):
+            joined_text, v_raw, seg, spec, derived = frag, f_raw, f_seg, f_spec, f_derived
+        else:
+            return _n6_uncertain(state, sig, joined_text, turn_no, val,
+                                 obs=_observe(joined_text, turn_no), seg=seg, spec=spec or (),
+                                 reopen=False)
     if spec is not None and spec[2] is not None and spec[2].isdigit() \
             and spec[2] in val and not (spec[1] and spec[1] in val):
         # 46b already-correct guard on the joined instruction (smoke-13 t30)
@@ -588,6 +817,27 @@ def _close_edit_silent(state: ConversationState, sig: Signals, text: str, turn_n
     joined_text = vt.joined(buf)
     v_raw = dictation_value(joined_text)
     seg = normalize_span(v_raw) if v_raw else ""
+    if _n6_blocks(_observe(joined_text, turn_no), seg, spec or ()):
+        # N6 per candidate (see _close_edit): slot-fill by the answer, else
+        # the newest fragment alone if fully known; else a guessed close
+        # never proposes silently.
+        frags = [f for f in (buf.get("fragments") or []) if f]
+        frag = frags[-1] if frags else ""
+        filled = _n6_slot_fill(" ".join(frags[:-1]), frag, turn_no) if len(frags) >= 2 else None
+        f_raw = dictation_value(frag) if frag else None
+        f_seg = normalize_span(f_raw) if f_raw else ""
+        f_spec, f_derived = vt.resolve_edit({"fragments": [frag]}, val) if frag else (None, None)
+        f_whole = bool(f_seg) and len(f_seg) >= len(val) and f_seg != val
+        if filled is not None:
+            joined_text = filled
+            v_raw = dictation_value(joined_text)
+            seg = normalize_span(v_raw) if v_raw else ""
+            spec, derived = vt.resolve_edit({"fragments": [joined_text]}, val)
+        elif frag and (f_derived is not None or f_whole) \
+                and not _n6_blocks(_observe(frag, turn_no), f_seg, f_spec or ()):
+            joined_text, v_raw, seg, spec, derived = frag, f_raw, f_seg, f_spec, f_derived
+        else:
+            return None
     if seg and spec is not None and spec[2] == seg and len(seg) >= len(val) and seg != val:
         return _propose_correction(state, val, seg, ("restate", None, seg), turn_no,
                                    user_state="dictating", raw=v_raw)   # C5 precedence
@@ -760,10 +1010,11 @@ def _with_digits(state: ConversationState, sig: Signals, text: str, turn_no: int
         state.next_action = "silent"
         return {"action": "silent", "value": val, "status": state.task.status,
                 "line": None}
-    if sig.query_stored:
+    if sig.query_stored or sig.count_question:
         # ROW 45 (smoke-12 t14): a query about the stored value that ALSO has
         # digit-ish words ('मैंने बोला था 5 बट 0 उसका क्या किया तुमने') ->
-        # recall as proof, NEVER silently append the span.
+        # recall as proof, NEVER silently append the span. M7: a HOW-MANY
+        # question with a digit anchor ('12 के बाद कितने जीरो हैं?') likewise.
         return _recall_decision(state, turn_no)
     if _is_change_frame(text) and not (sig.announcement and sig.write_command):
         # L3: digits inside a change frame that parsed to no spec ('पाइप की
@@ -857,6 +1108,10 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
             and (sig.reject or sig.confirm or _is_change_frame(text))):
         sig.correction = _val_aware_correction(text, val)
         val_aware = sig.correction is not None
+        if val_aware:
+            d = _n6_uncertain(state, sig, text, turn_no, val)   # N6 on the val-aware spec
+            if d is not _FALLTHROUGH:
+                return d
     # NOTE: val_aware replace-pairs (9000 -> 900) must SKIP the smoke-13
     # already-correct guard below — the 'new' digits are usually a substring
     # of the stored value (900 ⊂ 9000), and the guard would echo the old
@@ -885,9 +1140,20 @@ def _val_present(state: ConversationState, sig: Signals, text: str, turn_no: int
                 "line": _line(ARM_LINES, turn_no)}
     task = state.task
     prop = task.proposal
-    if sig.recall:
+    if prop and sig.recall and sig.reject and not sig.confirm and not sig.seg \
+            and sig.correction is None and not _is_change_frame(text):
+        # M9 (owner session 20260905_124658 t16): 'नहीं, गलत है, पर पूरा नंबर
+        # दुबारा बोल' with a proposal OPEN — the rejection is of the proposal
+        # (L1.4: revert to the base) and the recall is answered by the revert
+        # line, which speaks the base. Was: recall won and read BOTH the
+        # proposal and the base (14.5 s, trimmed mid-way).
+        return _revert(state, turn_no)
+    if sig.recall or (sig.count_question and sig.number_talk_or_digit_words):
         # Rows 19/27/43: query/recall -> re-speak the stored value (an open
-        # proposal is spoken AS a proposal, distinct from the base — L1.2)
+        # proposal is spoken AS a proposal, distinct from the base — L1.2).
+        # M7 (owner session 20260905_124658 t8/t13): a HOW-MANY question
+        # about the digits ('one two के बाद कितने बार जीरो है') is answered
+        # the same way — the number itself IS the answer. Never a proposal.
         return _recall_decision(state, turn_no)
     if sig.correction is not None:
         # already-correct guard FIRST (smoke-13 t30): a repeated instruction

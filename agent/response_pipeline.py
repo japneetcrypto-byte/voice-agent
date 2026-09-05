@@ -33,7 +33,7 @@ from agent.reply_guard import (strip_tag_leak, clean_specials, fix_merged_words,
                                SENT_END_RE, repeat_break_for, cap_for,
                                PLAN_CHUNK_CAP, remaining_text)
 from providers.stt import devanagari_to_roman
-from agent.response_contract import build_contract, gate_reply
+from agent.response_contract import build_contract, gate_task_reply
 from agent.response_state import (reconcile_payload as response_reconcile_payload,
                                   classify as response_state_classify,
                                   FULLY_PLAYED)
@@ -244,7 +244,17 @@ def process_piece(
     piece, leaked = strip_tag_leak(piece)
     piece = clean_specials(piece)
     piece = fix_merged_words(piece)
-    piece, _gv = gate_reply(piece, turn_no=turn_number)
+    # M10 (owner session 20260905_124658 t10): while a dictation task is
+    # active the LLM may not recite digits either — the rail is the only
+    # speaker of the value. Task-active is read from the contract the SAME
+    # turn built (turn.policy.contract.TASK_STATE, L5) — archived, so replay
+    # sees exactly what live saw. Rail/greeting lines never pass through here
+    # with a contract (they are system-owned).
+    _ts = ((turn.get("policy") or {}).get("contract") or {}).get("TASK_STATE") \
+        if isinstance(turn.get("policy"), dict) else None
+    _task_active = bool(_ts and _ts.get("status") in ("pending", "confirming")) \
+        and turn.get("engine_path") not in ("precision_rail", "greeting")
+    piece, _gv = gate_task_reply(piece, turn_no=turn_number, task_active=_task_active)
     if _gv:
         turn.setdefault("contract_violations", []).extend(
             [{"type": v["type"], "detail": v["detail"],

@@ -184,7 +184,18 @@ check("t15 '5 जीरो': observation INCOMPLETE {50|00000}; legacy guessed '
 check("t17 'जीरो टू सिस नाइन डबल जीरो': observation 02?900 INCOMPLETE; legacy signal EMPTY (dropped the whole span); rail read it as a confirm",
       (na2(17)["observation"], na2(17)["legacy_signal"]["seg"], na2(17)["observation_vs_signal"], na2(17)["operation"]["action"], na2(17)["confirm_evidence"]["confirm_tokens"]),
       ("INCOMPLETE 02?900 (WORDS) [OOV_TOKEN]", "", "legacy_dropped", "echo_full", ["ठीक"]))
-check("t19 '125205203' matches the open proposal -> silent, observation agrees", (na2(19)["operation"]["kind"], na2(19)["observation_vs_signal"]), ("silent", "agree"))
+# RE-PIN (M9, 2026-09-05 — owner session 20260905_124658 t16): t16 'नहीं नहीं,
+# मैं दुबारा बोलता हूँ' carries a reject AND the recall pattern ('दुबारा बोल')
+# while a proposal is open. It used to be answered as a recall (proposal + base
+# read out, proposal kept open); under M9 the rejection reverts the proposal
+# to the base (L1.4) and speaks the base once. So at t19 no proposal is open
+# any more: the restated '125205203' arrives after a cold gap and becomes a
+# FRESH proposal (row 48, silent) instead of matching the old one — the same
+# digits, now proposed afresh. The base never moved either way (checked below).
+check("t16 reject + 'dubara bol' with a proposal open -> revert (M9), base spoken once",
+      (na2(16)["operation"]["action"], by2[16]["precise_detail"].get("proposal")), ("retry", None))
+check("t19 '125205203' after the revert -> fresh proposal (silent), observation agrees",
+      (na2(19)["operation"]["kind"], na2(19)["operation"]["action"], na2(19)["observation_vs_signal"]), ("fresh_proposal", "silent_accumulate", "agree"))
 check("first-wrong-layer oracle over 133627: observation vs legacy seg differ on t13, t14 (edit-intent turns — digits visible only to the observation; rows held), t15 (guessed '50'), t17 (span dropped)",
       {tn: t["numeric_audit"]["observation_vs_signal"] for tn, t in by2.items() if t["numeric_audit"]["observation_vs_signal"] not in ("agree", "none")},
       {13: "observation_only", 14: "observation_only", 15: "legacy_guessed", 17: "legacy_dropped"})

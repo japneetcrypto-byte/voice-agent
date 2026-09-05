@@ -215,6 +215,62 @@ GATE_BLOCK_LINES = [
 ]
 
 
+# M10 (owner session 20260905_124658 t10): while a dictation task is active the
+# LLM must not RECITE the number either — "shuruat wala number tha zero two six
+# nine." was a partial, unverified recital from a model that never sees the
+# digits (L5: task_state carries none), i.e. a fabrication. Blocked while a
+# task is active (never otherwise):
+#   * two or more ADJACENT English digit words ('zero two six nine');
+#   * three or more adjacent Hinglish/Devanagari digit words ('ek do teen' —
+#     two is an idiom: 'do teen din', 'ek do baar');
+#   * three or more adjacent single numerals ('0 2 6 9'), a numeral run of
+#     six or more digits, or a run of four or more starting with 0 (years and
+#     amounts never start with 0; a recited code prefix does).
+# Ordinary talk ('2 minute', 'kal 5 baje', '3 log aur 2 gaadi', '1-2 rupaya',
+# 'ek-ek karke', '2026 mein', '500 rupaye') never matches — corpus-checked over
+# every archived LLM reply. The rail is the only speaker of the value.
+_EN_DIGIT = r"(?:zero|one|two|three|four|five|six|seven|eight|nine)"
+_HI_DIGIT = (r"(?:shunya|ek|do|teen|char|chaar|paanch|panch|chhe|che|saat|aath|nau|"
+             r"\u0936\u0942\u0928\u094d\u092f|\u091c\u093c\u0940\u0930\u094b|\u091c\u0940\u0930\u094b|\u090f\u0915|\u0926\u094b|\u0924\u0940\u0928|\u091a\u093e\u0930|"
+             r"\u092a\u093e\u0902\u091a|\u091b\u0939|\u0938\u093e\u0924|\u0906\u0920|\u0928\u094c)")
+_RECITAL_LABEL = "recited digits of the number while a dictation task is active (rail speaks the value)"
+_TASK_GATE_PATTERNS = {
+    "digit_recital": [
+        (r"(?i)(?<![\w\-])" + _EN_DIGIT + r"(?:[\s,]+" + _EN_DIGIT + r"){1,}(?![\w\-])", _RECITAL_LABEL, "block"),
+        (r"(?i)(?<![\w\-])" + _HI_DIGIT + r"(?:[\s,]+" + _HI_DIGIT + r"){2,}(?![\w\-])", _RECITAL_LABEL, "block"),
+        (r"(?<![\d\-])\d(?:[\s,]+\d){2,}(?![\d\-])", _RECITAL_LABEL, "block"),
+        (r"(?<!\d)(?:\d{6,}|0\d{3,})(?!\d)", _RECITAL_LABEL, "block"),
+    ],
+}
+
+
+def check_task_violations(reply: str) -> list[dict]:
+    """Task-active additions to check_violations (M10): digit recital."""
+    violations = []
+    for category, patterns in _TASK_GATE_PATTERNS.items():
+        for pattern, label, action in patterns:
+            m = re.search(pattern, reply)
+            if m:
+                violations.append({"type": category, "detail": label,
+                                   "matched": m.group(0)[:40], "action": action})
+    return violations
+
+
+def gate_task_reply(reply: str, turn_no: int = 0, *, task_active: bool = False) -> tuple[str, list[dict]]:
+    """gate_reply + the task-active digit-recital block (M10). When no
+    dictation task is active this is exactly gate_reply."""
+    gated, violations = gate_reply(reply, turn_no=turn_no)
+    if not task_active or gated != reply:
+        return gated, violations
+    extra = check_task_violations(reply)
+    if extra:
+        violations = list(violations) + extra
+        gated = GATE_BLOCK_LINES[(turn_no or 0) % len(GATE_BLOCK_LINES)]
+        print(f"[ContractGate] BLOCKED {len(extra)} violation(s): "
+              + ", ".join(v["detail"] for v in extra))
+    return gated, violations
+
+
 def check_violations(reply: str) -> list[dict]:
     """Check a reply against HARD violations only (objectively detectable).
     Returns violations as {"type", "detail", "matched", "action"}.

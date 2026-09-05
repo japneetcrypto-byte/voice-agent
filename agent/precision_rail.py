@@ -534,6 +534,12 @@ ONLY_THIS_RE = re.compile(
 #   - QUESTION TAGS ("लिखा तूने की नहीं?" = did you write or not — smoke-8
 #     t13; 'किनहीं' is STT's garble of 'कि नहीं' — smoke-8 t6)
 # Only a plain negation ('नहीं, गलत है', 'यह है ही नहीं...') rejects.
+# M7 (owner session 20260905_124658 t8/t13): a HOW-MANY question about the
+# stored digits — 'कितने बार जीरो है', 'कितने जीरों आए हैं', 'kitne zero hain'.
+# Detects; the controller decides (recall = the number IS the answer).
+COUNT_QUESTION_RE = re.compile(
+    r"कितने|कितनी|कितना|\bkitn[aei]\b|\bhow many\b", re.IGNORECASE)
+
 QUESTIONISH_RE = re.compile(
     r"क्यों|क्यूं|क्युं|क्या|why|कौन|कब|कहाँ|कहां|कहा\s|\?|"
     r"की नहीं|कि नहीं|किन्हीं|किनहीं|या नहीं", re.IGNORECASE)
@@ -634,8 +640,8 @@ def _parse_correction(text: str) -> tuple[str | None, str | None, str | None] | 
     if not re.search(r"नहीं|nahi|गलत|galat|correct|के बाद|केबाद|बाद|after|replace|रिप्लेस",
                      t, re.IGNORECASE):
         return None
-    if QUESTIONISH_RE.search(t):
-        return None  # an inquiry about the number, not a correction
+    if QUESTIONISH_RE.search(t) or COUNT_QUESTION_RE.search(t):
+        return None  # an inquiry about the number, not a correction (M7: 'कितने बार जीरो')
     groups = _digit_groups(t)
     if not groups:
         return None
@@ -734,6 +740,8 @@ def _val_aware_correction(text: str, val: str) -> tuple | None:
     t = text or ""
     if not val:
         return None
+    if QUESTIONISH_RE.search(t) or COUNT_QUESTION_RE.search(t):
+        return None  # M7: a question about the number is never an edit spec
     groups = _digit_groups(t)          # [(digits, start, end)] — digit words
     # included with their real spans (never re-located by literal search)
     if not groups:

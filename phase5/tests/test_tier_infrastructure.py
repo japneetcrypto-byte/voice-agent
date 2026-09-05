@@ -147,8 +147,15 @@ for s in SESSIONS:
 
 plan = tt.build_plan(type("A", (), {"changed": ["agent/numeric_observation.py"], "since": None, "area": None})())
 sel = plan["targeted"]
-check("observation change selects only digit-bearing turns of the rail fixture",
-      sel[tt.rel(rail)]["selected"] == [5, 8, 9, 16, 17, 18, 19])
+# Since the N6 gate (2026-09-05) the controller CONSUMES the observation
+# (agent/conversation_controller.py imports agent.numeric_observation), so a
+# change to the observation propagates to the rail area by reverse dependency:
+# every rail turn of the rail fixture is selected, not only the digit-bearing
+# ones. The digit-bearing turns must still be inside the selection.
+check("observation change propagates to the rail (the controller consumes it): areas = observation + rail",
+      set(plan["areas"]) >= {"observation", "rail"})
+check("observation change selects every digit-bearing turn of the rail fixture (and the rail turns around them)",
+      set([5, 8, 9, 16, 17, 18, 19]) <= set(sel[tt.rel(rail)]["selected"]))
 check("every selected turn is an archived turn of the same file (subset)",
       all(set(t["selected"]) <= set(t["all"]) for t in sel.values()))
 check("subset proof passes on the frozen fixtures", tt.subset_proof(sel) == [])

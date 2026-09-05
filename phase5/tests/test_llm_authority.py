@@ -53,6 +53,49 @@ eng = {"dictation": {"value": BASE, "status": "pending"}, "conv": {}}
 r = decide_raw("मुझे लगता है आज बारिश होगी शाम को यार क्या बोलते हो", eng, 20)
 check("non-edit long chat while a task is active still releases to the LLM (row 24′ kept)", r, None)
 
+# M10 (owner session 20260905_124658 t10): the LLM said "shuruat wala number
+# tha zero two six nine." — a partial RECITAL of the digits. The output gate
+# covered edit claims only; a task-active LLM reply that recites two or more
+# consecutive digits (words or numerals) is now blocked too — the rail is the
+# only speaker of the number. Ordinary number talk stays untouched.
+from agent.response_contract import gate_task_reply
+for bad in ("shuruat wala number tha zero two six nine.",
+            "haan, number 0269 se shuru hota hai.",
+            "tumhara number zero two six nine zero zero hai na?",
+            "maine suna tha 02690012."):
+    g, v = gate_task_reply(bad, turn_no=10, task_active=True)
+    check(f"task-active recital blocked: {bad[:38]!r}", (g != bad, any(x["type"] == "digit_recital" for x in v)), (True, True))
+for ok in ("haan, bolo — kya badalna hai?",
+           "main 2 minute mein aata hoon.",
+           "kal 5 baje milte hain, theek hai?",
+           "ek baar poora number phir se bol do, main note kar loon.",
+           "us din 3 log the aur 2 gaadi.",
+           "do teen din lagenge, ek do baar try karo.",
+           "1-2 rupaya per minute, ek-ek karke dekho.",
+           "2026 mein 500 rupaye kaafi hain."):
+    g, v = gate_task_reply(ok, turn_no=10, task_active=True)
+    check(f"ordinary talk untouched: {ok[:38]!r}", (g == ok, [x for x in v if x["type"] == "digit_recital"]), (True, []))
+g, v = gate_task_reply("shuruat wala number tha zero two six nine.", turn_no=10, task_active=False)
+check("no task active -> recital gate is off (no false blocks in normal chat)", (g, v), ("shuruat wala number tha zero two six nine.", []))
+# the piece chain reads task-active from the SAME turn's archived contract
+from agent.response_pipeline import process_piece
+_t = {"turn": 10, "policy": {"contract": {"TASK_STATE": {"kind": "dictation", "status": "pending", "has_value": True, "proposal_open": False}}}}
+out = process_piece("shuruat wala number tha zero two six nine.", _t, recent_reply_texts=[], user_text="x", turn_number=10, log_event=lambda *a, **k: None, run_repeat_guard=False)
+check("process_piece blocks the recital when the turn's contract says a task is active",
+      (out != "shuruat wala number tha zero two six nine.", _t.get("contract_block_count")), (True, 1))
+_t = {"turn": 10, "policy": {"contract": {"MUST_NOT": []}}}
+out = process_piece("shuruat wala number tha zero two six nine.", _t, recent_reply_texts=[], user_text="x", turn_number=10, log_event=lambda *a, **k: None, run_repeat_guard=False)
+check("process_piece leaves it alone when no task is active", (out, _t.get("contract_block_count")), ("shuruat wala number tha zero two six nine.", None))
+# rail lines are SYSTEM-owned and legitimately speak the digits — never gated,
+# even if a task contract were ever attached to a rail turn
+from agent.precision_rail import ACK_LINES, ECHO_LINES, RECALL_LINES, FULL_LINES
+_rail_lines = [l.format(spoken="zero two six nine zero zero one two") for l in ACK_LINES + ECHO_LINES + RECALL_LINES + FULL_LINES]
+_kept = []
+for l in _rail_lines:
+    _t = {"turn": 4, "engine_path": "precision_rail", "policy": {"contract": {"TASK_STATE": {"kind": "dictation", "status": "confirming", "has_value": True, "proposal_open": False}}}}
+    _kept.append(process_piece(l, _t, recent_reply_texts=[], user_text="x", turn_number=4, log_event=lambda *a, **k: None, run_repeat_guard=False) == l and not _t.get("contract_block_count"))
+check(f"every rail echo/ack/recall line ({len(_rail_lines)}) passes the gate untouched on a rail turn", all(_kept), True)
+
 print("== 2. context: task_state exposes no digits ==")
 eng = {"dictation": {"value": "026900125205203", "status": "confirming",
                       "proposal": {"base": "026900125205203", "spec": [None, "520", "00000"],

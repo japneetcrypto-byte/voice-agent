@@ -1026,3 +1026,48 @@ Session 111740 analysis (29 turns, detail conversation about building a voice ag
 
 Owner's proposal ADOPTED: hard-block dangerous categories immediately,
 memory-reference stays flag until A/B validates. All suites green (14).
+
+---
+
+## Session 20260905_124658 review — M7/M8/M9/M10 (2026-09-05)
+
+Owner deployed `f36c084` (session 124658, 16 turns). STT heard the number
+RIGHT this time (t4 `02690012000001203` == ground truth; recalled correctly
+at t6/t7/t12). Every failure was a rail/understanding rule. Four fixes,
+tests-first (`test_correction_repair.py` M7–M9, `test_llm_authority.py` M10):
+
+- **M7 — a QUESTION about the number is answered, never edited.** t8 `नहीं,
+  one two के बाद कितने बार जीरो है` parsed as a correction (12→0) and Aiva
+  PROPOSED `0269000000001203`; t13 `कितने जीरों आए हैं` got "0 sahi hai".
+  New detector `COUNT_QUESTION_RE` (कितने/कितनी/कितना/kitne/how many) refused
+  by `_parse_correction` and `_val_aware_correction`; the controller answers a
+  how-many question about the digits with the recall line (the number IS
+  the answer). Declared as a new parsing rule (owner authorised fixes).
+- **M8 — N6 gate live (lock §8): an INCOMPLETE hearing never becomes a
+  proposal/append.** t15 `… पांच जीरो है, one two के बाद` (observation
+  `{50|00000}`, INCOMPLETE) produced a 26-digit proposal. The controller now
+  reads the turn's `NumericObservation` certainty (`_n6_blocks` /
+  `_n6_uncertain`) in front of every mutating row over a stored value and at
+  the L3 buffer close; blocked turns speak a clarify that names the known
+  digits as known and the uncertain part as uncertain (Roman only), keep the
+  base and any open proposal byte-identical, and hold the instruction open
+  so the user's answer is a continuation (slot-fill by the answer:
+  `पांच बार जीरो` → 00000, `five zero` → 50; anything else clarifies again).
+  Fresh dictation with NO base is NOT gated yet (needs a slot-fill state —
+  Phase 3); pinned explicitly. Re-pins: M4 t40 (`नाइन नाइन थ्री फोन` was a
+  guessed repair → clarify), 133627 t15 line wording (N6 clarify).
+- **M9 — reject + "poora number dobara bol" with a proposal open → revert,
+  base spoken once.** t16 read BOTH the proposal and the base (14.5 s,
+  trimmed). Re-pin: 133627 t16/t19 (revert at t16 ⇒ t19 is a fresh proposal).
+- **M10 — task-active LLM output gate: no digit recital.** t10 the fused
+  LLM said "shuruat wala number tha zero two six nine." (it never sees the
+  digits — a fabrication). `gate_task_reply` blocks ≥2 adjacent English
+  digit words / ≥3 Hinglish-Devanagari digit words / ≥3 adjacent numerals /
+  6+-digit runs (or 0-leading 4+) while `TASK_STATE` is pending/confirming;
+  corpus-checked: 0 trips over every archived LLM reply.
+
+Gate: 59/59 suites; FULL replay 60 turns == accepted standing profile;
+frozen 3/3; `test_tiers.py full --jobs 2` FULL PASS. Temperature question
+answered to the owner: the LLM runs at 0.7 (`providers/llm.py:43`,
+`agent/fused_turn.py:244`), STT at 0.0; the digits never pass through the
+LLM, so temperature is not what decides the number.
