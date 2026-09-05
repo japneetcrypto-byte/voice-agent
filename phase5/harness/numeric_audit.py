@@ -15,6 +15,10 @@ Sections
   4. count-vs-digit ambiguity in the normalizer ('5 जीरो')
   5. the text echo filter vs the user's own confirmation words
   6. digit error table across the four real sessions
+  7. (Phase 1, 2026-09-04) the per-turn audit CHAIN over the same session:
+     observation -> operation -> proposal -> delivery -> confirmation ->
+     commit, exactly as run_turn now archives it (turn["numeric_observation"]
+     + turn["numeric_audit"]); shows observation vs legacy signal per turn
 """
 from __future__ import annotations
 
@@ -281,5 +285,40 @@ def section6():
     print("      t12 -0.11, t19 -0.16, 131245 t7 -0.22, t11 -0.43 | OOV no-observation: 133627 t17 -0.13")
 
 
+def section7():
+    print("\n" + "=" * 78)
+    print("7. Phase 1 audit chain over session_20260904_133627 (run_turn archive)")
+    print("=" * 78)
+    from agent.response_pipeline import run_turn, TurnContext
+    from agent.numeric_chain import chain_line
+
+    class _Sess:
+        def policy_for_turn(self): return {}
+        def memory_view(self): return []
+
+    class _LCM:
+        def add_turn(self, *a, **k): pass
+        def needs_compression(self): return False
+        def get_layer2(self): return {"active_topic": None}
+
+    eng = {"sess": _Sess(), "lcm": _LCM(), "fused": None}
+    hist = {"agree": 0, "none": 0}
+    for tn, text, pb, _live in S133627:
+        interrupted = pb in ("interrupted", "cancel_pre_audio")
+        t = run_turn(TurnContext(turn_no=tn, user_text=text, engine=eng, model_text="achha.",
+                                 interrupted=interrupted,
+                                 played_any_audio=pb in ("played", "interrupted")))
+        na = t.get("numeric_audit") or {}
+        vs = na.get("observation_vs_signal", "?")
+        hist[vs] = hist.get(vs, 0) + 1
+        print(f"t{tn:<3}{text[:44]!r:48}")
+        print(f"     observation : {na.get('observation')}   [{vs}]  legacy seg={na.get('legacy_signal', {}).get('seg')!r}")
+        print(f"     chain       : {chain_line(t) or '-'}")
+    print(f"\n   observation vs legacy signal histogram: {hist}")
+    print("   (observation_only = digits visible only to the observation on edit-intent turns the rows held;")
+    print("    legacy_guessed = the string signal produced digits over AMBIGUOUS content (t15 '5 जीरो' -> '50');")
+    print("    legacy_dropped = the whole span was lost (t17 'सिस'). Phase 3 flips these; Phase 1 only records.)")
+
+
 if __name__ == "__main__":
-    section1(); section2(); section3(); section4(); section5(); section6()
+    section1(); section2(); section3(); section4(); section5(); section6(); section7()

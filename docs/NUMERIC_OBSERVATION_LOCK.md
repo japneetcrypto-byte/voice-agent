@@ -332,6 +332,22 @@ turn (today it prints STT and reply only, and truncates STT at 60 chars — t12 
 of 133627 were cut; the record must carry the full text), and the replay gate checks
 observation identity in addition to decision identity.
 
+**Phase 1 as built (2026-09-04) — placement note.** The `operation` and
+`confirm_evidence` records are archived under a NEW top-level key
+`turn["numeric_audit"]` (with `stage`, `legacy_signal`, `observation_vs_signal`,
+`operation`, `proposal`, `confirm_evidence`, `commit`) rather than inside
+`precise_detail`: the replay gate compares `precise_detail` byte-exact when an
+archive carries it, so adding keys there would have broken identity on the existing
+rail fixtures — the opposite of Phase 1's zero-change requirement. The observation
+itself lives at `turn["numeric_observation"]` as specified. Both keys are written on
+every turn (rail, LLM, greeting, route-dropped, echo-dropped), once, fail-closed
+(`numeric_audit_error` / `numeric_observation_error` instead of an exception). The
+replay gate compares the pure part of `numeric_observation` when present (not
+`numeric_audit`, which is a derived view over already-compared decisions). Code:
+`agent/numeric_observation.py`, `agent/numeric_chain.py`; tests
+`phase5/tests/test_numeric_observation.py`, `test_numeric_chain.py`,
+`test_numeric_observation_adversarial.py`.
+
 ---
 
 ## 12. E1 — Echo gate: text similarity alone never discards a user turn (LOCK)

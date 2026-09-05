@@ -47,6 +47,8 @@ from agent.value_transaction import (mark_delivery as vt_mark_delivery,  # L2 wr
                                      archive_precise_detail as vt_archive_precise_detail,
                                      task_state_view as vt_task_state_view)  # L5
 from agent.control_plane import shadow_turn, pre_state
+from agent.numeric_observation import attach_observation, endpoint_evidence  # Phase 1 record
+from agent.numeric_chain import attach_chain                                 # Phase 1 audit chain
 
 
 # ---------------------------------------------------------------------------
@@ -388,6 +390,10 @@ class TurnContext:
     interrupted: bool = False
     played_any_audio: bool = True  # for response_state classification
     premature_resume: dict | None = None  # endpoint evidence (L3, read-only)
+    endpoint: dict | None = None          # VAD last_endpoint (observation record only)
+    stt_source: dict | None = None        # STT evidence {provider, model, language,
+                                          #  no_speech_prob, avg_logprob, compression_ratio}
+                                          #  (observation record only)
     acoustic: dict | None = None
     user_speech_start: str | None = None
     user_speech_end: str | None = None
@@ -432,6 +438,15 @@ def run_turn(ctx: TurnContext) -> dict:
         "interrupted": False,
         "llm_response": None,
     }
+    # NUMERIC OBSERVATION BOUNDARY — Phase 1 (docs/NUMERIC_OBSERVATION_LOCK.md
+    # §11, owner-approved 2026-09-04): the observation RECORD is a pure
+    # function of the transcript text (N7), computed BEFORE routing so EVERY
+    # turn — dropped, echo-gated, rail, LLM — carries it, and archived under
+    # turn["numeric_observation"] with the STT/endpoint evidence. Nothing
+    # consumes it yet; the replay gate compares it when the archive has it.
+    # Identical call in main.py right after the transcript lands.
+    attach_observation(turn, ctx.user_text, ctx.turn_no, source=ctx.stt_source,
+                       endpoint=endpoint_evidence(ctx.endpoint, ctx.premature_resume))
     r = route_decision(
         transcript_text=ctx.user_text, is_valid=ctx.is_valid,
         rejection_reason=ctx.rejection_reason, avg_logprob=ctx.avg_logprob,
@@ -442,6 +457,11 @@ def run_turn(ctx: TurnContext) -> dict:
     turn["route_reason"] = r["reason"]
     if r["drop"]:
         turn["dropped_reason"] = r["drop_reason"]
+        # audit chain for a turn that never reached the rail (confirm/reject
+        # evidence + unchanged task state are still recorded — lock §11/§12)
+        attach_chain(turn, text=ctx.user_text, turn_no=ctx.turn_no, rail=None,
+                     pre_dictation=(ctx.engine or {}).get("dictation"), engine=ctx.engine,
+                     premature_resume=ctx.premature_resume, stage="route_dropped")
         return turn
     if r["respond_now"]:
         turn["turn_type"] = r["turn_type"]
@@ -461,6 +481,7 @@ def run_turn(ctx: TurnContext) -> dict:
     # effect, so a snapshot taken after the chain would decide on the chain's
     # own output, not on the inputs the chain saw. Same inputs, read-only.
     _shadow_engine = pre_state(ctx.engine) if ctx.engine is not None else None
+    _rail = None
     if ctx.engine is not None:
         _rail = precision_rail_decide(ctx.user_text, ctx.engine, ctx.turn_no,
                                       {"premature_resume": ctx.premature_resume})
@@ -469,6 +490,15 @@ def run_turn(ctx: TurnContext) -> dict:
             turn["engine_path"] = "precision_rail"
             turn["llm_called"] = False
             turn["precise_detail"] = vt_archive_precise_detail(_rail, ctx.engine)
+        # NUMERIC OBSERVATION BOUNDARY — Phase 1 audit chain (lock §11):
+        # observation -> operation -> proposal -> confirmation -> commit,
+        # derived READ-ONLY from the PRE-chain snapshot the shadow already
+        # captured, the decision and the post-decision task state. Additive
+        # key, fail-closed; the rail call above is byte-identical.
+        attach_chain(turn, text=ctx.user_text, turn_no=ctx.turn_no, rail=_rail,
+                     pre_dictation=(_shadow_engine or {}).get("dictation"),
+                     engine=ctx.engine, premature_resume=ctx.premature_resume,
+                     stage="rail", emit=ctx.log_event)
     sess_bound = bool(ctx.engine and ctx.engine.get("sess"))
     model_text = ctx.model_text
     # GREETING RAIL (owner smoke 3, 2026-08-31): a first-word greeting gets a

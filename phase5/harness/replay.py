@@ -29,6 +29,14 @@ Covered per turn (all inputs archived in the turn dict):
   - COMPLETION     — response_state, interrupted halves (heard_text /
                      remaining_text), reconcile payloads + previous_plan
                      (from the PRIOR turn's archived state)
+  - OBSERVATION    — (NUMERIC_OBSERVATION_LOCK Phase 1, 2026-09-04) the pure
+                     part of turn["numeric_observation"] (slots / certainty /
+                     non-numeric tokens / text hash), compare-when-present.
+                     Source/endpoint measurements are excluded; a content-
+                     equal record under a different observation version is a
+                     documented note, not a divergence. turn["numeric_audit"]
+                     (the derived chain record) is NOT compared — it is a
+                     read-only view over already-compared decisions.
 
 Known boundaries (documented, not silent):
   - policy.contract BODY depends on runtime memory_count / SessionState —
@@ -56,6 +64,7 @@ from pathlib import Path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from agent.response_pipeline import run_turn, TurnContext
+from agent.numeric_observation import pure_view as obs_pure_view, summary as obs_summary
 from agent.response_state import FULLY_PLAYED
 from agent.reply_guard import remaining_text
 from agent.reply_guard import REPEAT_BREAK_LINES
@@ -249,6 +258,13 @@ def context_from_archived(turn: dict, *, prior_state: dict,
         interrupted=bool(turn.get("interrupted")),
         played_any_audio=(turn.get("response_state") not in (None, "UNHEARD")),
         premature_resume=turn.get("premature_resume"),
+        # Phase 1 observation record: the STT/endpoint evidence the live path
+        # archives on every turn (measurement — never compared by the gate).
+        endpoint=turn.get("endpoint") if isinstance(turn.get("endpoint"), dict) else None,
+        stt_source={"provider": turn.get("stt_provider"), "language": turn.get("stt_language"),
+                    "no_speech_prob": turn.get("stt_no_speech_prob"),
+                    "avg_logprob": turn.get("stt_avg_logprob"),
+                    "compression_ratio": turn.get("stt_compression_ratio")},
         log_event=lambda *a, **k: None,
     )
 
@@ -330,6 +346,25 @@ def _compare(replay: dict, archived: dict) -> dict:
     # precise_detail — synthetic fixtures regenerate WITH the key; the real
     # baseline archives lack it, so the real gate stays EMPTY DIFF.
     _exact_if_present(diffs, replay, archived, "control_shadow")
+    # NUMERIC OBSERVATION BOUNDARY Phase 1 (lock §11): observation identity
+    # in addition to decision identity — compare-when-present on the PURE part
+    # of the record (text-derived slots/certainty/version; the source/endpoint
+    # measurements are excluded like every other measurement). Archives
+    # written before Phase 1 lack the key -> no comparison (faithful).
+    if isinstance(archived.get("numeric_observation"), dict):
+        a_obs = obs_pure_view(archived.get("numeric_observation"))
+        r_obs = obs_pure_view(replay.get("numeric_observation"))
+        a_ver, r_ver = a_obs.pop("version", None), r_obs.pop("version", None)
+        if a_obs != r_obs:
+            diffs["numeric_observation"] = (obs_summary(replay.get("numeric_observation")),
+                                            obs_summary(archived.get("numeric_observation")))
+        elif a_ver != r_ver:
+            # content identical under a different observation version (rules
+            # or lexicon hash moved) — documented, non-gating like the
+            # whitespace-attribution note
+            diffs.setdefault("notes", []).append(
+                f"numeric_observation content-equal under version drift "
+                f"(archived {a_ver}, replay {r_ver})")
 
     # policy DELTAS (base policy values are runtime state — not compared)
     arch_policy = archived.get("policy") if isinstance(archived.get("policy"), dict) else {}

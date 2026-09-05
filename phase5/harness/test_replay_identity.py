@@ -246,6 +246,28 @@ check("route_action drift detected", "route_action" in d2.get(1, {}), True)
 check("llm_response drift detected", "llm_response" in d2.get(1, {}), True)
 corrupt.unlink()
 
+print("== Phase 1 (NUMERIC_OBSERVATION_LOCK §11): observation identity is gated when archived ==")
+obs_turns = [t for t in turns if isinstance(t.get("numeric_observation"), dict)]
+check("every synthetic turn carries numeric_observation", len(obs_turns), len(turns))
+check("every synthetic turn carries the numeric_audit chain", sum(1 for t in turns if isinstance(t.get("numeric_audit"), dict)), len(turns))
+corrupt = fixture_dir / "_corrupt_observation.log"
+with open(corrupt, "w", encoding="utf-8") as f:
+    for t in turns:
+        t2 = json.loads(json.dumps(t))
+        if t2["turn"] == 2:
+            t2["numeric_observation"]["certainty"] = "COMPLETE"     # drift in the pure part
+            t2["numeric_observation"]["items"] = [{"span": {"start": 0, "end": 1, "text": "x"}, "slots": [],
+                                                   "surface": "RUN", "group_breaks": [], "boundary": {},
+                                                   "unknown_count": 0, "ambiguous_count": 0}]
+        if t2["turn"] == 3:
+            t2["numeric_observation"]["source"]["provider"] = "someone_else"   # measurement only
+            t2["numeric_observation"]["endpoint"] = {"speech_duration_ms": 1.0}
+        f.write(json.dumps(t2, ensure_ascii=False) + "\n")
+d3, _, _ = replay_session(corrupt)
+check("observation drift (pure part) is flagged", "numeric_observation" in d3.get(2, {}), True)
+check("source/endpoint measurement differences are NOT flagged", d3.get(3, {}), {})
+corrupt.unlink()
+
 print()
 if fails:
     print(f"FAIL ({fails})")

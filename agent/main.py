@@ -72,6 +72,8 @@ from agent.precision_rail import decide as precision_rail_decide
 from agent.value_transaction import (mark_delivery as vt_mark_delivery,  # L2 write side
                                      archive_precise_detail as vt_archive_precise_detail)
 from agent.control_plane import shadow_turn, pre_state
+from agent.numeric_observation import attach_observation, endpoint_evidence  # Phase 1 record
+from agent.numeric_chain import attach_chain                                 # Phase 1 audit chain
 from agent.turn_router import route_decision
 from agent.prompt_fragments import FILLER_LINES, pick_line, PROMPT_VERSION
 from providers.llm import get_llm_provider
@@ -1271,6 +1273,41 @@ async def entrypoint(ctx: JobContext):
                                 turn["stt_no_speech_prob"] = transcript.no_speech_prob
                                 turn["stt_avg_logprob"] = transcript.avg_logprob
                                 turn["stt_compression_ratio"] = transcript.compression_ratio
+                                # NUMERIC OBSERVATION BOUNDARY — Phase 1
+                                # (docs/NUMERIC_OBSERVATION_LOCK.md §11, owner-
+                                # approved 2026-09-04): the observation RECORD
+                                # is a pure function of the transcript text
+                                # (N7), written ONCE here — before the echo
+                                # gate, so even a turn the text filter eats is
+                                # inspectable — with the full (untruncated)
+                                # STT + endpoint evidence. Nothing consumes it
+                                # yet (zero behaviour change). Identical call in
+                                # run_turn (the replay interface).
+                                try:
+                                    attach_observation(
+                                        turn, transcript.text, turn_number,
+                                        source={"provider": turn.get("stt_provider"),
+                                                "model": (os.getenv("AIVA_STT_MODEL", "whisper-large-v3")
+                                                          if str(turn.get("stt_provider") or "").startswith("groq")
+                                                          else turn.get("stt_provider")),
+                                                "language": transcript.language,
+                                                "no_speech_prob": transcript.no_speech_prob,
+                                                "avg_logprob": transcript.avg_logprob,
+                                                "compression_ratio": transcript.compression_ratio,
+                                                "latency_s": turn.get("stt_latency_s")},
+                                        endpoint=endpoint_evidence(
+                                            endpoint_info, premature_resume,
+                                            speech_ms=round(duration_ms, 1),
+                                            ms_since_agent_audio_end=ms_since_agent_audio_end,
+                                            agent_was_speaking=agent_was_speaking_at_detection))
+                                    _no = turn.get("numeric_observation") or {}
+                                    if _no.get("items"):
+                                        tmark("NUMERIC_OBSERVATION", turn=turn_number,
+                                              certainty=_no.get("certainty"),
+                                              reasons=",".join(_no.get("reasons") or []),
+                                              n_items=len(_no["items"]))
+                                except Exception as _oe:
+                                    turn["numeric_observation_error"] = f"{type(_oe).__name__}: {str(_oe)[:120]}"
 
                                 echo_text = devanagari_to_roman(transcript.text)
                                 turn["turn_relation"] = classify_turn_relation(transcript.text)
@@ -1330,6 +1367,16 @@ async def entrypoint(ctx: JobContext):
                                           f"(+{ms_since_agent_audio_end}ms, sim={similarity:.2f})")
                                 if is_echo_detected:
                                     turn["echo_dropped"] = True
+                                    # Phase 1 audit chain (lock §11/§12 evidence):
+                                    # a turn the TEXT echo gate discards never
+                                    # reaches the rail — record what it carried
+                                    # (confirm/reject tokens, observation) and
+                                    # that the task state is untouched.
+                                    attach_chain(turn, text=transcript.text, turn_no=turn_number,
+                                                 rail=None,
+                                                 pre_dictation=(engine or {}).get("dictation"),
+                                                 engine=engine, premature_resume=premature_resume,
+                                                 stage="echo_dropped")
                                     print(f"ECHO_DETECTED: similarity={similarity:.2f}")
                                     tmark("TURN_DROPPED", turn=turn.get("turn"), reason="echo", similarity=round(similarity, 2))
                                     log_event("AGENT_ECHO_IGNORED", turn_id=turn.get("turn"), details={"transcript": transcript.text, "similarity": similarity, "language": transcript.language})
@@ -1433,6 +1480,20 @@ async def entrypoint(ctx: JobContext):
                                 _rail = (precision_rail_decide(transcript.text, engine, turn_number,
                                                                {"premature_resume": turn.get("premature_resume")})
                                          if engine and action != "drop" else None)
+                                # Phase 1 audit chain (lock §11): observation ->
+                                # operation -> proposal -> confirmation -> commit,
+                                # derived READ-ONLY from the shadow's PRE-chain
+                                # snapshot, the decision and the post-decision
+                                # task state. Additive turn key, fail-closed.
+                                # Identical call in run_turn.
+                                attach_chain(turn, text=transcript.text, turn_no=turn_number,
+                                             rail=_rail,
+                                             pre_dictation=(_shadow_engine or {}).get("dictation"),
+                                             engine=engine,
+                                             premature_resume=turn.get("premature_resume"),
+                                             stage="rail" if action != "drop" else "route_dropped",
+                                             emit=lambda ev, details: tmark(
+                                                 ev, **{k: str(v) for k, v in details.items()}))
                                 # Greeting gate: NO sess requirement — the
                                 # owner's live smokes 4+5+6 all showed the
                                 # greeting rail NOT firing (t1 'हेलो...' ran

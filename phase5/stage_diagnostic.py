@@ -11,6 +11,8 @@ STT -> validity -> turn decision -> LLM (context, head, latency) -> reply
 import json, glob, os, sys, re
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.reply_guard import feminine_self_reference, is_confirm_echo, devanagari_present
+from agent.numeric_observation import summary as _obs_summary
+from agent.numeric_chain import chain_line as _chain_line
 
 if len(sys.argv) > 1:
     p = sys.argv[1]
@@ -169,7 +171,25 @@ for t in turns:
     print(f"TURN {turn}" + ("  [idle]" if t.get("turn_type") == "idle" else ""))
     corr = t.get("echo_corr_score")
     corr_s = f" | corr={corr}" if corr is not None else ""
-    print(f"  STT     : {stt[:60]!r} | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')} | prov={t.get('stt_provider') or '?'}{corr_s}")
+    # FULL STT text, never truncated (NUMERIC_OBSERVATION_LOCK §11: the old
+    # 60-char cut lost 133627 t12/t17 and the audit had to recover the digits
+    # from the agent's echo). Long lines carry an explicit length.
+    print(f"  STT     : {stt!r}" + (f" ({len(stt)}c)" if len(stt) > 60 else "")
+          + f" | lang={t.get('stt_language')} logprob={t.get('stt_avg_logprob')} | prov={t.get('stt_provider') or '?'}{corr_s}")
+    # Numeric audit chain (Phase 1): observation -> operation -> proposal ->
+    # delivery -> confirmation -> commit, one line per numeric/confirm turn.
+    _no = t.get("numeric_observation")
+    _na = t.get("numeric_audit")
+    if isinstance(_no, dict) and (_no.get("items") or (_na or {}).get("confirm_evidence")):
+        print(f"  numeric : {_obs_summary(_no)} | vs_legacy={(_na or {}).get('observation_vs_signal', '?')}"
+              + (f" | v={_no.get('version')}" if _no.get("version") else ""))
+    if isinstance(_na, dict):
+        _cl = _chain_line(t)
+        if _cl and (_no or {}).get("items") or (_na.get("confirm_evidence")) or _na.get("commit", {}).get("changed") \
+                or (_na.get("operation") or {}).get("kind") not in (None, "none"):
+            print(f"  chain   : [{_na.get('stage')}] {_cl}")
+    if t.get("numeric_audit_error") or t.get("numeric_observation_error"):
+        print(f"  ⚠️ numeric record error: {t.get('numeric_audit_error') or t.get('numeric_observation_error')}")
     print(f"  valid   : {t.get('stt_valid')} ({t.get('stt_rejection_reason','')}) | relation: {t.get('turn_relation')}" +
           (f" | user_rels: {t.get('user_relations')}" if t.get("user_relations") else ""))
     print(f"  engine  : {epath} | decision: {t.get('turn_end_decision')} ({t.get('suppression_reason','')}) | because: {t.get('spoke_because') or t.get('response_trigger_reason')}")
