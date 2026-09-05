@@ -58,6 +58,18 @@ makes that contract explicit:
 so segments cannot be frozen today. Adding a `Transcript.segments` field + an
 archive key is a live-STT-path change → LIVE tier; not done here.
 
+**Echo-dropped turns are a documented skip (2026-09-05, owner session 102221
+t15):** `main.py`'s text echo filter discards a turn *before* `run_turn`, so the
+archive holds no route / rail decision for it — only the observation and the
+echo evidence (`echo_shadow`, `echo_dropped`). The gate skips such a turn
+exactly like the turn-controller WAIT (`response_suppressed`) turns and threads
+the carrier past it; it is never compared against the empty archive (which
+would have reported false `route_action` / `response_state` divergences on
+every real log with an eaten turn). Pinned in `test_tier_infrastructure.py`
+§H. The E1 echo gate (NUMERIC_OBSERVATION_LOCK Phase 2) is the extraction that
+makes these turns replayable — until then they are visible, counted as
+skipped, and their observation stays in the archive for the E1 audit.
+
 ## Why QUICK / TARGETED are subsets of the same frozen inputs
 
 * Suite selection is a function of the code graph only (AST import closure ∪

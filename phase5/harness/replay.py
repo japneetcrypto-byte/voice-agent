@@ -45,6 +45,11 @@ Known boundaries (documented, not silent):
     not the entrypoint turn_number the live gate used.
   - response_suppressed turns: the turn-controller decision is not extracted
     yet (Slice 2) — skipped, never compared.
+  - echo_dropped turns (2026-09-05, owner session 102221 t15): main.py's TEXT
+    echo filter discards the turn BEFORE run_turn — no route / rail decision
+    exists in the archive, only the observation + echo evidence. Skipped,
+    never compared; the E1 echo gate (NUMERIC_OBSERVATION_LOCK Phase 2) is
+    the extraction that will make these turns replayable.
   - Trimmed turns: the LIVE cap-trim point depends on token-stream chunk
     boundaries, so llm_response compares content-equal (whitespace-collapsed);
     untrimmed turns byte-equal.
@@ -407,6 +412,13 @@ def replay_turn(turn: dict, *, prior_reply: str | None, prior_state: dict,
         return {}, carrier_engine  # legacy brain not extracted
     if turn.get("response_suppressed") and turn.get("engine_path") != "precision_rail":
         return {}, carrier_engine  # turn-controller WAIT decision not extracted
+    if turn.get("echo_dropped"):
+        # main.py's TEXT echo filter drops the turn BEFORE the pipeline (no
+        # route / rail decision archived) — that gate is not extracted yet
+        # (NUMERIC_OBSERVATION_LOCK Phase 2 / E1 extracts it). Skipped like the
+        # turn-controller WAIT, never compared. The turn's numeric_observation
+        # + confirm evidence stay in the archive for the E1 audit.
+        return {}, carrier_engine
     # A SILENT rail turn (response_suppressed + precision_rail: accumulate,
     # edit-continuation, bounded-silence count) still ADVANCES the session
     # task state (VALUE_TRANSACTION_LOCK carrier: base / proposal /
@@ -491,7 +503,7 @@ def replay_session(session_path, *, stop_after: int | None = None) -> tuple[dict
                         break
                 except (TypeError, ValueError):
                     pass
-            if turn.get("turn_type") in SKIP_TURN_TYPES or (
+            if turn.get("turn_type") in SKIP_TURN_TYPES or turn.get("echo_dropped") or (
                     turn.get("response_suppressed") and turn.get("engine_path") != "precision_rail"):
                 turns_skipped += 1
                 continue
@@ -533,7 +545,7 @@ def main(argv=None) -> int:
                           if "notes" in d and not any(f != "notes" for f in d))
             if not hard_turns:
                 print(f"[replay] IDENTITY OK — {p} ({checked} turns, "
-                      f"{skipped} supervisor/idle/suppressed skipped"
+                      f"{skipped} supervisor/idle/suppressed/echo-dropped skipped"
                       + (f", {n_notes} documented note(s)" if n_notes else "")
                       + ")")
             else:

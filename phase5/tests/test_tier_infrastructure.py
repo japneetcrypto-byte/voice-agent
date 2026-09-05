@@ -23,6 +23,10 @@ honest:
      ones that cannot run offline, and a change there flags LIVE required.
   G. NO PRODUCT LOGIC — the tier modules import no agent module at import
      time (selection is over the frozen archive + the code graph only).
+  H. ECHO-DROPPED SKIP — a turn main.py's text echo filter ate never reached
+     the pipeline (no archived decision); the gate skips it like the WAIT
+     turns instead of reporting a false divergence, and the carrier still
+     reaches the turns after it (owner session 102221 t15).
 """
 from __future__ import annotations
 
@@ -259,6 +263,48 @@ check("agent code never imports the tier modules",
       not any("tiers_manifest" in (ROOT / d / f).read_text(encoding="utf-8")
               or "frozen_inputs" in (ROOT / d / f).read_text(encoding="utf-8")
               for d in ("agent", "providers") for f in os.listdir(ROOT / d) if f.endswith(".py")))
+
+# ---------------------------------------------------------------------------
+print("== H. echo-dropped turns are a documented SKIP of the gate (never a false divergence) ==")
+# main.py's TEXT echo filter drops a turn BEFORE the pipeline (no route / rail
+# decision is archived — only the observation + echo evidence). The offline
+# gate cannot reproduce a decision that was never made: such a turn must be
+# skipped exactly like the turn-controller WAIT, not compared against an
+# empty archive (which would report route_action/response_state divergences
+# that have nothing to do with the rules). First real case: owner session
+# 102221 t15 ('दिख रहा है?' eaten by the text filter, corr 0.264).
+from agent.numeric_observation import build_record as _build_record  # noqa: E402
+
+
+def _ghost(tn, text):
+    return {"turn": tn, "stt_transcript": text, "stt_valid": True, "stt_language": "hi",
+            "stt_provider": "groq", "agent_was_speaking": True, "ms_since_agent_audio_end": 210,
+            "echo_shadow": {"corr": 0.26, "text_sim": 0.69, "text_echo": True, "decision": "dropped_echo"},
+            "echo_dropped": True,
+            "numeric_observation": _build_record(text, tn, source={"provider": "groq"})}
+
+
+base_diffs, base_checked, base_skipped = replay_session(rail)
+ghosted = copy.deepcopy(turns)
+_i9 = next(i for i, t in enumerate(ghosted) if t["turn"] == 9)
+ghosted.insert(_i9 + 1, _ghost(9, "ठीक है"))                       # confirm word eaten mid-session
+ghosted.append(_ghost(ghosted[-1]["turn"] + 1, "हाँ ठीक है 026900"))  # digit-bearing eaten turn at the end
+ghost_dir = tmpdir / "ghosted"
+ghost_dir.mkdir()
+ghost_path = ghost_dir / rail.name
+ghost_path.write_text("".join(json.dumps(t, ensure_ascii=False) + "\n" for t in ghosted), encoding="utf-8")
+g_diffs, g_checked, g_skipped = replay_session(ghost_path)
+check("echo-dropped turns add NO divergence (same diffs as the untouched fixture)",
+      json.dumps(g_diffs, sort_keys=True, default=str) == json.dumps(base_diffs, sort_keys=True, default=str))
+check("echo-dropped turns are counted as skipped, not checked",
+      (g_checked, g_skipped) == (base_checked, base_skipped + 2))
+check("the carrier state still reaches the turns after the eaten one (identical downstream replay)",
+      all(tn not in g_diffs for tn in (10, 11, 12)))
+check("echo_dropped is a frozen input key (the skip predicate is visible to the tiers)",
+      "echo_dropped" in fz.INPUT_KEYS)
+check("an eaten turn still carries its observation for the E1 audit (not consumed by the gate)",
+      ghosted[_i9 + 1]["numeric_observation"]["certainty"] == "EMPTY"
+      and ghosted[-1]["numeric_observation"]["certainty"] == "COMPLETE")
 
 shutil.rmtree(tmpdir, ignore_errors=True)
 print()
